@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.0.1"
+SCRIPT_VERSION="3.0.2"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -602,16 +602,20 @@ mod_ee() {
 
     # Install the skill for every detected agent using the modern skills CLI
     # (replaces the old git-clone-and-move). Agents are detected by their config dir.
+    # Keys are the `skills` CLI agent names (claude-code, gemini-cli, ...), which
+    # differ from the config-dir basename; values are the dir we detect them by.
     local agent dir
     local -A agent_dir=(
         [pi]="${HOME}/.pi"
-        [claude]="${HOME}/.claude"
-        [gemini]="${HOME}/.gemini"
+        [claude-code]="${HOME}/.claude"
+        [gemini-cli]="${HOME}/.gemini"
         [cursor]="${HOME}/.cursor"
         [antigravity]="${HOME}/.antigravity"
+        [codex]="${HOME}/.codex"
+        [opencode]="${HOME}/.config/opencode"
     )
     local installed_any=0
-    for agent in pi claude gemini cursor antigravity; do
+    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
         dir="${agent_dir[$agent]}"
         [[ -d "${dir}" ]] || continue
         run_optional "engineering-excellence" \

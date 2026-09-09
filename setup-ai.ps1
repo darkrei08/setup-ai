@@ -33,7 +33,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$ScriptVersion = "3.0.1"
+$ScriptVersion = "3.0.2"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LogDir = Join-Path $ScriptDir "logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -208,9 +208,10 @@ function Mod-Go {
 function Mod-Ee {
     Write-Log INFO "ee" "start" "Engineering Excellence"
     if (-not (Test-Cmd npx)) { Write-Log WARN "ee" "npx_missing" "npx not found; install node first"; return }
-    $agents = @{ pi = ".pi"; claude = ".claude"; gemini = ".gemini"; cursor = ".cursor"; antigravity = ".antigravity" }
+    # Keys are `skills` CLI agent names (claude-code, gemini-cli), not dir names.
+    $agents = @{ pi = ".pi"; 'claude-code' = ".claude"; 'gemini-cli' = ".gemini"; cursor = ".cursor"; antigravity = ".antigravity"; codex = ".codex"; opencode = ".config\opencode" }
     $any = $false
-    foreach ($a in @('pi','claude','gemini','cursor','antigravity')) {
+    foreach ($a in @('pi','claude-code','gemini-cli','cursor','antigravity','codex','opencode')) {
         if (Test-Path (Join-Path $HOME $agents[$a])) {
             Invoke-Step -Phase "ee" -Optional -Action {
                 npx --yes skills@latest add $EE_Slug --skill $EE_Skill --global --agent $a --copy --yes
