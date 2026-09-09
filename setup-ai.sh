@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite — Engineering Excellence Edition
-# Version: 3.0.3
+# Version: 3.0.4
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.0.3"
+SCRIPT_VERSION="3.0.4"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
