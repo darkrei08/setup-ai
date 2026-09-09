@@ -10,24 +10,24 @@ skill — each via its **official, current** method for your OS.
 
 ## Quick start
 
-One command. No install, no clone. It opens a menu to choose what to set up:
+One command — opens a menu to choose what to set up:
 
 ```bash
-npx github:darkrei08/setup-ai
+npx @darkrei08/setup-ai
 ```
 
-Prefer non-interactive? Same command, add a flag:
+Non-interactive:
 
 ```bash
-npx github:darkrei08/setup-ai --only pi,codex,opencode   # just these
-npx github:darkrei08/setup-ai --all                      # everything
+npx @darkrei08/setup-ai --only pi,codex,opencode   # just these
+npx @darkrei08/setup-ai --all                       # everything
 ```
 
 That's the whole thing. Three details worth knowing:
 
+- **Use the npm package above.** `npx github:darkrei08/setup-ai` also works, but many npm setups block git fetches (`EALLOWGIT`); the published package avoids that. Run it from any folder except the repo's own source dir.
 - **Windows PowerShell**: one command per line (no bash `\`). If node or git was just installed, open a **new terminal** so PATH refreshes.
-- **What it does**: detects your OS and runs `setup-ai.sh` (macOS/Linux) or `setup-ai.ps1` (Windows). Menu keys: ↑/↓ move · Space toggle · `a` all · Enter.
-- **Shorter name**: once it's on npm, drop `github:` → `npx @darkrei08/setup-ai` (run it from any folder except the repo's own source dir).
+- **What it does**: detects your OS and runs `setup-ai.sh` (macOS/Linux) or `setup-ai.ps1` (Windows). `--list` shows modules; menu keys: ↑/↓ move · Space toggle · `a` all · Enter.
 
 ### npm vs npx
 

@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite — Engineering Excellence Edition
-# Version: 3.0.0
+# Version: 3.0.3
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher

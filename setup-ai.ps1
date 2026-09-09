@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite — Engineering Excellence Edition (Windows)
- Version: 3.0.0
+ Version: 3.0.3
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, the vendor install.ps1 scripts
