@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.0.0"
+SCRIPT_VERSION="3.0.1"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -440,6 +440,11 @@ mod_node() {
             "https://raw.githubusercontent.com/nvm-sh/nvm/${NVM_VERSION}/install.sh" -o "${installer}"
         run_cmd "node" bash "${installer}"
     fi
+
+    # nvm refuses to operate when npm_config_prefix is set (e.g. to /usr/local),
+    # aborting with "nvm is not compatible with the npm_config_prefix ...".
+    # It is only needed by nvm's own shims, so drop it for this process.
+    unset npm_config_prefix NPM_CONFIG_PREFIX 2>/dev/null || true
 
     # shellcheck disable=SC1090
     source "${NVM_DIR}/nvm.sh"

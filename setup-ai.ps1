@@ -33,7 +33,7 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$ScriptVersion = "3.0.0"
+$ScriptVersion = "3.0.1"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LogDir = Join-Path $ScriptDir "logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -77,6 +77,14 @@ function Write-Log {
 }
 
 function Test-Cmd { param([string]$Name) [bool](Get-Command $Name -ErrorAction SilentlyContinue) }
+
+# winget updates the registry PATH, not the live process. Re-read it so tools
+# installed this run (node, git, ...) resolve without opening a new terminal.
+function Update-SessionPath {
+    $machine = [Environment]::GetEnvironmentVariable('Path','Machine')
+    $user    = [Environment]::GetEnvironmentVariable('Path','User')
+    $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
+}
 
 # Run a step; $Optional means failures are logged as WARN and swallowed.
 function Invoke-Step {
@@ -156,12 +164,25 @@ function Mod-Base {
     Install-Winget -Id "GitHub.cli" -Phase "base"
     Install-Winget -Id "Python.Python.3.12" -Phase "base"
     Install-Winget -Id "Neovim.Neovim" -Phase "base"
+    Update-SessionPath
 }
 
 function Mod-Node {
     Write-Log INFO "node" "start" "Node.js"
-    if (-not (Test-Cmd node)) { Install-Winget -Id "OpenJS.NodeJS.LTS" -Phase "node" }
-    if (Test-Cmd npm) { Invoke-Step -Phase "node" -Optional -Action { npm install -g npm@latest } }
+    if (-not (Test-Cmd node)) {
+        Install-Winget -Id "OpenJS.NodeJS.LTS" -Phase "node"
+        Update-SessionPath
+        # winget's PATH refresh can still lag; add the default install dir directly.
+        $nodeDir = Join-Path $env:ProgramFiles "nodejs"
+        if ((-not (Test-Cmd node)) -and (Test-Path (Join-Path $nodeDir "node.exe"))) {
+            $env:Path = "$nodeDir;$env:Path"
+        }
+    }
+    if (Test-Cmd npm) {
+        Invoke-Step -Phase "node" -Optional -Action { npm install -g npm@latest }
+    } else {
+        Write-Log WARN "node" "unresolved" "node/npm not on PATH after install — open a NEW terminal and re-run (node-dependent modules will be skipped)"
+    }
 }
 
 function Mod-Bun {

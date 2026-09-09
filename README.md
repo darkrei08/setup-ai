@@ -30,6 +30,11 @@ macOS/Linux (via `bash`). With no selection flag on an interactive terminal it
 opens an arrow-key **multi-select menu** (↑/↓ move · Space toggle · `a` all ·
 Enter confirm); on a non-interactive shell it installs the core set.
 
+> **Windows / PowerShell**: paste each command on a **single line** — the bash
+> `\` line-continuation is not valid in PowerShell. If a runtime (node, git) was
+> just installed this run, open a **new terminal** before re-running so the
+> updated PATH is picked up.
+
 ### npm vs npx
 
 | | `npm` | `npx` |
