@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite — Engineering Excellence Edition (Windows)
- Version: 3.0.4
+ Version: 3.0.5
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, the vendor install.ps1 scripts
@@ -41,7 +41,7 @@ try {
     if (Get-Command chcp -ErrorAction SilentlyContinue) { chcp 65001 | Out-Null }
 } catch { }
 
-$ScriptVersion = "3.0.4"
+$ScriptVersion = "3.0.5"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LogDir = Join-Path $ScriptDir "logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -307,7 +307,9 @@ function Mod-Engram {
         }
     }
     if (-not (Test-Cmd pi)) { Write-Log WARN "engram" "pi_missing" "pi not found; skipped"; return }
-    Invoke-Step -Phase "engram" -Optional -Action { pi install npm:gentle-engram }
+    # `pi-engram init` is the single source of truth (adds pinned gentle-engram +
+    # wires the Engram MCP server). Do NOT also `pi install npm:gentle-engram` —
+    # that adds a second, unversioned entry and duplicates it every run.
     Invoke-Step -Phase "engram" -Optional -Action { pi install npm:pi-mcp-adapter }
     Invoke-Step -Phase "engram" -Optional -Action { npm exec --yes --package gentle-engram@latest -- pi-engram init }
     Write-Log INFO "engram" "enabled" "Engram enabled — RESTART pi, verify: mem_current_project / mem_doctor / 'engram tui'"

@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite — Engineering Excellence Edition
-# Version: 3.0.4
+# Version: 3.0.5
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.0.4"
+SCRIPT_VERSION="3.0.5"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -762,9 +762,11 @@ mod_engram() {
             "engram binary not found after install; the pi extension needs it on PATH" 1
     fi
 
-    # 2. pi integration (in-process extension is the primary path; MCP adapter optional).
+    # 2. pi integration. `pi-engram init` is the single source of truth: it adds
+    #    the pinned gentle-engram to settings.json and wires the Engram MCP server
+    #    in mcp.json. Do NOT also `pi install npm:gentle-engram` — that adds a
+    #    second, unversioned entry and creates a duplicate on every run.
     if command -v pi >/dev/null 2>&1; then
-        run_optional "engram" pi install npm:gentle-engram
         run_optional "engram" pi install npm:pi-mcp-adapter
         run_optional "engram" npm exec --yes --package gentle-engram@latest -- pi-engram init
         log_event "INFO" "engram" "enabled" \
