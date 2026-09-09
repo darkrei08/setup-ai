@@ -33,7 +33,15 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
-$ScriptVersion = "3.0.2"
+# Render child-process UTF-8 output (npx skills box-drawing, banners) correctly
+# instead of mojibake on the default Windows console codepage.
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+    if (Get-Command chcp -ErrorAction SilentlyContinue) { chcp 65001 | Out-Null }
+} catch { }
+
+$ScriptVersion = "3.0.3"
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $LogDir = Join-Path $ScriptDir "logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null

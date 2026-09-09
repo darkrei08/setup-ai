@@ -106,7 +106,7 @@ function toScriptArgs(mode, csv) {
 
 // ---- interactive multi-select (gentle-ai style) ---------------------------
 function interactiveMenu() {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     const items = menuModules.map((m) => ({ ...m, checked: m.core }));
     let cursor = 0;
     const out = process.stdout;
@@ -125,16 +125,28 @@ function interactiveMenu() {
     };
 
     const stdin = process.stdin;
-    stdin.setRawMode(true);
+    if (typeof stdin.setRawMode !== "function") {
+      return reject(new Error("stdin is not a raw-capable TTY"));
+    }
+    try {
+      stdin.setRawMode(true);
+    } catch (err) {
+      return reject(err);
+    }
     stdin.resume();
     stdin.setEncoding("utf8");
     render(true);
 
     const cleanup = () => {
-      stdin.setRawMode(false);
+      try { stdin.setRawMode(false); } catch { /* ignore */ }
       stdin.pause();
       stdin.removeListener("data", onData);
+      stdin.removeListener("end", onEnd);
     };
+
+    // If stdin closes before a choice (e.g. npx consumed it), fall back instead
+    // of hanging or exiting silently.
+    const onEnd = () => { cleanup(); reject(new Error("stdin closed before a choice was made")); };
 
     const onData = (key) => {
       if (key === "\x03" || key === "q") { // ctrl-c / q
@@ -156,6 +168,7 @@ function interactiveMenu() {
       }
     };
     stdin.on("data", onData);
+    stdin.on("end", onEnd);
   });
 }
 
@@ -165,6 +178,11 @@ function defaultSelection() {
 }
 
 async function main() {
+  // Always emit a first line so the user sees the launcher started, even if
+  // something downstream fails (this is what "npx returns to prompt silently"
+  // needed).
+  console.log(`setup-ai launcher · ${process.platform}`);
+
   if (has("--help") || has("-h")) return runScript(toScriptArgs("help"));
   if (has("--list")) return runScript(toScriptArgs("list"));
   if (has("--all")) return runScript(toScriptArgs("all"));
@@ -174,18 +192,36 @@ async function main() {
 
   if (has("--yes") || has("-y")) return runScript(toScriptArgs("yes"));
 
-  // No selection flag: interactive menu if we have a TTY, else core defaults.
+  // No selection flag: try the interactive menu; fall back cleanly if the
+  // terminal/stdin can't drive it (common under some npx/CI shells).
+  let chosen = null;
   if (process.stdin.isTTY && process.stdout.isTTY) {
-    const chosen = await interactiveMenu();
-    if (!chosen.length) {
-      console.log("Nothing selected — exiting.");
-      process.exit(0);
+    try {
+      chosen = await interactiveMenu();
+    } catch (err) {
+      console.log(`\n(interactive menu unavailable: ${err.message})`);
+      chosen = null;
     }
-    return runScript(toScriptArgs("only", chosen.join(",")));
+  } else {
+    console.log("No interactive terminal detected.");
   }
 
-  console.log("No TTY detected — installing the core module set. Use --only/--all to customize.");
-  return runScript(toScriptArgs("only", defaultSelection().join(",")));
+  if (!chosen) {
+    console.log("Installing the CORE set. Customize with:");
+    console.log("  npx github:darkrei08/setup-ai --only pi,codex,opencode");
+    console.log("  npx github:darkrei08/setup-ai --all        (everything)");
+    console.log("  npx github:darkrei08/setup-ai --list       (see modules)\n");
+    chosen = defaultSelection();
+  }
+
+  if (!chosen.length) {
+    console.log("Nothing selected — exiting.");
+    process.exit(0);
+  }
+  return runScript(toScriptArgs("only", chosen.join(",")));
 }
 
-main();
+main().catch((err) => {
+  console.error(`setup-ai launcher error: ${err?.message || err}`);
+  process.exit(1);
+});
