@@ -10,30 +10,24 @@ skill — each via its **official, current** method for your OS.
 
 ## Quick start
 
+One command. No install, no clone. It opens a menu to choose what to set up:
+
 ```bash
-# no install needed — runs the launcher once, then discards it
 npx github:darkrei08/setup-ai
 ```
 
-or, once published to npm:
+Prefer non-interactive? Same command, add a flag:
 
 ```bash
-npx @darkrei08/setup-ai                    # interactive module menu
-npx @darkrei08/setup-ai --only pi,codex,opencode
-npx @darkrei08/setup-ai --all              # everything incl. optional GUI apps
-npm i -g @darkrei08/setup-ai && setup-ai   # global command
+npx github:darkrei08/setup-ai --only pi,codex,opencode   # just these
+npx github:darkrei08/setup-ai --all                      # everything
 ```
 
-The launcher (`bin/setup-ai.mjs`, zero dependencies) detects your OS and runs
-the right script: `setup-ai.ps1` on Windows (via `pwsh`), `setup-ai.sh` on
-macOS/Linux (via `bash`). With no selection flag on an interactive terminal it
-opens an arrow-key **multi-select menu** (↑/↓ move · Space toggle · `a` all ·
-Enter confirm); on a non-interactive shell it installs the core set.
+That's the whole thing. Three details worth knowing:
 
-> **Windows / PowerShell**: paste each command on a **single line** — the bash
-> `\` line-continuation is not valid in PowerShell. If a runtime (node, git) was
-> just installed this run, open a **new terminal** before re-running so the
-> updated PATH is picked up.
+- **Windows PowerShell**: one command per line (no bash `\`). If node or git was just installed, open a **new terminal** so PATH refreshes.
+- **What it does**: detects your OS and runs `setup-ai.sh` (macOS/Linux) or `setup-ai.ps1` (Windows). Menu keys: ↑/↓ move · Space toggle · `a` all · Enter.
+- **Shorter name**: once it's on npm, drop `github:` → `npx @darkrei08/setup-ai` (run it from any folder except the repo's own source dir).
 
 ### npm vs npx
 
