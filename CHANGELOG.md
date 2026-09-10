@@ -30,8 +30,7 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 
 ### Changed
 - README: new **pi workflows** section linking the guide; documented the new
-  `skills` module; clarified Engram (single `pi-engram init` source of truth) and
-  PowerShell 7.3+ requirement.
+  `skills` module and clarified the PowerShell 7.3+ requirement.
 
 ### Fixed
 - Carried forward the 3.0.6 installer hardening (Node ≥ 22.19 guard extracted to a
