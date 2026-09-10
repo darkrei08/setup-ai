@@ -9,6 +9,22 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [3.2.0] - 2026-09-10
+
+### Added
+- **`gentle-ai` module (cross-OS).** Closes [#6](https://github.com/darkrei08/setup-ai/issues/6).
+  Reinstates the gentle-ai / `gga` ecosystem configurator (removed from the 3.1.0
+  module set) across `setup-ai.sh`, `setup-ai.ps1` and `bin/setup-ai.mjs`. The
+  module installs the CLI via each OS's official method, then runs
+  `gentle-ai install` — gentle-ai's own **interactive per-agent/per-IDE selector**
+  (Pi, Claude Code, Cursor, Codex, ...) that also wires each selected agent's
+  **MCP** servers so the tools show up under `/mcp`. For pi it additionally
+  installs the first-class `gentle-pi` harness and `pi-mcp-adapter`, then verifies
+  `gentle-pi` is registered in pi's `settings.json`. The interactive selector runs
+  only with a real TTY; non-interactive/CI runs log the exact command instead of
+  hanging. A quality gate verifies the binary is on PATH and gentle-pi is
+  registered. Idempotent and safe to re-run.
+
 ## [3.1.0] - 2026-09-10
 
 ### Added

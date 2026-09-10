@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite — Engineering Excellence Edition (Windows)
- Version: 3.1.0
+ Version: 3.2.0
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, the vendor install.ps1 scripts
@@ -50,7 +50,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "3.1.0"
+$ScriptVersion = "3.2.0"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
@@ -275,7 +275,7 @@ function Assert-SkillInstalledForAgents {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','go','dotenv','ee','skills','pi-workflows','herdr','codex','antigravity','opencode','cockpit')
+$ModuleOrder = @('base','node','bun','pi','go','dotenv','ee','skills','pi-workflows','herdr','gentle-ai','codex','antigravity','opencode','cockpit')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)'
@@ -288,6 +288,7 @@ $ModuleDesc = [ordered]@{
     'skills'       = 'Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add'
     'pi-workflows' = 'pi-extensible-workflows (fix module resolution for pi extensions)'
     'herdr'        = 'herdr terminal multiplexer'
+    'gentle-ai'    = 'gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi'
     'codex'        = 'OpenAI Codex CLI'
     'antigravity'  = 'Google Antigravity CLI (agy)'
     'opencode'     = 'opencode agent CLI (opencode-ai)'
@@ -517,6 +518,77 @@ function Mod-Herdr {
     }
 }
 
+# Reinstates the Gentle AI ecosystem configurator (sibling of mod_gentle_ai in
+# setup-ai.sh). `gentle-ai install` is the per-agent/per-IDE selector that also
+# wires each selected agent's MCP servers, so tools appear under /mcp. The
+# configurator is a CORE step: it always runs (interactively with a console, or
+# non-interactively over the detected agents in CI/pipes) and a failure fails
+# the module. For pi we additionally guarantee + verify the first-class
+# gentle-pi harness and pi-mcp-adapter. Idempotent: safe to re-run.
+function Mod-GentleAi {
+    Write-Log INFO "gentle-ai" "start" "gentle-ai"
+
+    # The per-agent selector and the pi harness both require the gentle-ai CLI
+    # itself; a legacy standalone gga is NOT enough, so install whenever the
+    # gentle-ai CLI is missing even if an old gga is on PATH.
+    if (-not (Test-Cmd gentle-ai)) {
+        # Vendor's official Windows method (installs to %LOCALAPPDATA%\gentle-ai\bin).
+        Invoke-RemoteScript -Url "https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.ps1" -Phase "gentle-ai"
+        Update-SessionPath
+    }
+
+    if (-not (Test-Cmd gentle-ai)) {
+        Write-Log ERROR "gentle-ai" "install_missing" "gentle-ai CLI not found on PATH after remote installer"
+        throw "gentle-ai CLI not found on PATH after remote installer"
+    }
+    Invoke-Step -Phase "gentle-ai" -Action { & gentle-ai --version }
+
+    # Detect the agents/IDEs present on this machine (same mapping as Mod-Ee).
+    $detectedAgents = Get-TargetSkillAgents
+
+    # Per-agent / per-IDE selection + MCP wiring, owned by gentle-ai. This is a
+    # core step and must actually run: with a real console we launch the
+    # interactive selector (run directly — Invoke-Step pipes output and would
+    # hide the prompts); otherwise we run it non-interactively over the detected
+    # agents so CI/pipes never hang. A failure fails the module.
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
+        Write-Log INFO "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)"
+        & gentle-ai install --scope global
+        if ($LASTEXITCODE -ne 0) {
+            Write-Log ERROR "gentle-ai" "configurator_failed" "gentle-ai install exited with code $LASTEXITCODE"
+            throw "gentle-ai install exited with code $LASTEXITCODE"
+        }
+    } else {
+        $agentsCsv = ($detectedAgents -join ',')
+        Write-Log INFO "gentle-ai" "configurator_noninteractive" "No console; installing gentle-ai for detected agents" 0 "agents=$agentsCsv"
+        Invoke-Step -Phase "gentle-ai" -Action { & gentle-ai install --scope global --agents $agentsCsv }
+    }
+    Write-Log INFO "gentle-ai" "configurator_done" "gentle-ai install completed"
+
+    # Guarantee pi reads gentle-ai in its MCP list (/mcp): install the first-class
+    # gentle-pi harness + pi-mcp-adapter, then verify the exact target file.
+    if (Test-Cmd pi) {
+        Invoke-Step -Phase "gentle-ai" -Action { pi install npm:gentle-pi }
+        Invoke-Step -Phase "gentle-ai" -Action { pi install npm:pi-mcp-adapter }
+        $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+        $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
+        if (($piSettingsRaw -match 'npm:gentle-pi') -and ($piSettingsRaw -match 'npm:pi-mcp-adapter')) {
+            Write-Log INFO "gentle-ai" "pi_enabled" "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)"
+        } else {
+            Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
+            throw "gentle-pi and/or pi-mcp-adapter not present in pi settings after install"
+        }
+    }
+
+    @"
+  gentle-ai next steps (run yourself, per project):
+    1) Set your API keys
+    2) Run your selected agent
+    3) Try: /sdd-new my-feature   (in pi: /gentle-ai:status, /gentleman:models, /mcp)
+  GGA (per project):  gga init  then  gga install
+"@ | Tee-Object -FilePath $HumanLog -Append | Out-Host
+}
+
 function Mod-Codex {
     Write-Log INFO "codex" "start" "Codex CLI"
     if (Test-Cmd codex) { Write-Log INFO "codex" "already_present" "codex already installed"; return }
@@ -582,6 +654,7 @@ $ModuleFn = @{
     'pi' = ${function:Mod-Pi}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}
+    'gentle-ai' = ${function:Mod-GentleAi}
     'codex' = ${function:Mod-Codex}; 'antigravity' = ${function:Mod-Antigravity}
     'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}
 }
@@ -667,6 +740,25 @@ function Invoke-QualityGates {
             Assert-SkillInstalledForAgents -Phase "quality" -Skill $sk -Agents $targetAgents
         }
         Write-Log INFO "quality" "skills_gate_passed" "All upstream skills verified for every targeted agent"
+    }
+    if ($Selected -contains 'gentle-ai') {
+        # The module requires the gentle-ai CLI specifically; a legacy standalone
+        # gga cannot prove the per-agent/MCP configuration ran.
+        if (-not (Test-Cmd gentle-ai)) {
+            throw "gentle-ai quality gate could not find the gentle-ai CLI on PATH"
+        }
+        if (Test-Cmd pi) {
+            $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+            $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
+            if (-not ($piSettingsRaw -match 'npm:gentle-pi') -or -not ($piSettingsRaw -match 'npm:pi-mcp-adapter')) {
+                throw "gentle-pi and/or pi-mcp-adapter not registered in pi settings ($piSettings)"
+            }
+            Write-Log INFO "quality" "gentle_ai_gate_passed" "gentle-ai verified (CLI present; gentle-pi + pi-mcp-adapter registered in pi)"
+        } else {
+            # No pi on PATH: pi MCP wiring is genuinely not applicable, so do not
+            # claim it was registered.
+            Write-Log INFO "quality" "gentle_ai_gate_passed" "gentle-ai CLI verified; pi not present, so pi MCP wiring was not required"
+        }
     }
     Write-Log INFO "quality" "gates_done" "Quality gates completed for selected modules"
 }

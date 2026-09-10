@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite — Engineering Excellence Edition
-# Version: 3.1.0
+# Version: 3.2.0
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.1.0"
+SCRIPT_VERSION="3.2.0"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -46,6 +46,11 @@ DEBUG="${DEBUG:-0}"
 PI_WORKFLOW_VERSION="${PI_WORKFLOW_VERSION:-}"
 
 DOTENV_REPO="${DOTENV_REPO:-https://github.com/vekexasia/dotenv.git}"
+
+# Gentle AI ecosystem configurator installer (macOS/Linux). `gentle-ai install`
+# is the interactive per-agent/per-IDE selector that also wires each agent's MCP
+# servers, so the tools show up under /mcp.
+GENTLE_AI_INSTALL="${GENTLE_AI_INSTALL:-https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.sh}"
 
 ENGINEERING_EXCELLENCE_SLUG="${ENGINEERING_EXCELLENCE_SLUG:-darkrei08/Engineering-Excellence}"
 ENGINEERING_EXCELLENCE_SKILL="engineering-excellence"
@@ -230,6 +235,25 @@ capture_cmd() {
     log_event "INFO" "${phase}" "capture_success" "Output captured" 0 "${display}"
 }
 
+# Run a `grep` probe that distinguishes "no match" from a real failure.
+# Writes matching lines to ${out_file}. Returns 0 when matches were found,
+# 1 when there were none (grep exit 1), and hard-fails on any operational
+# error (grep exit >1, e.g. an unreadable file) instead of hiding it.
+grep_probe() {
+    local phase="$1" out_file="$2"; shift 2
+    local rc=0
+    grep "$@" >"${out_file}" 2>>"${HUMAN_LOG}" || rc=$?
+    case "${rc}" in
+        0) return 0 ;;
+        1) return 1 ;;
+        *)
+            log_event "ERROR" "${phase}" "grep_probe_failed" \
+                "grep probe failed with an operational error" "${rc}" "args=$*"
+            exit "${rc}"
+            ;;
+    esac
+}
+
 report_version() {
     local output_var="$1" command_name="$2"; shift 2
     if ! command -v "${command_name}" >/dev/null 2>&1; then
@@ -281,7 +305,7 @@ EOF
 # via --all or an explicit --only.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi go dotenv ee skills pi-workflows herdr codex antigravity opencode cockpit)
+MODULE_ORDER=(base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit)
 
 module_desc() {
     case "$1" in
@@ -295,6 +319,7 @@ module_desc() {
         skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
         pi-workflows) printf '%s\n' "pi-extensible-workflows (fix module resolution for pi extensions)" ;;
         herdr) printf '%s\n' "herdr terminal multiplexer" ;;
+        gentle-ai) printf '%s\n' "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" ;;
         codex) printf '%s\n' "OpenAI Codex CLI" ;;
         antigravity) printf '%s\n' "Google Antigravity CLI (agy)" ;;
         opencode) printf '%s\n' "opencode agent CLI (opencode-ai)" ;;
@@ -555,26 +580,36 @@ mod_dotenv() {
     fi
 
     # Idempotent upstream-quirk patches (no-ops once upstream merges the fixes).
-    if grep -RIl --exclude-dir=.git "gthelding/monokai-pro.nvim" "${DOTENV_DIR}" \
-        >"${TMP_DIR}/monokai_hits" 2>/dev/null; then
+    if grep_probe "dotenv" "${TMP_DIR}/monokai_hits" \
+        -RIl --exclude-dir=.git "gthelding/monokai-pro.nvim" "${DOTENV_DIR}"; then
         while IFS= read -r file; do
             run_cmd "dotenv" sed -i 's|gthelding/monokai-pro.nvim|loctvl842/monokai-pro.nvim|g' "${file}"
             log_event "INFO" "dotenv" "reference_patched" "Updated stale monokai-pro reference" 0 "file=${file}"
         done < "${TMP_DIR}/monokai_hits"
     fi
 
-    if grep -RIl --exclude-dir=.git 'sudo npm install -g --prefix /usr/local bun' "${DOTENV_DIR}" \
-        >"${TMP_DIR}/sudo_npm_hits" 2>/dev/null; then
+    if grep_probe "dotenv" "${TMP_DIR}/sudo_npm_hits" \
+        -RIl --exclude-dir=.git 'sudo npm install -g --prefix /usr/local bun' "${DOTENV_DIR}"; then
         while IFS= read -r file; do
             run_cmd "dotenv" sed -i 's|sudo npm install -g --prefix /usr/local bun|sudo "$(command -v npm)" install -g --prefix /usr/local bun|g' "${file}"
             log_event "INFO" "dotenv" "reference_patched" "Patched sudo npm call to absolute path" 0 "file=${file}"
         done < "${TMP_DIR}/sudo_npm_hits"
     fi
 
-    if grep -RIl --exclude-dir=.git -e 'npm install -g --prefix "\$HOME/.local" tree-sitter-cli' "${DOTENV_DIR}" \
-        >"${TMP_DIR}/treesitter_hits" 2>/dev/null; then
+    if grep_probe "dotenv" "${TMP_DIR}/treesitter_hits" \
+        -RIl --exclude-dir=.git -e 'npm install -g --prefix "\$HOME/.local" tree-sitter-cli' "${DOTENV_DIR}"; then
         while IFS= read -r file; do
-            grep -q 'AI_DEV_TS_CLI_PATCH' "${file}" && continue
+            local marker_rc=0
+            grep -q 'AI_DEV_TS_CLI_PATCH' "${file}" 2>>"${HUMAN_LOG}" || marker_rc=$?
+            case "${marker_rc}" in
+                0) continue ;;   # already patched
+                1) ;;            # not patched yet; apply below
+                *)
+                    log_event "ERROR" "dotenv" "marker_probe_failed" \
+                        "grep marker probe failed with an operational error" "${marker_rc}" "file=${file}"
+                    exit "${marker_rc}"
+                    ;;
+            esac
             run_cmd "dotenv" python3 - "${file}" <<'PYPATCH'
 import sys
 path = sys.argv[1]
@@ -840,6 +875,105 @@ mod_herdr() {
     require_command herdr
 }
 
+# --- gentle-ai --------------------------------------------------------------
+# Reinstates the Gentle AI ecosystem configurator. `gentle-ai install` is the
+# per-agent/per-IDE selector (Pi, Claude Code, Cursor, Codex, ...) that also
+# wires each selected agent's MCP servers, so tools appear under /mcp. The
+# configurator is a CORE step: it always runs (interactively with a TTY, or
+# non-interactively over the detected agents in CI/pipes) and a failure fails
+# the module. For pi we additionally guarantee + verify the first-class
+# gentle-pi harness and pi-mcp-adapter. Idempotent: safe to re-run.
+mod_gentle_ai() {
+    section "gentle-ai"
+
+    # Installers drop the CLI into a PATH dir; make sure the usual ones resolve
+    # in this live process so the post-install verification can find it.
+    export PATH="${HOME}/.local/bin:${HOME}/go/bin:${PATH}"
+
+    # The per-agent selector and the pi harness both require the gentle-ai CLI
+    # itself; a legacy standalone `gga` is NOT enough, so install whenever the
+    # gentle-ai CLI is missing even if an old gga is on PATH.
+    if ! command -v gentle-ai >/dev/null 2>&1; then
+        if [[ "${OS_FAMILY}" == "macos" ]]; then
+            run_cmd "gentle-ai" brew tap gentleman-programming/tap
+            run_cmd "gentle-ai" brew install gentle-ai
+        else
+            local installer="${TMP_DIR}/install-gentle-ai.sh"
+            run_cmd "gentle-ai" curl -fsSL "${GENTLE_AI_INSTALL}" -o "${installer}"
+            [[ -s "${installer}" ]] || {
+                log_event "ERROR" "gentle-ai" "installer_missing" "gentle-ai installer is empty" 1 "path=${installer}"
+                return 1
+            }
+            run_cmd "gentle-ai" bash "${installer}"
+        fi
+    fi
+
+    # Verify the CLI is present (a binary, not an npm tree — command -v + --version
+    # is the correct check). Required for both the selector and the pi harness.
+    command -v gentle-ai >/dev/null 2>&1 || {
+        log_event "ERROR" "gentle-ai" "binary_missing" "gentle-ai CLI not found on PATH after install" 1
+        return 1
+    }
+    run_cmd "gentle-ai" gentle-ai --version
+
+    # Detect the agents/IDEs present on this machine (same mapping as mod_ee).
+    local agent
+    local -a detected_agents=()
+    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+        [[ -d "$(agent_config_dir "${agent}")" ]] && detected_agents+=("${agent}")
+    done
+    (( ${#detected_agents[@]} == 0 )) && detected_agents=(pi)
+
+    # Per-agent / per-IDE selection + MCP wiring, owned by gentle-ai. This is a
+    # core step and must actually run: with a real TTY we launch the interactive
+    # selector (run directly — run_cmd would redirect stdout and hide prompts);
+    # otherwise we run it non-interactively over the detected agents so CI/pipes
+    # never hang. A failure fails the module (no silent downgrade).
+    if [[ -t 0 && -t 1 ]]; then
+        log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
+        if ! gentle-ai install --scope global; then
+            log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
+            return 1
+        fi
+    else
+        local agents_csv; agents_csv="$(IFS=,; printf '%s' "${detected_agents[*]}")"
+        log_event "INFO" "gentle-ai" "configurator_noninteractive" \
+            "No TTY; installing gentle-ai for detected agents" 0 "agents=${agents_csv}"
+        run_cmd "gentle-ai" gentle-ai install --scope global --agents "${agents_csv}"
+    fi
+    log_event "INFO" "gentle-ai" "configurator_done" "gentle-ai install completed" 0
+
+    # Guarantee pi reads gentle-ai in its MCP list (/mcp): install the first-class
+    # gentle-pi harness and the pi-mcp-adapter bridge, then verify the exact
+    # target (pi's own settings file), not a walked resolution.
+    if command -v pi >/dev/null 2>&1; then
+        run_cmd "gentle-ai" pi install npm:gentle-pi
+        run_cmd "gentle-ai" pi install npm:pi-mcp-adapter
+        local pi_settings="${PI_AGENT_DIR}/settings.json"
+        if [[ -f "${pi_settings}" ]] \
+            && grep -q '"npm:gentle-pi"' "${pi_settings}" \
+            && grep -q '"npm:pi-mcp-adapter"' "${pi_settings}"; then
+            log_event "INFO" "gentle-ai" "pi_enabled" \
+                "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)" 0
+        else
+            log_event "ERROR" "gentle-ai" "pi_enable_failed" \
+                "gentle-pi and/or pi-mcp-adapter not present in pi settings after install" 1 "expected=${pi_settings}"
+            return 1
+        fi
+    fi
+
+    log_event "INFO" "gentle-ai" "next_steps" "gentle-ai post-install hints" 0
+    cat <<'HINT' | tee -a "${HUMAN_LOG}"
+  gentle-ai next steps (run yourself, per project):
+    1) Set your API keys
+    2) Run your selected agent
+    3) Try: /sdd-new my-feature   (in pi: /gentle-ai:status, /gentleman:models, /mcp)
+  GGA (per project):
+    gga init      # inside each repo
+    gga install
+HINT
+}
+
 # --- codex ------------------------------------------------------------------
 mod_codex() {
     section "Codex CLI"
@@ -1059,6 +1193,33 @@ quality_gates() {
             "All upstream skills verified for every targeted agent" 0
     fi
 
+    if is_selected gentle-ai; then
+        # The module requires the gentle-ai CLI specifically; a legacy standalone
+        # gga cannot prove the per-agent/MCP configuration ran.
+        if ! command -v gentle-ai >/dev/null 2>&1; then
+            log_event "ERROR" "quality" "gentle_ai_missing" \
+                "gentle-ai CLI not found on PATH after install" 1
+            exit 1
+        fi
+        if command -v pi >/dev/null 2>&1; then
+            local gentle_settings="${PI_AGENT_DIR}/settings.json"
+            if [[ ! -f "${gentle_settings}" ]] \
+                || ! grep -q '"npm:gentle-pi"' "${gentle_settings}" \
+                || ! grep -q '"npm:pi-mcp-adapter"' "${gentle_settings}"; then
+                log_event "ERROR" "quality" "gentle_pi_missing" \
+                    "gentle-pi and/or pi-mcp-adapter not registered in pi settings" 1 "expected=${gentle_settings}"
+                exit 1
+            fi
+            log_event "INFO" "quality" "gentle_ai_gate_passed" \
+                "gentle-ai verified (CLI present; gentle-pi + pi-mcp-adapter registered in pi)" 0
+        else
+            # No pi on PATH: pi MCP wiring is genuinely not applicable, so do not
+            # claim it was registered.
+            log_event "INFO" "quality" "gentle_ai_gate_passed" \
+                "gentle-ai CLI verified; pi not present, so pi MCP wiring was not required" 0
+        fi
+    fi
+
     log_event "INFO" "quality" "gates_done" "Quality gates completed for selected modules"
 }
 
@@ -1123,7 +1284,11 @@ parse_args() {
             IFS=',' read -r -a raw <<< "${only_csv}"
             local r
             for r in "${raw[@]}"; do
-                r="$(printf '%s' "${r}" | tr -d '[:space:]')"
+                # Trim only surrounding whitespace (match PowerShell .Trim());
+                # internal whitespace makes the token invalid instead of being
+                # silently collapsed (e.g. "co dex" must not become "codex").
+                r="${r#"${r%%[![:space:]]*}"}"
+                r="${r%"${r##*[![:space:]]}"}"
                 [[ -z "${r}" ]] && continue
                 module_desc "${r}" >/dev/null || { printf 'Unknown module: %s\n' "${r}" >&2; exit 2; }
                 requested+=("${r}")

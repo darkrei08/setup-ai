@@ -39,6 +39,7 @@ const MODULES = [
   { name: "skills",       core: true,  desc: "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" },
   { name: "pi-workflows", core: true,  desc: "pi-extensible-workflows (fix module resolution for pi extensions)" },
   { name: "herdr",        core: true,  desc: "herdr terminal multiplexer" },
+  { name: "gentle-ai",    core: true,  desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
   { name: "codex",        core: true,  desc: "OpenAI Codex CLI" },
   { name: "antigravity",  core: true,  desc: "Google Antigravity CLI (agy)" },
   { name: "opencode",     core: true,  desc: "opencode agent CLI (opencode-ai)" },

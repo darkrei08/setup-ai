@@ -3,7 +3,8 @@
 Cross-OS installer for an AI coding toolchain. One command bootstraps
 [pi](https://pi.dev), [Codex](https://github.com/openai/codex),
 [Antigravity](https://antigravity.google), [opencode](https://opencode.ai),
-[herdr](https://herdr.dev), and the
+[herdr](https://herdr.dev),
+[gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), and the
 [Engineering Excellence](https://github.com/darkrei08/Engineering-Excellence)
 skill — each via its **official, current** method for your OS.
 
@@ -46,6 +47,7 @@ For a one-time installer, `npx` is ideal — nothing is left behind.
 | Codex | `codex` | `brew install --cask codex` | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` |
 | pi | `pi` | `curl -fsSL https://pi.dev/install.sh \| sh` | same | `irm https://pi.dev/install.ps1 \| iex` |
 | herdr | `herdr` | `brew install herdr` | `curl -fsSL https://herdr.dev/install.sh \| sh` | `irm https://herdr.dev/install.ps1 \| iex` |
+| gentle-ai | `gentle-ai` / `gga` | `brew install gentleman-programming/tap/gentle-ai` | `curl -fsSL https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.sh \| bash` | `irm https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.ps1 \| iex` |
 | Go | `go` | `brew install go` | distro pkg | `winget install -e --id GoLang.Go` |
 | opencode | `opencode` | `brew install anomalyco/tap/opencode` | `curl -fsSL https://opencode.ai/install \| bash` | `npm i -g opencode-ai` |
 | cockpit-tools *(opt-in GUI)* | app | `brew install --cask cockpit-tools` | `.deb`/`.rpm`/`.AppImage` | `.msi` |
@@ -57,7 +59,7 @@ Run `--list` to see them. Core modules install by default; optional ones
 (GUI apps) only via `--all` or an explicit `--only`.
 
 ```
-base node bun pi go dotenv ee skills pi-workflows herdr codex antigravity opencode [cockpit]
+base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode [cockpit]
 ```
 
 - **dotenv** is Linux-only (it runs vekexasia/dotenv's apt/pacman `setup_env.sh`); on Windows, explicit selection or `-All` logs and skips it.
@@ -69,6 +71,14 @@ base node bun pi go dotenv ee skills pi-workflows herdr codex antigravity openco
   (mattpocock/skills); `typescript-advanced` (pedronauck/skills); `show-me`
   (humanlayer/skills) — for every detected agent. `skills add --copy` is
   idempotent, so it's safe alongside the Linux `dotenv` run.
+- **gentle-ai** installs the gentle-ai / `gga` ecosystem configurator, then runs
+  `gentle-ai install` — its own **interactive per-agent/per-IDE selector** (Pi,
+  Claude Code, Cursor, Codex, ...) that also wires each selected agent's **MCP**
+  servers, so the tools show up under `/mcp`. For pi it additionally installs the
+  first-class `gentle-pi` harness and `pi-mcp-adapter`, so pi reads gentle-ai in
+  its own MCP list. The interactive selector runs only with a real TTY;
+  non-interactive/CI runs log the exact `gentle-ai install` command instead of
+  hanging. Idempotent: safe to re-run.
 
 ## pi workflows (pi-extensible-workflows)
 
