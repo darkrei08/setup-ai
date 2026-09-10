@@ -3,10 +3,10 @@
 // AI Dev Suite — cross-OS launcher
 //
 // Detects the OS and runs the right installer script:
-//   win32            -> setup-ai.ps1  (via pwsh, falling back to powershell)
+//   win32            -> setup-ai.ps1  (via PowerShell 7.3+)
 //   darwin / linux   -> setup-ai.sh   (via bash)
 //
-// With no selection flag on an interactive terminal it shows a gentle-ai-style
+// With no selection flag on an interactive terminal it shows an arrow-key
 // arrow-key multi-select menu, then passes the chosen modules to the platform
 // script as --only. Zero runtime dependencies.
 //
@@ -29,21 +29,20 @@ const PKG_ROOT = join(__dirname, "..");
 // Canonical module list (mirrors the registries in setup-ai.sh / setup-ai.ps1).
 // core:false => optional (unchecked by default in the menu).
 const MODULES = [
-  { name: "base",         core: true,  desc: "System dev tools (git, gh, python, neovim, ...)" },
-  { name: "node",         core: true,  desc: "Node.js + npm@latest" },
+  { name: "base",         core: true,  desc: "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)" },
+  { name: "node",         core: true,  desc: "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" },
   { name: "bun",          core: true,  desc: "Bun runtime" },
   { name: "pi",           core: true,  desc: "pi.dev coding agent CLI" },
   { name: "go",           core: true,  desc: "Go toolchain" },
-  { name: "dotenv",       core: true,  desc: "vekexasia/dotenv dotfiles (Linux only)" },
-  { name: "ee",           core: true,  desc: "Engineering Excellence skill (all agents)" },
-  { name: "pi-workflows", core: true,  desc: "pi-extensible-workflows resolution fix" },
+  { name: "dotenv",       core: true,  desc: "vekexasia/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" },
+  { name: "ee",           core: true,  desc: "Engineering Excellence skill (npx skills add, all detected agents)" },
+  { name: "skills",       core: true,  desc: "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" },
+  { name: "pi-workflows", core: true,  desc: "pi-extensible-workflows (fix module resolution for pi extensions)" },
   { name: "herdr",        core: true,  desc: "herdr terminal multiplexer" },
-  { name: "gentle-ai",    core: true,  desc: "gentle-ai / gga + gentle-pi package" },
-  { name: "engram",       core: true,  desc: "Engram persistent memory for pi" },
   { name: "codex",        core: true,  desc: "OpenAI Codex CLI" },
   { name: "antigravity",  core: true,  desc: "Google Antigravity CLI (agy)" },
-  { name: "opencode",     core: true,  desc: "opencode agent CLI" },
-  { name: "cockpit",      core: false, desc: "cockpit-tools desktop GUI (optional)" },
+  { name: "opencode",     core: true,  desc: "opencode agent CLI (opencode-ai)" },
+  { name: "cockpit",      core: false, desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
 ];
 
 // dotenv is Linux-only; drop it from the Windows menu.
@@ -54,7 +53,11 @@ const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
 const getVal = (f) => {
   const i = argv.indexOf(f);
-  if (i >= 0 && argv[i + 1]) return argv[i + 1];
+  if (i >= 0) {
+    const value = argv[i + 1];
+    if (value && !value.startsWith("-")) return value;
+    return null;
+  }
   const eq = argv.find((a) => a.startsWith(f + "="));
   return eq ? eq.split("=").slice(1).join("=") : null;
 };
@@ -74,16 +77,21 @@ function runScript(passArgs) {
   const child = spawn(cmd, cmdArgs, { stdio: "inherit" });
   child.on("error", (err) => {
     if (isWin && cmd === "pwsh") {
-      // Fall back to Windows PowerShell 5.
-      const ps1 = join(PKG_ROOT, "setup-ai.ps1");
-      const fb = spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ps1, ...passArgs], { stdio: "inherit" });
-      fb.on("exit", (c) => process.exit(c ?? 0));
-      return;
+      console.error("PowerShell 7.3+ is required to run setup-ai.ps1. Install PowerShell 7.3 or newer and retry.");
+    } else {
+      console.error(`Failed to launch installer: ${err.message}`);
     }
-    console.error(`Failed to launch installer: ${err.message}`);
     process.exit(1);
   });
-  child.on("exit", (code) => process.exit(code ?? 0));
+  child.on("exit", (code, signal) => {
+    // A signal-terminated child reports code === null; that is a failure, not
+    // success, so never collapse it to 0.
+    if (code === null) {
+      console.error(`Installer terminated by signal ${signal ?? "unknown"}.`);
+      process.exit(1);
+    }
+    process.exit(code);
+  });
 }
 
 // Translate a chosen module list into the platform script's flag.
@@ -104,7 +112,7 @@ function toScriptArgs(mode, csv) {
   return [];
 }
 
-// ---- interactive multi-select (gentle-ai style) ---------------------------
+// ---- interactive multi-select ---------------------------------------------
 function interactiveMenu() {
   return new Promise((resolve, reject) => {
     const items = menuModules.map((m) => ({ ...m, checked: m.core }));
@@ -138,10 +146,17 @@ function interactiveMenu() {
     render(true);
 
     const cleanup = () => {
-      try { stdin.setRawMode(false); } catch { /* ignore */ }
+      let cleanupError = null;
+      try {
+        stdin.setRawMode(false);
+      } catch (err) {
+        cleanupError = err instanceof Error ? err : new Error(String(err));
+        console.error(`Could not restore terminal mode: ${cleanupError.message}`);
+      }
       stdin.pause();
       stdin.removeListener("data", onData);
       stdin.removeListener("end", onEnd);
+      return cleanupError;
     };
 
     // If stdin closes before a choice (e.g. npx consumed it), fall back instead
@@ -187,8 +202,16 @@ async function main() {
   if (has("--list")) return runScript(toScriptArgs("list"));
   if (has("--all")) return runScript(toScriptArgs("all"));
 
-  const only = getVal("--only");
-  if (only) return runScript(toScriptArgs("only", only));
+  const hasOnly = argv.some((arg) => arg === "--only" || arg.startsWith("--only="));
+  if (hasOnly) {
+    const only = getVal("--only");
+    if (!only || !only.trim()) {
+      console.error("--only requires a non-empty comma-separated module list.");
+      process.exitCode = 2;
+      return;
+    }
+    return runScript(toScriptArgs("only", only));
+  }
 
   if (has("--yes") || has("-y")) return runScript(toScriptArgs("yes"));
 

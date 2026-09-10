@@ -2,12 +2,12 @@
 
 # ==============================================================================
 # AI Dev Suite — Engineering Excellence Edition
-# Version: 3.0.5
+# Version: 3.1.0
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
 # bin/setup-ai.mjs dispatches to the right script per OS and offers an
-# interactive, gentle-ai-style module menu.
+# interactive arrow-key module menu.
 #
 # Design:
 #   - modular: every tool is its own mod_* function, driven by an ordered
@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.0.5"
+SCRIPT_VERSION="3.1.0"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -47,19 +47,28 @@ PI_WORKFLOW_VERSION="${PI_WORKFLOW_VERSION:-}"
 
 DOTENV_REPO="${DOTENV_REPO:-https://github.com/vekexasia/dotenv.git}"
 
-ENGINEERING_EXCELLENCE_SLUG="${ENGINEERING_EXCELLENCE_SLUG:-micio86dev/Engineering-Excellence}"
+ENGINEERING_EXCELLENCE_SLUG="${ENGINEERING_EXCELLENCE_SLUG:-darkrei08/Engineering-Excellence}"
 ENGINEERING_EXCELLENCE_SKILL="engineering-excellence"
+
+# Upstream agent-skill stack mirrored from vekexasia/dotenv setup_env.sh so the
+# same skills land on every OS (dotenv itself is Linux-only). Each entry is
+# "<source> <skill> [<skill>...]" installed via `npx skills add`.
+UPSTREAM_SKILL_SOURCES=(
+    "herdrdev/herdr herdr"
+    "mattpocock/skills triage grill-me grilling wayfinder domain-modeling prototype research"
+    "https://github.com/pedronauck/skills typescript-advanced"
+    "humanlayer/skills show-me"
+)
+UPSTREAM_SKILL_NAMES=(herdr triage grill-me grilling wayfinder domain-modeling prototype research typescript-advanced show-me)
 
 PI_AGENT_DIR="${HOME}/.pi/agent"
 PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
 PI_NPM_DIR="${PI_AGENT_DIR}/npm"
-ENGINEERING_EXCELLENCE_DIR="${PI_AGENT_DIR}/skills/${ENGINEERING_EXCELLENCE_SKILL}"
 
 DOTENV_DIR="${HOME}/git/personale/dotenv"
 DOTENV_EXT_DIR="${DOTENV_DIR}/pi/agent/extensions/pi-ext-workflows"
 
 COCKPIT_REPO="jlcodes99/cockpit-tools"
-GENTLE_AI_INSTALL="https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.sh"
 
 # ------------------------------------------------------------------------------
 # Cleanup
@@ -221,6 +230,19 @@ capture_cmd() {
     log_event "INFO" "${phase}" "capture_success" "Output captured" 0 "${display}"
 }
 
+report_version() {
+    local output_var="$1" command_name="$2"; shift 2
+    if ! command -v "${command_name}" >/dev/null 2>&1; then
+        printf -v "${output_var}" '%s' "n/a"
+        return 0
+    fi
+    if ! capture_cmd "${output_var}" "report" "${command_name}" "$@"; then
+        printf -v "${output_var}" '%s' "n/a"
+        log_event "WARN" "report" "version_unavailable" \
+            "Could not read command version" 0 "command=${command_name}"
+    fi
+}
+
 write_report() {
     local status="$1" rc="$2" line="${3:-n/a}" file="${4:-n/a}"
     local function_name="${5:-n/a}" command="${6:-n/a}"
@@ -250,44 +272,6 @@ write_report() {
 EOF
 }
 
-# ------------------------------------------------------------------------------
-# resolve_workflow_version — find the package.json that really owns
-# pi-extensible-workflows by walking up from where Node resolved its entry.
-# ------------------------------------------------------------------------------
-
-resolve_workflow_version() {
-    local search_root="$1"
-    node -e '
-        const path = require("path");
-        const fs = require("fs");
-        const searchRoot = process.argv[1];
-        let entry;
-        try {
-            entry = require.resolve("pi-extensible-workflows", { paths: [searchRoot] });
-        } catch (err) {
-            console.error(`pi-extensible-workflows is not resolvable from ${searchRoot}: ${err.message}`);
-            process.exit(1);
-        }
-        let dir = path.dirname(entry);
-        for (;;) {
-            const candidate = path.join(dir, "package.json");
-            if (fs.existsSync(candidate)) {
-                const pkg = JSON.parse(fs.readFileSync(candidate, "utf8"));
-                if (pkg.name === "pi-extensible-workflows") {
-                    process.stderr.write(`resolved_package_json=${candidate}\n`);
-                    console.log(pkg.version);
-                    process.exit(0);
-                }
-            }
-            const parent = path.dirname(dir);
-            if (parent === dir) break;
-            dir = parent;
-        }
-        console.error(`Could not find pi-extensible-workflows package.json by walking up from ${entry}`);
-        process.exit(1);
-    ' "${search_root}"
-}
-
 # ==============================================================================
 # Module registry
 #
@@ -297,30 +281,31 @@ resolve_workflow_version() {
 # via --all or an explicit --only.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi go dotenv ee pi-workflows herdr gentle-ai engram codex antigravity opencode cockpit)
+MODULE_ORDER=(base node bun pi go dotenv ee skills pi-workflows herdr codex antigravity opencode cockpit)
 
-declare -A MODULE_DESC=(
-    [base]="System packages (build tools, git, gh, python, neovim, jq, imagemagick)"
-    [node]="Node.js via nvm (v22) + npm@latest + sudo-visible symlinks"
-    [bun]="Bun runtime"
-    [pi]="pi.dev coding agent CLI"
-    [go]="Go toolchain"
-    [dotenv]="vekexasia/dotenv dotfiles (Linux only: clones + runs setup_env.sh)"
-    [ee]="Engineering Excellence skill (npx skills add, all detected agents)"
-    [pi-workflows]="pi-extensible-workflows (fix module resolution for pi extensions)"
-    [herdr]="herdr terminal multiplexer"
-    [gentle-ai]="gentle-ai / gga (Gentleman's spec-driven agent runner) + gentle-pi package"
-    [engram]="Engram persistent memory for pi (gentle-engram: /remember /recall /memory /forget)"
-    [codex]="OpenAI Codex CLI"
-    [antigravity]="Google Antigravity CLI (agy)"
-    [opencode]="opencode agent CLI (opencode-ai)"
-    [cockpit]="cockpit-tools desktop GUI app (optional, CC BY-NC-SA)"
-)
+module_desc() {
+    case "$1" in
+        base) printf '%s\n' "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)" ;;
+        node) printf '%s\n' "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" ;;
+        bun) printf '%s\n' "Bun runtime" ;;
+        pi) printf '%s\n' "pi.dev coding agent CLI" ;;
+        go) printf '%s\n' "Go toolchain" ;;
+        dotenv) printf '%s\n' "vekexasia/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" ;;
+        ee) printf '%s\n' "Engineering Excellence skill (npx skills add, all detected agents)" ;;
+        skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
+        pi-workflows) printf '%s\n' "pi-extensible-workflows (fix module resolution for pi extensions)" ;;
+        herdr) printf '%s\n' "herdr terminal multiplexer" ;;
+        codex) printf '%s\n' "OpenAI Codex CLI" ;;
+        antigravity) printf '%s\n' "Google Antigravity CLI (agy)" ;;
+        opencode) printf '%s\n' "opencode agent CLI (opencode-ai)" ;;
+        cockpit) printf '%s\n' "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" ;;
+        *) return 1 ;;
+    esac
+}
 
-# Optional modules: excluded from the default/core run.
-declare -A MODULE_OPTIONAL=(
-    [cockpit]=1
-)
+module_is_optional() {
+    [[ "$1" == "cockpit" ]]
+}
 
 # ------------------------------------------------------------------------------
 # OS / package-manager detection
@@ -444,7 +429,7 @@ mod_node() {
     # nvm refuses to operate when npm_config_prefix is set (e.g. to /usr/local),
     # aborting with "nvm is not compatible with the npm_config_prefix ...".
     # It is only needed by nvm's own shims, so drop it for this process.
-    unset npm_config_prefix NPM_CONFIG_PREFIX 2>/dev/null || true
+    unset npm_config_prefix NPM_CONFIG_PREFIX 2>/dev/null || log_event "WARN" "node" "unset_prefix_failed" "Could not unset npm prefix vars" 0
 
     # shellcheck disable=SC1090
     source "${NVM_DIR}/nvm.sh"
@@ -453,13 +438,7 @@ mod_node() {
     run_cmd "node" nvm alias default 22
     run_cmd "node" nvm use 22
 
-    node - <<'NODE'
-const [major, minor] = process.versions.node.split('.').map(Number);
-if (major < 22 || (major === 22 && minor < 19)) {
-    console.error(`Node.js ${process.versions.node} is too old; pi-extensible-workflows needs >= 22.19.`);
-    process.exit(1);
-}
-NODE
+    assert_node_minimum
 
     # npm@latest (NOT npm@12 — that version does not exist).
     run_cmd "node" npm install -g npm@latest
@@ -474,6 +453,28 @@ NODE
     run_optional "node" sudo ln -sf "${npm_bin}" /usr/local/bin/npm
 }
 
+assert_node_minimum() {
+    require_command node
+
+    local node_version major minor
+    capture_cmd node_version "node" node --version
+    if [[ "${node_version}" =~ ^v([0-9]+)\.([0-9]+) ]]; then
+        major="${BASH_REMATCH[1]}"
+        minor="${BASH_REMATCH[2]}"
+    else
+        log_event "ERROR" "node" "version_invalid" "Could not parse Node.js version" 1 "version=${node_version}"
+        return 1
+    fi
+
+    if (( major < 22 || (major == 22 && minor < 19) )); then
+        log_event "ERROR" "node" "version_unsupported" \
+            "Node.js ${node_version} is too old; pi-extensible-workflows needs >= 22.19" 1
+        return 1
+    fi
+    log_event "INFO" "node" "runtime_validated" "Node.js version satisfies workflow requirement" 0 \
+        "version=${node_version};minimum=22.19"
+}
+
 # --- bun --------------------------------------------------------------------
 mod_bun() {
     section "Bun"
@@ -485,7 +486,12 @@ mod_bun() {
     fi
     export PATH="${BUN_INSTALL}/bin:${PATH}"
     require_command bun
-    log_event "INFO" "bun" "runtime_ready" "Bun runtime validated" 0 "version=$(bun --version)"
+    local bun_version
+    if capture_cmd bun_version "bun" bun --version; then
+        log_event "INFO" "bun" "runtime_ready" "Bun runtime validated" 0 "version=${bun_version}"
+    else
+        return 1
+    fi
 }
 
 # --- pi ---------------------------------------------------------------------
@@ -499,7 +505,10 @@ mod_pi() {
     fi
     export PATH="${HOME}/.pi/bin:${HOME}/.local/bin:${PATH}"
     require_command pi
-    PI_VERSION="$(pi --version 2>/dev/null || true)"
+    if ! PI_VERSION="$(pi --version 2>/dev/null)"; then
+        PI_VERSION="unknown"
+        log_event "WARN" "pi" "version_unavailable" "Could not read pi --version" 0
+    fi
     log_event "INFO" "pi" "cli_ready" "Pi CLI detected" 0 "version=${PI_VERSION}"
     mkdir -p "${PI_AGENT_DIR}" "${PI_EXTENSIONS_DIR}" "${PI_NPM_DIR}" "${PI_AGENT_DIR}/skills"
 }
@@ -508,8 +517,12 @@ mod_pi() {
 mod_go() {
     section "Go toolchain"
     if command -v go >/dev/null 2>&1; then
-        log_event "INFO" "go" "already_present" "Go already installed" 0 "version=$(go version)"
-        return
+        local go_version
+        if capture_cmd go_version "go" go version; then
+            log_event "INFO" "go" "already_present" "Go already installed" 0 "version=${go_version}"
+            return
+        fi
+        return 1
     fi
     if [[ "${OS_FAMILY}" == "macos" ]]; then
         run_cmd "go" brew install go
@@ -545,7 +558,7 @@ mod_dotenv() {
     if grep -RIl --exclude-dir=.git "gthelding/monokai-pro.nvim" "${DOTENV_DIR}" \
         >"${TMP_DIR}/monokai_hits" 2>/dev/null; then
         while IFS= read -r file; do
-            sed -i 's|gthelding/monokai-pro.nvim|loctvl842/monokai-pro.nvim|g' "${file}"
+            run_cmd "dotenv" sed -i 's|gthelding/monokai-pro.nvim|loctvl842/monokai-pro.nvim|g' "${file}"
             log_event "INFO" "dotenv" "reference_patched" "Updated stale monokai-pro reference" 0 "file=${file}"
         done < "${TMP_DIR}/monokai_hits"
     fi
@@ -553,7 +566,7 @@ mod_dotenv() {
     if grep -RIl --exclude-dir=.git 'sudo npm install -g --prefix /usr/local bun' "${DOTENV_DIR}" \
         >"${TMP_DIR}/sudo_npm_hits" 2>/dev/null; then
         while IFS= read -r file; do
-            sed -i 's|sudo npm install -g --prefix /usr/local bun|sudo "$(command -v npm)" install -g --prefix /usr/local bun|g' "${file}"
+            run_cmd "dotenv" sed -i 's|sudo npm install -g --prefix /usr/local bun|sudo "$(command -v npm)" install -g --prefix /usr/local bun|g' "${file}"
             log_event "INFO" "dotenv" "reference_patched" "Patched sudo npm call to absolute path" 0 "file=${file}"
         done < "${TMP_DIR}/sudo_npm_hits"
     fi
@@ -562,7 +575,7 @@ mod_dotenv() {
         >"${TMP_DIR}/treesitter_hits" 2>/dev/null; then
         while IFS= read -r file; do
             grep -q 'AI_DEV_TS_CLI_PATCH' "${file}" && continue
-            python3 - "${file}" <<'PYPATCH'
+            run_cmd "dotenv" python3 - "${file}" <<'PYPATCH'
 import sys
 path = sys.argv[1]
 with open(path, "r", newline="") as fh:
@@ -591,8 +604,53 @@ PYPATCH
     if [[ -x "${DOTENV_DIR}/setup_env.sh" ]]; then
         run_cmd "dotenv" bash "${DOTENV_DIR}/setup_env.sh"
     else
-        log_event "WARN" "dotenv" "setup_script_missing" "dotenv/setup_env.sh missing or not executable"
+        log_event "ERROR" "dotenv" "setup_script_missing" \
+            "dotenv/setup_env.sh missing or not executable" 1 \
+            "expected=${DOTENV_DIR}/setup_env.sh"
+        return 1
     fi
+}
+
+# --- skill target helpers ----------------------------------------------------
+agent_config_dir() {
+    case "$1" in
+        pi)          printf '%s\n' "${HOME}/.pi" ;;
+        claude-code) printf '%s\n' "${HOME}/.claude" ;;
+        gemini-cli)  printf '%s\n' "${HOME}/.gemini" ;;
+        cursor)      printf '%s\n' "${HOME}/.cursor" ;;
+        antigravity) printf '%s\n' "${HOME}/.antigravity" ;;
+        codex)       printf '%s\n' "${HOME}/.codex" ;;
+        opencode)    printf '%s\n' "${HOME}/.config/opencode" ;;
+        *) return 1 ;;
+    esac
+}
+
+agent_skill_root() {
+    case "$1" in
+        pi)          printf '%s\n' "${PI_AGENT_DIR}/skills" ;;
+        claude-code) printf '%s\n' "${HOME}/.claude/skills" ;;
+        gemini-cli)  printf '%s\n' "${HOME}/.gemini/skills" ;;
+        cursor)      printf '%s\n' "${HOME}/.cursor/skills" ;;
+        antigravity) printf '%s\n' "${HOME}/.antigravity/skills" ;;
+        codex)       printf '%s\n' "${HOME}/.codex/skills" ;;
+        opencode)    printf '%s\n' "${HOME}/.config/opencode/skills" ;;
+        *) return 1 ;;
+    esac
+}
+
+verify_skill_for_agents() {
+    local phase="$1" skill="$2"; shift 2
+    local agent root
+    for agent in "$@"; do
+        root="$(agent_skill_root "${agent}")"
+        if [[ ! -f "${root}/${skill}/SKILL.md" ]]; then
+            log_event "ERROR" "${phase}" "skill_missing" \
+                "Skill SKILL.md missing for targeted agent" 1 \
+                "agent=${agent};skill=${skill};expected=${root}/${skill}/SKILL.md"
+            return 1
+        fi
+    done
+    return 0
 }
 
 # --- engineering-excellence -------------------------------------------------
@@ -604,41 +662,72 @@ mod_ee() {
     # (replaces the old git-clone-and-move). Agents are detected by their config dir.
     # Keys are the `skills` CLI agent names (claude-code, gemini-cli, ...), which
     # differ from the config-dir basename; values are the dir we detect them by.
-    local agent dir
-    local -A agent_dir=(
-        [pi]="${HOME}/.pi"
-        [claude-code]="${HOME}/.claude"
-        [gemini-cli]="${HOME}/.gemini"
-        [cursor]="${HOME}/.cursor"
-        [antigravity]="${HOME}/.antigravity"
-        [codex]="${HOME}/.codex"
-        [opencode]="${HOME}/.config/opencode"
-    )
+    local agent
     local installed_any=0
+    local -a target_agents=()
     for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
-        dir="${agent_dir[$agent]}"
-        [[ -d "${dir}" ]] || continue
-        run_optional "engineering-excellence" \
+        [[ -d "$(agent_config_dir "${agent}")" ]] || continue
+        run_cmd "engineering-excellence" \
             npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
             --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent "${agent}" --copy --yes
+        target_agents+=("${agent}")
         installed_any=1
     done
 
     if (( installed_any == 0 )); then
         # No agent detected yet — install at least for pi (created by mod_pi).
-        run_optional "engineering-excellence" \
+        run_cmd "engineering-excellence" \
             npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
             --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent pi --copy --yes
+        target_agents=(pi)
     fi
 
-    if [[ -f "${ENGINEERING_EXCELLENCE_DIR}/SKILL.md" ]]; then
-        log_event "INFO" "engineering-excellence" "skill_installed" "EE skill present for pi" 0 \
-            "path=${ENGINEERING_EXCELLENCE_DIR}"
-    else
-        log_event "WARN" "engineering-excellence" "skill_path_unverified" \
-            "EE SKILL.md not found at pi path; check other agents' skill dirs" 0 \
-            "expected=${ENGINEERING_EXCELLENCE_DIR}"
-    fi
+    verify_skill_for_agents "engineering-excellence" "${ENGINEERING_EXCELLENCE_SKILL}" "${target_agents[@]}"
+    log_event "INFO" "engineering-excellence" "skills_verified" \
+        "Engineering Excellence skill verified for every targeted agent" 0 \
+        "agents=$(IFS=,; printf '%s' "${target_agents[*]}")"
+}
+
+# --- upstream agent skills --------------------------------------------------
+# Installs vekexasia/dotenv's skill stack on every OS via `npx skills add`.
+# On Linux the dotenv module may already install these; skills add --copy is
+# idempotent, so a re-run is safe.
+mod_skills() {
+    section "Agent skills (upstream stack)"
+    require_command npx
+
+    # Agent keys are the `skills` CLI names (claude-code, gemini-cli, ...),
+    # detected by their config dir — same mapping as mod_ee.
+    local agent
+    local -a agents=()
+    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+        [[ -d "$(agent_config_dir "${agent}")" ]] && agents+=("${agent}")
+    done
+    # pi is created by mod_pi; guarantee at least pi so the stack always lands.
+    (( ${#agents[@]} == 0 )) && agents=(pi)
+
+    local source_spec source skill_csv
+    local -a skill_list
+    for source_spec in "${UPSTREAM_SKILL_SOURCES[@]}"; do
+        source="${source_spec%% *}"
+        skill_csv="${source_spec#* }"
+        # The script keeps global IFS at newline/tab for safe line reads;
+        # explicitly restore spaces for this space-separated skill list.
+        IFS=' ' read -r -a skill_list <<< "${skill_csv}"
+        for agent in "${agents[@]}"; do
+            run_cmd "skills" \
+                npx --yes skills@latest add "${source}" \
+                --skill "${skill_list[@]}" --global --agent "${agent}" --copy --yes
+        done
+    done
+
+    local sk
+    for sk in "${UPSTREAM_SKILL_NAMES[@]}"; do
+        verify_skill_for_agents "skills" "${sk}" "${agents[@]}"
+    done
+    log_event "INFO" "skills" "skills_verified" \
+        "Upstream skills verified for every targeted agent" 0 \
+        "agents=$(IFS=,; printf '%s' "${agents[*]}")"
 }
 
 # --- pi-extensible-workflows ------------------------------------------------
@@ -646,6 +735,7 @@ mod_pi_workflows() {
     section "pi-extensible-workflows"
     require_command pi
     require_command node
+    assert_node_minimum
 
     if [[ -z "${PI_WORKFLOW_VERSION}" ]]; then
         capture_cmd PI_WORKFLOW_VERSION "pi-workflows" npm view pi-extensible-workflows version
@@ -661,16 +751,33 @@ mod_pi_workflows() {
     mkdir -p "${PI_EXTENSIONS_DIR}"
     pushd "${PI_EXTENSIONS_DIR}" >/dev/null
     printf '%s\n' 'ignore-scripts=false' > .npmrc
+    # Mark this directory as an npm project root so `npm install` lands HERE and
+    # cannot walk up the tree into an ancestor project. This matters when
+    # ~/.pi/agent is symlinked into another repo (e.g. the dotenv dotfiles):
+    # without a local package.json, npm would install into that repo's
+    # node_modules and verification would then pick up a stale, shadowing copy.
+    if [[ ! -f package.json ]]; then
+        printf '%s\n' '{"name":"pi-extensions","private":true}' > package.json
+    fi
     run_cmd "pi-workflows-node" npm install --save-exact --no-audit --no-fund \
         "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
     popd >/dev/null
 
-    local resolved
-    resolved="$(node -e 'console.log(require.resolve("pi-extensible-workflows",{paths:[process.argv[1]]}))' "${PI_EXTENSIONS_DIR}")"
-    log_event "INFO" "pi-workflows-node" "module_resolved" "Resolvable from pi extensions dir" 0 "resolved=${resolved}"
+    # Verify the version that actually landed in THIS directory by reading its
+    # local package.json directly. Do NOT use require.resolve here: it ascends
+    # the directory tree and can resolve a shadowing copy in an ancestor
+    # node_modules, producing a false version_mismatch.
+    local local_pkg="${PI_EXTENSIONS_DIR}/node_modules/pi-extensible-workflows/package.json"
+    if [[ ! -f "${local_pkg}" ]]; then
+        log_event "ERROR" "pi-workflows-node" "install_missing" "pi-extensible-workflows not installed in extensions dir" 1 \
+            "expected_path=${local_pkg}"
+        exit 1
+    fi
+    log_event "INFO" "pi-workflows-node" "module_resolved" "Installed in pi extensions dir" 0 "resolved=${local_pkg}"
 
     local installed
-    installed="$(resolve_workflow_version "${PI_EXTENSIONS_DIR}")"
+    capture_cmd installed "pi-workflows-node" node -e \
+        'console.log(require(process.argv[1]).version)' "${local_pkg}"
     if [[ "${installed}" != "${PI_WORKFLOW_VERSION}" ]]; then
         log_event "ERROR" "pi-workflows-node" "version_mismatch" "Installed version mismatch" 1 \
             "expected=${PI_WORKFLOW_VERSION};actual=${installed}"
@@ -680,9 +787,31 @@ mod_pi_workflows() {
     if [[ -d "${DOTENV_EXT_DIR}" ]]; then
         pushd "${DOTENV_EXT_DIR}" >/dev/null
         printf '%s\n' 'ignore-scripts=false' > .npmrc
+        if [[ ! -f package.json ]]; then
+            printf '%s\n' '{"name":"pi-ext-workflows","private":true}' > package.json
+        fi
         run_cmd "dotenv-workflows" npm install --save-exact --no-audit --no-fund \
             "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
         popd >/dev/null
+
+        local dotenv_workflow_pkg="${DOTENV_EXT_DIR}/node_modules/pi-extensible-workflows/package.json"
+        if [[ ! -f "${dotenv_workflow_pkg}" ]]; then
+            log_event "ERROR" "dotenv-workflows" "install_missing" \
+                "pi-extensible-workflows not installed in dotenv extensions dir" 1 \
+                "expected_path=${dotenv_workflow_pkg}"
+            exit 1
+        fi
+        local dotenv_installed
+        capture_cmd dotenv_installed "dotenv-workflows" node -e \
+            'console.log(require(process.argv[1]).version)' "${dotenv_workflow_pkg}"
+        if [[ "${dotenv_installed}" != "${PI_WORKFLOW_VERSION}" ]]; then
+            log_event "ERROR" "dotenv-workflows" "version_mismatch" \
+                "Installed dotenv workflow version mismatch" 1 \
+                "expected=${PI_WORKFLOW_VERSION};actual=${dotenv_installed}"
+            exit 1
+        fi
+        log_event "INFO" "dotenv-workflows" "module_verified" \
+            "Verified installed dotenv workflow package" 0 "path=${dotenv_workflow_pkg}"
     fi
 }
 
@@ -690,90 +819,25 @@ mod_pi_workflows() {
 mod_herdr() {
     section "herdr"
     if command -v herdr >/dev/null 2>&1; then
-        log_event "INFO" "herdr" "already_present" "herdr already installed" 0 "version=$(herdr --version 2>/dev/null || true)"
-        return
+        local herdr_version
+        if capture_cmd herdr_version "herdr" herdr --version; then
+            log_event "INFO" "herdr" "already_present" "herdr already installed" 0 "version=${herdr_version}"
+            return
+        fi
+        return 1
     fi
     if [[ "${OS_FAMILY}" == "macos" ]]; then
-        run_optional "herdr" brew install herdr
+        run_cmd "herdr" brew install herdr
     else
         local installer="${TMP_DIR}/install-herdr.sh"
-        run_optional "herdr" curl -fsSL https://herdr.dev/install.sh -o "${installer}"
-        [[ -s "${installer}" ]] && run_optional "herdr" sh "${installer}"
+        run_cmd "herdr" curl -fsSL https://herdr.dev/install.sh -o "${installer}"
+        [[ -s "${installer}" ]] || {
+            log_event "ERROR" "herdr" "installer_missing" "herdr installer is empty" 1 "path=${installer}"
+            return 1
+        }
+        run_cmd "herdr" sh "${installer}"
     fi
-}
-
-# --- gentle-ai --------------------------------------------------------------
-mod_gentle_ai() {
-    section "gentle-ai"
-    if ! command -v gentle-ai >/dev/null 2>&1 && ! command -v gga >/dev/null 2>&1; then
-        if [[ "${OS_FAMILY}" == "macos" ]]; then
-            run_optional "gentle-ai" brew tap gentleman-programming/tap
-            run_optional "gentle-ai" brew install gentle-ai
-        else
-            local installer="${TMP_DIR}/install-gentle-ai.sh"
-            run_optional "gentle-ai" curl -fsSL "${GENTLE_AI_INSTALL}" -o "${installer}"
-            [[ -s "${installer}" ]] && run_optional "gentle-ai" bash "${installer}"
-        fi
-    fi
-
-    # Enable gentle-ai INSIDE pi as packages (the standalone gga binary alone
-    # does not register anything in pi — this is why it wasn't visible there).
-    if command -v pi >/dev/null 2>&1; then
-        run_optional "gentle-ai" pi install npm:gentle-pi
-        run_optional "gentle-ai" pi install npm:pi-mcp-adapter
-        log_event "INFO" "gentle-ai" "pi_enabled" "gentle-pi registered in pi (verify: /gentle-ai:status)" 0
-    fi
-
-    # Surface gentle-ai's own next-steps (do NOT run — they are per-repo).
-    log_event "INFO" "gentle-ai" "next_steps" "gentle-ai post-install hints" 0
-    cat <<'HINT' | tee -a "${HUMAN_LOG}"
-  gentle-ai next steps (run yourself, per project):
-    1) Set your API keys
-    2) Run your selected agent
-    3) Try: /sdd-new my-feature   (in pi: /gentle-ai:status, /gentleman:models)
-  GGA (per project):
-    gga init      # inside each repo
-    gga install
-HINT
-}
-
-# --- engram (pi persistent memory) ------------------------------------------
-# The gentle-engram pi extension auto-starts `engram serve`, so the Engram Go
-# binary MUST be on PATH first — otherwise the extension loads but silently
-# fails (the "engram doesn't work in pi" symptom). Install binary, then the pi
-# packages, then init, then the user restarts pi.
-mod_engram() {
-    section "Engram memory (pi)"
-
-    # 1. Engram binary (Go).
-    if ! command -v engram >/dev/null 2>&1; then
-        if [[ "${OS_FAMILY}" == "macos" ]]; then
-            run_optional "engram" brew install gentleman-programming/tap/engram
-        fi
-        if ! command -v engram >/dev/null 2>&1 && command -v go >/dev/null 2>&1; then
-            run_optional "engram" go install github.com/Gentleman-Programming/engram/cmd/engram@latest
-        fi
-    fi
-    # go installs into $GOPATH/bin (default ~/go/bin), which may not be on PATH yet.
-    [[ -x "${HOME}/go/bin/engram" ]] && export PATH="${HOME}/go/bin:${PATH}"
-
-    if ! command -v engram >/dev/null 2>&1; then
-        log_event "WARN" "engram" "binary_missing" \
-            "engram binary not found after install; the pi extension needs it on PATH" 1
-    fi
-
-    # 2. pi integration. `pi-engram init` is the single source of truth: it adds
-    #    the pinned gentle-engram to settings.json and wires the Engram MCP server
-    #    in mcp.json. Do NOT also `pi install npm:gentle-engram` — that adds a
-    #    second, unversioned entry and creates a duplicate on every run.
-    if command -v pi >/dev/null 2>&1; then
-        run_optional "engram" pi install npm:pi-mcp-adapter
-        run_optional "engram" npm exec --yes --package gentle-engram@latest -- pi-engram init
-        log_event "INFO" "engram" "enabled" \
-            "Engram enabled — RESTART pi, then verify with mem_current_project / mem_doctor / 'engram tui'" 0
-    else
-        log_event "WARN" "engram" "pi_missing" "pi not found; Engram pi integration skipped"
-    fi
+    require_command herdr
 }
 
 # --- codex ------------------------------------------------------------------
@@ -784,13 +848,18 @@ mod_codex() {
         return
     fi
     if [[ "${OS_FAMILY}" == "macos" ]] && command -v brew >/dev/null 2>&1; then
-        run_optional "codex" brew install --cask codex
+        run_cmd "codex" brew install --cask codex
     fi
     if ! command -v codex >/dev/null 2>&1; then
         local installer="${TMP_DIR}/install-codex.sh"
-        run_optional "codex" curl -fsSL https://chatgpt.com/codex/install.sh -o "${installer}"
-        [[ -s "${installer}" ]] && run_optional "codex" sh "${installer}"
+        run_cmd "codex" curl -fsSL https://chatgpt.com/codex/install.sh -o "${installer}"
+        [[ -s "${installer}" ]] || {
+            log_event "ERROR" "codex" "installer_missing" "codex installer is empty" 1 "path=${installer}"
+            return 1
+        }
+        run_cmd "codex" sh "${installer}"
     fi
+    require_command codex
 }
 
 # --- antigravity ------------------------------------------------------------
@@ -801,8 +870,13 @@ mod_antigravity() {
         return
     fi
     local installer="${TMP_DIR}/install-antigravity.sh"
-    run_optional "antigravity" curl -fsSL https://antigravity.google/cli/install.sh -o "${installer}"
-    [[ -s "${installer}" ]] && run_optional "antigravity" bash "${installer}"
+    run_cmd "antigravity" curl -fsSL https://antigravity.google/cli/install.sh -o "${installer}"
+    [[ -s "${installer}" ]] || {
+        log_event "ERROR" "antigravity" "installer_missing" "Antigravity installer is empty" 1 "path=${installer}"
+        return 1
+    }
+    run_cmd "antigravity" bash "${installer}"
+    require_command agy
 }
 
 # --- opencode ---------------------------------------------------------------
@@ -813,12 +887,17 @@ mod_opencode() {
         return
     fi
     if [[ "${OS_FAMILY}" == "macos" ]]; then
-        run_optional "opencode" brew install anomalyco/tap/opencode
+        run_cmd "opencode" brew install anomalyco/tap/opencode
     else
         local installer="${TMP_DIR}/install-opencode.sh"
-        run_optional "opencode" curl -fsSL https://opencode.ai/install -o "${installer}"
-        [[ -s "${installer}" ]] && run_optional "opencode" bash "${installer}"
+        run_cmd "opencode" curl -fsSL https://opencode.ai/install -o "${installer}"
+        [[ -s "${installer}" ]] || {
+            log_event "ERROR" "opencode" "installer_missing" "opencode installer is empty" 1 "path=${installer}"
+            return 1
+        }
+        run_cmd "opencode" bash "${installer}"
     fi
+    require_command opencode
 
     log_event "INFO" "opencode" "zen_hint" "OpenCode Go / Zen provider hint" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
@@ -864,8 +943,11 @@ mod_cockpit() {
     esac
 
     local url
-    url="$(grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' "${release_json}" \
-        | cut -d '"' -f4 | grep -iE "${asset_pat}" | head -n1 || true)"
+    if ! url="$(grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' "${release_json}" \
+        | cut -d '"' -f4 | grep -iE "${asset_pat}" | sed -n '1p')"; then
+        log_event "WARN" "cockpit" "asset_parse_failed" "Could not parse cockpit-tools release assets"
+        return 0
+    fi
 
     if [[ -z "${url}" ]]; then
         log_event "WARN" "cockpit" "no_matching_asset" \
@@ -875,7 +957,10 @@ mod_cockpit() {
 
     local installer="${TMP_DIR}/cockpit-asset"
     run_optional "cockpit" curl -fsSL "${url}" -o "${installer}"
-    [[ -s "${installer}" ]] || return
+    if [[ ! -s "${installer}" ]]; then
+        log_event "WARN" "cockpit" "download_unavailable" "Could not download the selected cockpit-tools asset"
+        return 0
+    fi
 
     case "${PM}" in
         apt-get) run_optional "cockpit" sudo apt-get install -y "${installer}" ;;
@@ -930,17 +1015,48 @@ quality_gates() {
     run_cmd "quality" bash -n "${BASH_SOURCE[0]}"
 
     is_selected node && { run_cmd "quality" node --version; run_cmd "quality" npm --version; }
-    is_selected bun && run_optional "quality" bun --version
-    is_selected pi && run_optional "quality" pi --no-extensions --version
-
-    if is_selected pi-workflows; then
-        run_cmd "quality" node -e \
-            'const root=process.argv[1]; console.log("RESOLVED="+require.resolve("pi-extensible-workflows",{paths:[root]}))' \
-            "${PI_EXTENSIONS_DIR}"
+    is_selected bun && run_cmd "quality" bun --version
+    if is_selected pi; then
+        require_command pi
+        run_cmd "quality" pi --no-extensions --version
     fi
 
-    if is_selected ee && [[ -f "${ENGINEERING_EXCELLENCE_DIR}/SKILL.md" ]]; then
-        log_event "INFO" "quality" "ee_gate_passed" "Engineering Excellence SKILL.md present"
+    if is_selected node || is_selected pi-workflows; then
+        assert_node_minimum
+    fi
+
+    if is_selected pi-workflows; then
+        local workflow_pkg="${PI_EXTENSIONS_DIR}/node_modules/pi-extensible-workflows/package.json"
+        if [[ ! -f "${workflow_pkg}" ]]; then
+            log_event "ERROR" "quality" "workflow_package_missing" \
+                "pi-extensible-workflows package.json missing from extensions dir" 1 \
+                "expected_path=${workflow_pkg}"
+            exit 1
+        fi
+        run_cmd "quality" node -e \
+            'const fs=require("fs"); const path=process.argv[1]; const pkg=JSON.parse(fs.readFileSync(path,"utf8")); console.log("VERSION="+pkg.version)' \
+            "${workflow_pkg}"
+    fi
+
+    local -a target_agents=()
+    local agent sk
+    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+        [[ -d "$(agent_config_dir "${agent}")" ]] && target_agents+=("${agent}")
+    done
+    (( ${#target_agents[@]} == 0 )) && target_agents=(pi)
+
+    if is_selected ee; then
+        verify_skill_for_agents "quality" "${ENGINEERING_EXCELLENCE_SKILL}" "${target_agents[@]}"
+        log_event "INFO" "quality" "ee_gate_passed" \
+            "Engineering Excellence skill verified for every targeted agent" 0
+    fi
+
+    if is_selected skills; then
+        for sk in "${UPSTREAM_SKILL_NAMES[@]}"; do
+            verify_skill_for_agents "quality" "${sk}" "${target_agents[@]}"
+        done
+        log_event "INFO" "quality" "skills_gate_passed" \
+            "All upstream skills verified for every targeted agent" 0
     fi
 
     log_event "INFO" "quality" "gates_done" "Quality gates completed for selected modules"
@@ -965,8 +1081,8 @@ print_list() {
     printf 'AI Dev Suite %s — modules (core = installed by default):\n\n' "${SCRIPT_VERSION}"
     local m tag
     for m in "${MODULE_ORDER[@]}"; do
-        if [[ -n "${MODULE_OPTIONAL[$m]:-}" ]]; then tag="optional"; else tag="core    "; fi
-        printf '  [%s] %-14s %s\n' "${tag}" "${m}" "${MODULE_DESC[$m]}"
+        if module_is_optional "${m}"; then tag="optional"; else tag="core    "; fi
+        printf '  [%s] %-14s %s\n' "${tag}" "${m}" "$(module_desc "${m}")"
     done
     printf '\nUse: --only <csv> | --all | (default = core)\n'
 }
@@ -978,11 +1094,14 @@ print_help() {
 }
 
 parse_args() {
-    local mode="default" only_csv=""
+    local mode="default" only_csv="" all_requested=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --all)        mode="all"; shift ;;
-            --only)       mode="only"; only_csv="${2:-}"; shift 2 ;;
+            --all)        mode="all"; all_requested=1; shift ;;
+            --only)
+                [[ $# -ge 2 ]] || { printf '%s\n' '--only requires a non-empty comma-separated module list.' >&2; exit 2; }
+                mode="only"; only_csv="$2"; shift 2
+                ;;
             --only=*)     mode="only"; only_csv="${1#*=}"; shift ;;
             --yes|-y)     shift ;;                 # accepted for launcher parity
             --list)       print_list; exit 0 ;;
@@ -991,26 +1110,33 @@ parse_args() {
         esac
     done
 
+    # Match PowerShell: -All wins whenever it is present, regardless of
+    # where it appears relative to --only.
+    (( all_requested == 1 )) && mode="all"
+
     local requested=()
     case "${mode}" in
         all)  requested=("${MODULE_ORDER[@]}") ;;
         only)
-            local IFS_SAVE="${IFS}"; IFS=','
-            # shellcheck disable=SC2206
-            local raw=(${only_csv})
-            IFS="${IFS_SAVE}"
+            # Split on commas without word-splitting or glob expansion.
+            local raw=()
+            IFS=',' read -r -a raw <<< "${only_csv}"
             local r
             for r in "${raw[@]}"; do
                 r="$(printf '%s' "${r}" | tr -d '[:space:]')"
                 [[ -z "${r}" ]] && continue
-                [[ -n "${MODULE_DESC[$r]:-}" ]] || { printf 'Unknown module: %s\n' "${r}" >&2; exit 2; }
+                module_desc "${r}" >/dev/null || { printf 'Unknown module: %s\n' "${r}" >&2; exit 2; }
                 requested+=("${r}")
             done
+            (( ${#requested[@]} > 0 )) || {
+                printf '%s\n' '--only requires a non-empty comma-separated module list.' >&2
+                exit 2
+            }
             ;;
         default)
             local m
             for m in "${MODULE_ORDER[@]}"; do
-                [[ -n "${MODULE_OPTIONAL[$m]:-}" ]] && continue
+                module_is_optional "${m}" && continue
                 requested+=("${m}")
             done
             ;;
@@ -1053,9 +1179,14 @@ parse_args "$@"
 
 section "Preflight"
 require_command bash
-require_command curl
-require_command git
 detect_os
+
+# The base module owns bootstrap tools on a clean machine. For explicit
+# selections that skip base, fail early because later installers need them.
+if ! is_selected base; then
+    require_command curl
+    require_command git
+fi
 
 if [[ "${OS_FAMILY}" == "linux" ]]; then
     require_command sudo
@@ -1073,6 +1204,11 @@ quality_gates
 
 write_report "SUCCESS" 0 "n/a" "n/a" "n/a" "n/a"
 
+report_version REPORT_NODE_VERSION node --version
+report_version REPORT_NPM_VERSION npm --version
+report_version REPORT_BUN_VERSION bun --version
+report_version REPORT_GO_VERSION go version
+
 cat >> "${REPORT_FILE}" <<EOF
 
 ## Installed (selected modules)
@@ -1081,11 +1217,11 @@ ${SELECTED_DISPLAY}
 
 ## Versions
 
-- Node.js: \`$(command -v node >/dev/null 2>&1 && node --version || echo n/a)\`
-- npm: \`$(command -v npm >/dev/null 2>&1 && npm --version || echo n/a)\`
-- Bun: \`$(command -v bun >/dev/null 2>&1 && bun --version || echo n/a)\`
+- Node.js: \`${REPORT_NODE_VERSION}\`
+- npm: \`${REPORT_NPM_VERSION}\`
+- Bun: \`${REPORT_BUN_VERSION}\`
 - Pi: \`${PI_VERSION:-n/a}\`
-- Go: \`$(command -v go >/dev/null 2>&1 && go version || echo n/a)\`
+- Go: \`${REPORT_GO_VERSION}\`
 EOF
 
 log_event "INFO" "bootstrap" "completed" "AI Dev Suite setup completed successfully" 0 \
