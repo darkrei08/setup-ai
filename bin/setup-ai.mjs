@@ -44,6 +44,7 @@ const MODULES = [
   { name: "antigravity",  core: true,  desc: "Google Antigravity CLI (agy)" },
   { name: "opencode",     core: true,  desc: "opencode agent CLI (opencode-ai)" },
   { name: "cockpit",      core: false, desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
+  { name: "rotator",      core: false, desc: "tuxevil-rotator multi-account Gemini/Antigravity gateway (optional, opt-in)" },
 ];
 
 // dotenv is Linux-only; drop it from the Windows menu.

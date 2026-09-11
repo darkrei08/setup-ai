@@ -305,7 +305,7 @@ EOF
 # via --all or an explicit --only.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit)
+MODULE_ORDER=(base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit rotator)
 
 module_desc() {
     case "$1" in
@@ -324,12 +324,13 @@ module_desc() {
         antigravity) printf '%s\n' "Google Antigravity CLI (agy)" ;;
         opencode) printf '%s\n' "opencode agent CLI (opencode-ai)" ;;
         cockpit) printf '%s\n' "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" ;;
+        rotator) printf '%s\n' "tuxevil-rotator multi-account Gemini/Antigravity gateway (optional, opt-in)" ;;
         *) return 1 ;;
     esac
 }
 
 module_is_optional() {
-    [[ "$1" == "cockpit" ]]
+    [[ "$1" == "cockpit" || "$1" == "rotator" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -1126,6 +1127,58 @@ mod_cockpit() {
             log_event "INFO" "cockpit" "appimage_installed" "AppImage placed" 0 "path=${dest}"
             ;;
     esac
+}
+
+# --- rotator (opt-in: tuxevil-rotator multi-account gateway) -----------------
+mod_rotator() {
+    section "tuxevil-rotator gateway"
+    # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
+    local -a candidates=(
+        "${HOME}/.antigravity_cockpit"
+        "${HOME}/.local/share/cockpit-tools"
+        "${HOME}/.config/cockpit-tools"
+        "${HOME}/.wizard-ai/cockpit-tools"
+        "${HOME}/Library/Application Support/cockpit-tools"
+    )
+    # Windows-only locations, appended only when set (mirrors the ps1 behavior).
+    [[ -n "${APPDATA:-}" ]] && candidates+=("${APPDATA}/cockpit-tools")
+    [[ -n "${LOCALAPPDATA:-}" ]] && candidates+=("${LOCALAPPDATA}/cockpit-tools")
+    local dir cockpit_dir=""
+    for dir in "${candidates[@]}"; do
+        if [[ -f "${dir}/accounts.json" || -f "${dir}/account-token.key" ]]; then
+            cockpit_dir="${dir}"; break
+        fi
+    done
+    if [[ -n "${cockpit_dir}" ]]; then
+        log_event "INFO" "rotator" "cockpit_detected" "cockpit-tools data directory detected" 0 "dir=${cockpit_dir}"
+    else
+        log_event "INFO" "rotator" "cockpit_absent" "No cockpit-tools data directory detected; the rotator can still use its own accounts" 0
+    fi
+    # Non-fatal health probe.
+    local gw="http://localhost:51200/v1/models" body count
+    if body="$(curl -fsS -m 5 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then
+        # curl -fsS already proved reachability; the count is informational only
+        # (awk always exits 0, so no operational failure is masked here).
+        count="$(printf '%s' "${body}" | awk '{c+=gsub(/"id"/,"&")} END{print c+0}')"
+        log_event "INFO" "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=${gw};models=${count}"
+    else
+        log_event "INFO" "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; start it with 'tuxevil-rotator start'" 0 "url=${gw}"
+    fi
+    # Install the CLI idempotently. Never runs login/start or writes secrets.
+    if command -v tuxevil-rotator >/dev/null 2>&1; then
+        log_event "INFO" "rotator" "already_present" "tuxevil-rotator already installed" 0
+    else
+        run_cmd "rotator" npm install --global tuxevil-rotator
+        require_command tuxevil-rotator
+    fi
+    cat <<'HINT' | tee -a "${HUMAN_LOG}"
+      tuxevil-rotator installed. To use the multi-account Gemini/Antigravity gateway:
+        tuxevil-rotator login     # add a Google Antigravity account (repeat to add more)
+        tuxevil-rotator import    # or bulk-import accounts from a cockpit-tools JSON
+        tuxevil-rotator start     # start the rotating proxy on http://localhost:51200
+      Pi reaches it through the 'tuxevil-rotator' provider configured in your dotenv.
+      Login/start are never run by setup-ai and no tokens are read or stored.
+HINT
 }
 
 # ==============================================================================
