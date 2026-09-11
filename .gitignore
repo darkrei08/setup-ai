@@ -3,3 +3,5 @@ logs/
 node_modules/
 # Local Pi runtime state
 .atl/
+# Local CodeGraph index artifact
+.codegraph/

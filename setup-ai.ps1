@@ -94,6 +94,19 @@ $SkillAgentRoots = @{
     codex = Join-Path $HOME ".codex\skills"
     opencode = Join-Path $HOME ".config\opencode\skills"
 }
+# Candidate skill roots per agent: verification passes if SKILL.md exists in any
+# of them. Every agent keeps its single existing root; Codex also accepts
+# ~/.agents/skills because upstream `skills add --global` writes Codex skills
+# there instead of ~/.codex/skills.
+$SkillAgentCandidateRoots = @{
+    pi = @($SkillAgentRoots['pi'])
+    'claude-code' = @($SkillAgentRoots['claude-code'])
+    'gemini-cli' = @($SkillAgentRoots['gemini-cli'])
+    cursor = @($SkillAgentRoots['cursor'])
+    antigravity = @($SkillAgentRoots['antigravity'])
+    codex = @($SkillAgentRoots['codex'], (Join-Path $HOME ".agents\skills"))
+    opencode = @($SkillAgentRoots['opencode'])
+}
 
 # ------------------------------------------------------------------------------
 # Logging (human + JSONL)
@@ -263,9 +276,9 @@ function Get-TargetSkillAgents {
 function Assert-SkillInstalledForAgents {
     param([string]$Phase, [string]$Skill, [string[]]$Agents)
     foreach ($agent in $Agents) {
-        $skillPath = Join-Path (Join-Path $SkillAgentRoots[$agent] $Skill) "SKILL.md"
-        if (-not (Test-Path $skillPath)) {
-            throw "$Skill SKILL.md missing for targeted agent '$agent' ($skillPath)"
+        $checked = @($SkillAgentCandidateRoots[$agent] | ForEach-Object { Join-Path (Join-Path $_ $Skill) "SKILL.md" })
+        if (-not ($checked | Where-Object { Test-Path $_ })) {
+            throw "$Skill SKILL.md missing for targeted agent '$agent' (checked: $($checked -join ', '))"
         }
     }
     Write-Log INFO $Phase "skill_verified" "$Skill verified for every targeted agent" 0 "agents=$($Agents -join ',')"
