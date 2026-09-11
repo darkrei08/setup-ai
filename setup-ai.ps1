@@ -307,7 +307,7 @@ function Assert-SkillInstalledForAgents {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','go','dotenv','ee','skills','pi-workflows','herdr','gentle-ai','codex','antigravity','opencode','cockpit')
+$ModuleOrder = @('base','node','bun','pi','go','dotenv','ee','skills','pi-workflows','herdr','gentle-ai','codex','antigravity','opencode','cockpit','rotator')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)'
@@ -325,8 +325,9 @@ $ModuleDesc = [ordered]@{
     'antigravity'  = 'Google Antigravity CLI (agy)'
     'opencode'     = 'opencode agent CLI (opencode-ai)'
     'cockpit'      = 'cockpit-tools desktop GUI app (optional, CC BY-NC-SA)'
+    'rotator'      = 'tuxevil-rotator multi-account Gemini/Antigravity gateway (optional, opt-in)'
 }
-$ModuleOptional = @{ 'cockpit' = $true }
+$ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true }
 
 # ==============================================================================
 # Modules
@@ -681,6 +682,78 @@ function Mod-Cockpit {
     }
 }
 
+function Mod-Rotator {
+    Write-Log INFO "rotator" "start" "tuxevil-rotator gateway"
+    # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
+    $candidates = @(
+        (Join-Path $HOME ".antigravity_cockpit")
+        (Join-Path $HOME ".local\share\cockpit-tools")
+        (Join-Path $HOME ".config\cockpit-tools")
+        (Join-Path $HOME ".wizard-ai\cockpit-tools")
+        (Join-Path $HOME "Library\Application Support\cockpit-tools")
+    )
+    if ($env:APPDATA) { $candidates += Join-Path $env:APPDATA "cockpit-tools" }
+    if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA "cockpit-tools" }
+
+    $cockpitDir = ""
+    foreach ($dir in $candidates) {
+        if ((Test-Path -LiteralPath (Join-Path $dir "accounts.json") -PathType Leaf) -or
+            (Test-Path -LiteralPath (Join-Path $dir "account-token.key") -PathType Leaf)) {
+            $cockpitDir = $dir
+            break
+        }
+    }
+    if ($cockpitDir) {
+        Write-Log INFO "rotator" "cockpit_detected" "cockpit-tools data directory detected" 0 "dir=$cockpitDir"
+    } else {
+        Write-Log INFO "rotator" "cockpit_absent" "No cockpit-tools data directory detected; the rotator can still use its own accounts" 0
+    }
+
+    # Non-fatal health probe.
+    $gw = "http://localhost:51200/v1/models"
+    try {
+        $response = Invoke-WebRequest -Uri $gw -Headers @{ Authorization = "Bearer tuxevil" } -TimeoutSec 5
+        $body = $response.Content
+        $count = if ($body) { ([regex]::Matches($body, '"id"')).Count } else { 0 }
+        Write-Log INFO "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=$gw;models=$count"
+    } catch {
+        Write-Log INFO "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; start it with 'tuxevil-rotator start'" 0 "url=$gw"
+    }
+
+    # Install the CLI idempotently. Never runs login/start or writes secrets.
+    if (Test-Cmd tuxevil-rotator) {
+        Write-Log INFO "rotator" "already_present" "tuxevil-rotator already installed"
+    } else {
+        if (-not (Test-Cmd npm)) { throw "npm not found; tuxevil-rotator cannot be installed" }
+        Invoke-Step -Phase "rotator" -Action { npm install -g tuxevil-rotator }
+        if (-not (Test-Cmd tuxevil-rotator)) {
+            Write-Log ERROR "rotator" "install_missing" "tuxevil-rotator not found on PATH after npm install"
+            throw "tuxevil-rotator not found on PATH after npm install"
+        }
+    }
+    if (Test-Cmd pi) {
+        Invoke-Step -Phase "rotator" -Action { pi install "github:darkrei08/pi-cockpit-tools-sync" }
+        $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+        if (-not (Test-Path -LiteralPath $piSettings -PathType Leaf) -or
+            -not (Select-String -LiteralPath $piSettings -SimpleMatch "github:darkrei08/pi-cockpit-tools-sync" -Quiet)) {
+            Write-Log ERROR "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=$piSettings"
+            throw "Pi did not register cockpit sync extension"
+        }
+        Write-Log INFO "rotator" "pi_extension_verified" "Cockpit sync extension registered in Pi" 0 "path=$piSettings"
+    } else {
+        Write-Log INFO "rotator" "pi_extension_skipped" "pi not found; cockpit sync extension was not installed"
+    }
+    @"
+      tuxevil-rotator installed. To use the multi-account Gemini/Antigravity gateway:
+        tuxevil-rotator login     # add a Google Antigravity account (repeat to add more)
+        tuxevil-rotator import    # or bulk-import accounts from a cockpit-tools JSON
+        tuxevil-rotator start     # start the rotating proxy on http://localhost:51200
+      Pi reaches it through the 'tuxevil-rotator' provider configured in your dotenv.
+      The cockpit sync extension provides /cockpit-sync, /cockpit-provision, and /cockpit-proxy.
+      Login/start are never run by setup-ai and no tokens are read or stored.
+"@ | Tee-Object -FilePath $HumanLog -Append | Out-Host
+}
+
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
     'pi' = ${function:Mod-Pi}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'ee' = ${function:Mod-Ee}
@@ -688,7 +761,7 @@ $ModuleFn = @{
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}
     'gentle-ai' = ${function:Mod-GentleAi}
     'codex' = ${function:Mod-Codex}; 'antigravity' = ${function:Mod-Antigravity}
-    'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}
+    'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}; 'rotator' = ${function:Mod-Rotator}
 }
 
 # ==============================================================================
