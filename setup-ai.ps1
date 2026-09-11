@@ -135,18 +135,32 @@ function Update-SessionPath {
 
 # Run a step; $Optional means failures are logged as WARN and swallowed.
 function Invoke-Step {
-    param([string]$Phase, [scriptblock]$Action, [switch]$Optional)
+    param(
+        [string]$Phase,
+        [scriptblock]$Action,
+        [switch]$Optional,
+        [int[]]$ExpectedExitCodes = @()
+    )
     Write-Log INFO $Phase "step_start" "Running step"
     try {
         $global:LASTEXITCODE = 0
         & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Out-Host
         $nativeExitCode = $global:LASTEXITCODE
         if ($nativeExitCode -ne 0) {
+            if ($ExpectedExitCodes -contains $nativeExitCode) {
+                Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode
+                return $null
+            }
             throw "Native command exited with code $nativeExitCode"
         }
         Write-Log INFO $Phase "step_ok" "Step completed"
         return $true
     } catch {
+        $nativeExitCode = $global:LASTEXITCODE
+        if ($ExpectedExitCodes -contains $nativeExitCode) {
+            Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode
+            return $null
+        }
         if ($Optional) {
             Write-Log WARN $Phase "step_failed_optional" "$($_.Exception.Message); continuing" 1
             return $false
@@ -159,12 +173,17 @@ function Invoke-Step {
 function Test-WingetInstalled {
     param([string]$Id, [string]$Phase)
     $probe = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-winget-" + [guid]::NewGuid().ToString("N") + ".log")
+    $wingetNoApplicationsFoundExitCode = -1978335212 # 0x8A150014: package is not installed.
     try {
         # Keep the query inside Invoke-Step so its exit status and output are
         # logged; a failed probe is treated as "not installed" and followed
         # by the mandatory install step.
-        $listed = Invoke-Step -Phase $Phase -Optional -Action {
+        $listed = Invoke-Step -Phase $Phase -Optional -ExpectedExitCodes $wingetNoApplicationsFoundExitCode -Action {
             winget list --id $Id -e | Out-File -LiteralPath $probe -Encoding utf8
+        }
+        if ($null -eq $listed) {
+            Write-Log INFO $Phase "not_installed" "$Id is not installed; will install"
+            return $false
         }
         return ($listed -and [bool](Select-String -Path $probe -SimpleMatch $Id -Quiet))
     } finally {
