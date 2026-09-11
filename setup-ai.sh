@@ -1171,12 +1171,24 @@ mod_rotator() {
         run_cmd "rotator" npm install --global tuxevil-rotator
         require_command tuxevil-rotator
     fi
+    if command -v pi >/dev/null 2>&1; then
+        run_cmd "rotator" pi install "github:darkrei08/pi-cockpit-tools-sync"
+        local pi_settings="${PI_AGENT_DIR}/settings.json"
+        if [[ ! -f "${pi_settings}" ]] || ! grep -Fq 'github:darkrei08/pi-cockpit-tools-sync' "${pi_settings}"; then
+            log_event "ERROR" "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=${pi_settings}"
+            return 1
+        fi
+        log_event "INFO" "rotator" "pi_extension_verified" "Cockpit sync extension registered in Pi" 0 "path=${pi_settings}"
+    else
+        log_event "INFO" "rotator" "pi_extension_skipped" "pi not found; cockpit sync extension was not installed" 0
+    fi
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
       tuxevil-rotator installed. To use the multi-account Gemini/Antigravity gateway:
         tuxevil-rotator login     # add a Google Antigravity account (repeat to add more)
         tuxevil-rotator import    # or bulk-import accounts from a cockpit-tools JSON
         tuxevil-rotator start     # start the rotating proxy on http://localhost:51200
       Pi reaches it through the 'tuxevil-rotator' provider configured in your dotenv.
+      The cockpit sync extension provides /cockpit-sync, /cockpit-provision, and /cockpit-proxy.
       Login/start are never run by setup-ai and no tokens are read or stored.
 HINT
 }
