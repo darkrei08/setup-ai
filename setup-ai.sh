@@ -673,15 +673,34 @@ agent_skill_root() {
     esac
 }
 
+# Candidate skill roots per agent (one per line): verification passes if
+# SKILL.md exists under any of them. Every agent keeps its single existing root;
+# Codex also accepts ${HOME}/.agents/skills because upstream `skills add
+# --global` writes Codex skills there instead of ${HOME}/.codex/skills.
+agent_skill_roots() {
+    agent_skill_root "$1" || return 1
+    if [[ "$1" == codex ]]; then
+        printf '%s\n' "${HOME}/.agents/skills"
+    fi
+}
+
 verify_skill_for_agents() {
     local phase="$1" skill="$2"; shift 2
-    local agent root
+    local agent root found checked
     for agent in "$@"; do
-        root="$(agent_skill_root "${agent}")"
-        if [[ ! -f "${root}/${skill}/SKILL.md" ]]; then
+        found=0
+        checked=""
+        while IFS= read -r root; do
+            checked="${checked:+${checked}, }${root}/${skill}/SKILL.md"
+            if [[ -f "${root}/${skill}/SKILL.md" ]]; then
+                found=1
+                break
+            fi
+        done < <(agent_skill_roots "${agent}")
+        if (( found == 0 )); then
             log_event "ERROR" "${phase}" "skill_missing" \
                 "Skill SKILL.md missing for targeted agent" 1 \
-                "agent=${agent};skill=${skill};expected=${root}/${skill}/SKILL.md"
+                "agent=${agent};skill=${skill};checked=${checked}"
             return 1
         fi
     done

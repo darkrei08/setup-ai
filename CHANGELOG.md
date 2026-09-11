@@ -9,6 +9,17 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [Unreleased]
+
+### Fixed
+- **Codex skills verification.** Closes [#8](https://github.com/darkrei08/setup-ai/issues/8).
+  `skills add --global --agent codex` exits `0` and really installs the skill, but to the
+  shared `~/.agents/skills/` directory, not the `~/.codex/skills/` path the post-install gate
+  asserted — so the `ee`/`skills` modules failed with a false `module_failed`. The gate now
+  verifies each agent against a set of candidate skill roots (codex: `~/.codex/skills` **or**
+  `~/.agents/skills`) in both `setup-ai.sh` and `setup-ai.ps1`, and still fails loudly when the
+  skill is present in none of them.
+
 ## [3.2.0] - 2026-09-10
 
 ### Added
