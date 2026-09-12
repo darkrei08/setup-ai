@@ -9,7 +9,7 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
-## [Unreleased]
+## [3.3.2] - 2026-09-12
 
 ### Added
 
@@ -53,6 +53,28 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   swap of the published package for the patched build is now performed **after** every
   failure-prone step and rolls back when it fails, so the environment is never left
   without a registered workflow package.
+
+- **The bash package readback could never match, so `pi-packages` and the patched
+  workflow both aborted.** Closes
+  [#19](https://github.com/darkrei08/setup-ai/issues/19). The bash verifier reduced every
+  source to its basename, and the embedded Node helper then resolved that basename as a
+  local path, so no `npm:`/`git:` source could equal pi's recorded entry: the first
+  manifest line failed with `package_not_registered`, the swap rolled back on its own
+  post-install check, and the rollback's restored-state check reached `exit 1` even when
+  the published release had actually come back. Both sides now compare the same full
+  identity against the agent directory, a leading `~` is expanded in both
+  implementations, and the dead basename helper is gone.
+
+  Five more defects around the same invariant (prove what was installed, fail closed
+  when that proof is unavailable, keep both platform scripts interchangeable) are fixed
+  with it: the published install in `mod_pi_workflows` is now read back on bash too, as
+  the PowerShell sibling already did; a managed root that carries the package without its
+  entry point fails closed instead of being skipped; a PowerShell rollback that cannot
+  read a root's `package.json` sets the rollback-failure latch instead of throwing past
+  it and degrading to an unproven published release; a rerun with the local source
+  already registered converges instead of rolling back forever; and the
+  `pushd`/`Push-Location` calls before every `npm install` are now checked, so a failed
+  directory change can no longer make npm write into an unrelated project.
 
 ## [3.3.1] - 2026-09-12
 
@@ -157,5 +179,6 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 - v3 cross-OS modular installer (`setup-ai.sh`, `setup-ai.ps1`) + zero-dep npx
   launcher (`bin/setup-ai.mjs`).
 
+[3.3.2]: https://github.com/darkrei08/setup-ai/releases/tag/v3.3.2
 [3.3.1]: https://github.com/darkrei08/setup-ai/releases/tag/v3.3.1
 [3.1.0]: https://github.com/darkrei08/setup-ai/releases/tag/v3.1.0

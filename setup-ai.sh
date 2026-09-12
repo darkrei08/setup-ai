@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.3.1
+# Version: 3.3.2
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.3.1"
+SCRIPT_VERSION="3.3.2"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -655,7 +655,16 @@ rollback_published_pi_workflows() {
 
     for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}" "${PI_NPM_DIR}"; do
         [[ -f "${root}/package.json" ]] || continue
-        pushd "${root}" >/dev/null
+        # This function also runs as an `if` condition, so errexit is suspended here too: an
+        # unchecked pushd would run npm in the previous directory. Leaving the root
+        # un-restored is a rollback failure, so the hard latch is raised with it.
+        if ! pushd "${root}" >/dev/null; then
+            log_event "WARN" "${phase}" "rollback_root_unavailable" \
+                "Could not enter a resolution root while restoring; skipping it instead of installing into an unrelated directory" 0 \
+                "root=${root}"
+            restore_failed=1
+            continue
+        fi
         run_optional "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
             "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
         popd >/dev/null
@@ -688,7 +697,26 @@ rollback_published_pi_workflows() {
             continue
         fi
         root_io="${root}/node_modules/pi-extensible-workflows/dist/src/io.js"
-        if [[ -f "${root_io}" ]] && grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${root_io}"; then
+        if [[ ! -f "${root_io}" ]]; then
+            log_event "WARN" "${phase}" "rollback_entry_point_missing" \
+                "Published workflow package came back without its entry point; the restored build cannot be used" 0 \
+                "root=${root}"
+            restore_failed=1
+            continue
+        fi
+        # grep separates 0 (marker present) from 1 (readable file, marker absent) and 2 (read
+        # error). Collapsing a read error into "marker absent" would report a restored build
+        # that nobody could actually read, so the error keeps the restore unproven.
+        local marker_rc=0
+        grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${root_io}" || marker_rc=$?
+        if (( marker_rc == 2 )); then
+            log_event "WARN" "${phase}" "rollback_entry_point_unreadable" \
+                "Entry point could not be read after rollback; the restore is unproven" 0 \
+                "root=${root}"
+            restore_failed=1
+            continue
+        fi
+        if (( marker_rc == 0 )); then
             log_event "WARN" "${phase}" "rollback_artifact_still_patched" \
                 "Root still holds the patched build after rollback" 0 "root=${root}"
             restore_failed=1

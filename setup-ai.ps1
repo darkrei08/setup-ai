@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 3.3.1
+ Version: 3.3.2
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, the vendor install.ps1 scripts
@@ -50,7 +50,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "3.3.1"
+$ScriptVersion = "3.3.2"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
@@ -630,7 +630,25 @@ function Restore-PublishedPiWorkflows {
             continue
         }
         $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
-        if ((Test-Path -LiteralPath $rootIo -PathType Leaf) -and (Test-TransientRenameMarker -IoJs $rootIo)) {
+        if (-not (Test-Path -LiteralPath $rootIo -PathType Leaf)) {
+            Write-Log WARN $phase "rollback_entry_point_missing" "Published workflow package came back without its entry point; the restored build cannot be used" 0 "root=$root"
+            $restoreFailed = $true
+            continue
+        }
+        # A missing or unreadable entry point is not proof of a clean restore, so the marker
+        # state is read explicitly and an unreadable file keeps the restore unproven.
+        $markerState = "absent"
+        try {
+            if (Select-String -LiteralPath $rootIo -SimpleMatch $PiWorkflowsRetryMarker -Quiet) { $markerState = "present" }
+        } catch {
+            $markerState = "unreadable"
+        }
+        if ($markerState -eq "unreadable") {
+            Write-Log WARN $phase "rollback_entry_point_unreadable" "Entry point could not be read after rollback; the restore is unproven" 0 "root=$root"
+            $restoreFailed = $true
+            continue
+        }
+        if ($markerState -eq "present") {
             Write-Log WARN $phase "rollback_artifact_still_patched" "Root still holds the patched build after rollback" 0 "root=$root"
             $restoreFailed = $true
         }
@@ -664,7 +682,10 @@ function Install-PatchedPiWorkflows {
     $phase = "pi-workflows-patch"
     # One attempt, one verdict: never inherit a previous run's rollback outcome.
     $script:SetupAiRollbackFailed = $false
-    $swapStarted = $false
+    # Tracks any filesystem mutation this run made, not only the registration swap: once a
+    # root holds the patched build, a later failure must restore before reporting the
+    # fallback, or the caller would claim a published release that is not the one installed.
+    $environmentMutated = $false
     $src = $PiWorkflowsSourceDir
     $ref = $PiWorkflowsFixRef
     $pkgDir = Join-Path $src "packages\core"
@@ -797,6 +818,7 @@ function Install-PatchedPiWorkflows {
             }
             Push-Location $root
             try {
+                $environmentMutated = $true
                 $rootOk = Invoke-Step -Phase $phase -Optional -Action { npm install --save-exact --no-audit --no-fund --legacy-peer-deps $pkgDir }
             } finally {
                 Pop-Location
@@ -818,7 +840,7 @@ function Install-PatchedPiWorkflows {
         # package is unregistered, so every failure path restores it.
         # Past this point the published package is unregistered, so an unexpected exception
         # must still put the environment back before the fallback is reported.
-        $swapStarted = $true
+        $environmentMutated = $true
         $null = Invoke-Step -Phase $phase -Optional -Action { pi uninstall npm:pi-extensible-workflows }
         try {
             # The local source may already be registered by a previous successful run: a
@@ -873,9 +895,10 @@ function Install-PatchedPiWorkflows {
     } catch {
         # Invoke-Step already logged the failing step; the caller falls back to the
         # published release instead of failing the module, but the cause is still reported.
-        # Once the swap started, a throw may have left the local source registered, so the
-        # restore runs here too and its own failure raises the hard rollback-failure latch.
-        if ($swapStarted) {
+        # Once any root or the registration has been touched, a throw may have left the
+        # environment patched, so the restore runs here too and its own failure raises the
+        # hard rollback-failure latch.
+        if ($environmentMutated) {
             try { $null = Restore-PublishedPiWorkflows }
             catch { $script:SetupAiRollbackFailed = $true }
         }
