@@ -1,6 +1,6 @@
 {
   "name": "@darkrei08/setup-ai",
-  "version": "3.3.0",
+  "version": "3.3.1",
   "description": "Cross-OS installer for an AI coding toolchain (pi, codex, antigravity, opencode, herdr, gentle-ai/gga, Engineering Excellence) with an interactive module menu and per-agent MCP registration.",
   "type": "module",
   "bin": {

@@ -9,6 +9,14 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [3.3.1] - 2026-09-12
+
+### Fixed
+
+- **Linux dotenv symlink-safe scans.** Closes [#16](https://github.com/darkrei08/setup-ai/issues/16).
+  The compatibility probes no longer follow dangling symlinks in an existing
+  `vekexasia/dotenv` checkout, so installation reaches `setup_env.sh` as expected.
+
 ## [3.3.0] - 2026-09-12
 
 ### Added
@@ -104,4 +112,5 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 - v3 cross-OS modular installer (`setup-ai.sh`, `setup-ai.ps1`) + zero-dep npx
   launcher (`bin/setup-ai.mjs`).
 
+[3.3.1]: https://github.com/darkrei08/setup-ai/releases/tag/v3.3.1
 [3.1.0]: https://github.com/darkrei08/setup-ai/releases/tag/v3.1.0
