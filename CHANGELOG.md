@@ -9,7 +9,15 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
-## [Unreleased]
+## [3.3.0] - 2026-09-12
+
+### Added
+- **Optional `rotator` module.** Closes [#14](https://github.com/darkrei08/setup-ai/issues/14).
+  Detects cockpit-tools data markers, probes the local tuxevil-rotator gateway, installs
+  the multi-account `tuxevil-rotator` CLI idempotently, and installs the
+  `pi-cockpit-tools-sync` Pi extension when Pi is available. Login, import, and start
+  remain explicit user actions; setup-ai never writes tokens, auth.json, or provider
+  configuration.
 
 ### Fixed
 - **Codex skills verification.** Closes [#8](https://github.com/darkrei08/setup-ai/issues/8).
