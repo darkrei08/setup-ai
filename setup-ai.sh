@@ -1241,13 +1241,14 @@ agent_skill_root() {
 
 # Candidate skill roots per agent (one per line): verification passes if
 # SKILL.md exists under any of them. Every agent keeps its single existing root;
-# Codex also accepts ${HOME}/.agents/skills because upstream `skills add
-# --global` writes Codex skills there instead of ${HOME}/.codex/skills.
+# Codex and OpenCode also accept ${HOME}/.agents/skills because upstream `skills add
+# --global` writes their skills there instead of ${HOME}/.codex/skills and
+# ${HOME}/.config/opencode/skills, which it may leave without a skills directory.
 agent_skill_roots() {
     agent_skill_root "$1" || return 1
-    if [[ "$1" == codex ]]; then
-        printf '%s\n' "${HOME}/.agents/skills"
-    fi
+    case "$1" in
+        codex | opencode) printf '%s\n' "${HOME}/.agents/skills" ;;
+    esac
 }
 
 verify_skill_for_agents() {

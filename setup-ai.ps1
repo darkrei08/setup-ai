@@ -130,9 +130,9 @@ $SkillAgentRoots = @{
     opencode = Join-Path $HOME ".config\opencode\skills"
 }
 # Candidate skill roots per agent: verification passes if SKILL.md exists in any
-# of them. Every agent keeps its single existing root; Codex also accepts
-# ~/.agents/skills because upstream `skills add --global` writes Codex skills
-# there instead of ~/.codex/skills.
+# of them. Every agent keeps its single existing root; Codex and OpenCode also
+# accept ~/.agents/skills because upstream `skills add --global` writes their
+# skills there instead of ~/.codex/skills and ~/.config/opencode/skills.
 $SkillAgentCandidateRoots = @{
     pi = @($SkillAgentRoots['pi'])
     'claude-code' = @($SkillAgentRoots['claude-code'])
@@ -140,7 +140,7 @@ $SkillAgentCandidateRoots = @{
     cursor = @($SkillAgentRoots['cursor'])
     antigravity = @($SkillAgentRoots['antigravity'])
     codex = @($SkillAgentRoots['codex'], (Join-Path $HOME ".agents\skills"))
-    opencode = @($SkillAgentRoots['opencode'])
+    opencode = @($SkillAgentRoots['opencode'], (Join-Path $HOME ".agents\skills"))
 }
 
 # ------------------------------------------------------------------------------
