@@ -1239,28 +1239,35 @@ agent_skill_root() {
     esac
 }
 
-# Candidate skill roots per agent (one per line): verification passes if
-# SKILL.md exists under any of them. Every agent keeps its single existing root;
-# Codex and OpenCode also accept ${HOME}/.agents/skills because upstream `skills add
-# --global` writes their skills there instead of ${HOME}/.codex/skills and
-# ${HOME}/.config/opencode/skills, which it may leave without a skills directory.
+# Candidate skill roots per agent (one per line): verification passes if SKILL.md
+# exists under any of them. The agent's own config dir comes first, and the shared
+# ${HOME}/.agents/skills root is accepted for every agent: upstream `skills add
+# --global` installs there and names it as the install target in its own summary,
+# copying into an agent's config dir only when it supports that agent. A shared root
+# must never hide a skipped copy, so verify_skill_for_agents warns per agent.
 agent_skill_roots() {
     agent_skill_root "$1" || return 1
-    case "$1" in
-        codex | opencode) printf '%s\n' "${HOME}/.agents/skills" ;;
-    esac
+    printf '%s\n' "${HOME}/.agents/skills"
 }
 
+# Prove a skill reached every targeted agent. Nothing under any candidate root fails;
+# a skill found only under the shared root passes with a WARN naming the agent whose
+# own config dir the CLI skipped.
 verify_skill_for_agents() {
     local phase="$1" skill="$2"; shift 2
-    local agent root found checked
+    local agent root own_root found own checked
     for agent in "$@"; do
         found=0
+        own=0
         checked=""
+        own_root="$(agent_skill_root "${agent}" || true)"
         while IFS= read -r root; do
             checked="${checked:+${checked}, }${root}/${skill}/SKILL.md"
             if [[ -f "${root}/${skill}/SKILL.md" ]]; then
                 found=1
+                if [[ -n "${own_root}" && "${root}" == "${own_root}" ]]; then
+                    own=1
+                fi
                 break
             fi
         done < <(agent_skill_roots "${agent}")
@@ -1269,6 +1276,11 @@ verify_skill_for_agents() {
                 "Skill SKILL.md missing for targeted agent" 1 \
                 "agent=${agent};skill=${skill};checked=${checked}"
             return 1
+        fi
+        if (( own == 0 )); then
+            log_event "WARN" "${phase}" "skill_not_copied_to_agent_root" \
+                "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 \
+                "agent=${agent};skill=${skill};shared=${HOME}/.agents/skills;expected=${own_root}/${skill}/SKILL.md"
         fi
     done
     return 0

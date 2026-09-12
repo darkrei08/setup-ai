@@ -130,17 +130,17 @@ $SkillAgentRoots = @{
     opencode = Join-Path $HOME ".config\opencode\skills"
 }
 # Candidate skill roots per agent: verification passes if SKILL.md exists in any
-# of them. Every agent keeps its single existing root; Codex and OpenCode also
-# accept ~/.agents/skills because upstream `skills add --global` writes their
-# skills there instead of ~/.codex/skills and ~/.config/opencode/skills.
-$SkillAgentCandidateRoots = @{
-    pi = @($SkillAgentRoots['pi'])
-    'claude-code' = @($SkillAgentRoots['claude-code'])
-    'gemini-cli' = @($SkillAgentRoots['gemini-cli'])
-    cursor = @($SkillAgentRoots['cursor'])
-    antigravity = @($SkillAgentRoots['antigravity'])
-    codex = @($SkillAgentRoots['codex'], (Join-Path $HOME ".agents\skills"))
-    opencode = @($SkillAgentRoots['opencode'], (Join-Path $HOME ".agents\skills"))
+# of them. The agent's own config dir comes first, and the shared ~/.agents/skills
+# root is accepted for every agent because upstream `skills add --global` installs
+# there and names it as the install target in its own summary, copying into an
+# agent's config dir only when it supports that agent. A shared root must never hide
+# a skipped copy, so Assert-SkillInstalledForAgents warns per agent.
+$SkillAgentCandidateRoots = @{}
+foreach ($skillAgent in $SkillAgentNames) {
+    $agentRoots = @()
+    if ($SkillAgentRoots.ContainsKey($skillAgent)) { $agentRoots += $SkillAgentRoots[$skillAgent] }
+    $agentRoots += (Join-Path $HOME ".agents\skills")
+    $SkillAgentCandidateRoots[$skillAgent] = $agentRoots
 }
 
 # ------------------------------------------------------------------------------
@@ -333,6 +333,12 @@ function Assert-SkillInstalledForAgents {
         $checked = @($SkillAgentCandidateRoots[$agent] | ForEach-Object { Join-Path (Join-Path $_ $Skill) "SKILL.md" })
         if (-not ($checked | Where-Object { Test-Path $_ })) {
             throw "$Skill SKILL.md missing for targeted agent '$agent' (checked: $($checked -join ', '))"
+        }
+        # A skill found only under the shared root means upstream skipped the copy into
+        # this agent's own config dir: reported, never hidden, and never a failure.
+        $ownRoot = if ($SkillAgentRoots.ContainsKey($agent)) { $SkillAgentRoots[$agent] } else { $null }
+        if ($ownRoot -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $ownRoot $Skill) "SKILL.md"))) {
+            Write-Log WARN $Phase "skill_not_copied_to_agent_root" "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 "agent=$agent;skill=$Skill;shared=$(Join-Path $HOME '.agents\skills')"
         }
     }
     Write-Log INFO $Phase "skill_verified" "$Skill verified for every targeted agent" 0 "agents=$($Agents -join ',')"
