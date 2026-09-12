@@ -76,6 +76,17 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   `pushd`/`Push-Location` calls before every `npm install` are now checked, so a failed
   directory change can no longer make npm write into an unrelated project.
 
+- **The skill verification failed for every agent the upstream CLI does not copy into.**
+  `npx skills add --global` installs into `${HOME}/.agents/skills` and copies into an agent's own
+  config directory only when it supports that agent, so the Codex-only special case added for
+  [#8](https://github.com/darkrei08/setup-ai/issues/8) broke the next agent instead of fixing the
+  class: a full install on Windows stopped at `ee` with "engineering-excellence SKILL.md missing
+  for targeted agent 'opencode'", and then at `skills` with the same message for `gemini-cli`,
+  after the CLI had installed both skills and reported where they went. Both platform scripts now
+  accept the shared root for every detected agent, next to that agent's own directory, and report
+  a WARN naming each agent whose own directory the CLI skipped, so a shared artifact never stands
+  silently in for a per-agent copy.
+
 ## [3.3.1] - 2026-09-12
 
 ### Fixed
