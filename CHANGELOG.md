@@ -9,6 +9,51 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [Unreleased]
+
+### Added
+
+- **`pi-packages` module: declarative Pi extension injection.** Closes
+  [#18](https://github.com/darkrei08/setup-ai/issues/18) (partly). A manifest
+  (`pi-packages.txt`) lists the extra Pi packages a machine needs, one source per
+  line (`npm:<pkg>[@<version>]`, `git:<host>/<owner>/<repo>[@<ref>]`, or a local
+  path). It is resolved from `PI_PACKAGES_FILE`, then `<pi agent dir>/pi-packages.txt`
+  (the dotenv/config repo, since `~/.pi/agent` is normally a symlink into it), then
+  the installer directory; nothing found installs nothing. Every entry is verified
+  by reading `pi`'s own `settings.json` back, and `pi-extensible-workflows` is
+  skipped because the `pi-workflows` module owns it. See `docs/pi-extensions.md`
+  and `pi-packages.example.txt`.
+
+### Fixed
+
+- **npm 12 `EALLOWREMOTE` broke `pi install` and `pi update --extensions`.** Closes
+  [#18](https://github.com/darkrei08/setup-ai/issues/18). npm 12 defaults
+  `allow-remote=none`, so any managed install that resolves a URL/tarball
+  dependency aborted. setup-ai now writes `allow-remote=all` (append-only, only for
+  npm >= 12) into the `.npmrc` of each npm root Pi installs into —
+  `~/.pi/agent/npm` (the prefix `pi` passes) and the `extensions` / dotenv
+  extension roots — and verifies the file by reading it back. Never written
+  globally.
+
+- **`EPERM` on workflow state writes (Windows/WSL).** Closes
+  [#18](https://github.com/darkrei08/setup-ai/issues/18) (partly). The published
+  `pi-extensible-workflows` writes `state.json` as a bare `write(.tmp)` + `rename()`
+  with no retry, so a transient lock fails the run. The `pi-workflows` module now
+  builds the patched local checkout (`PI_WORKFLOWS_SOURCE_DIR`, fix ref
+  `PI_WORKFLOWS_FIX_REF`) and installs it into both Pi roots, proving the retry in
+  the source, in the built artifact and in the installed artifact. It never pushes,
+  publishes, or switches the branch of a checkout the user owns; when the patch
+  cannot be produced it reports `patched_build_unavailable` and keeps the published
+  release. Windows uses a detected Git Bash for the POSIX-only core build script.
+  Two defects found by running the installer on a real machine are covered by tests:
+  `npm install` now runs **only** in directories with a local `package.json` (a root
+  without a manifest is skipped with `root_not_npm_project`, because npm otherwise walks
+  up and rewrites an ancestor project's manifest — observed rewriting
+  `<dotenv>/pi/agent/package.json` and creating ~169 MB of `node_modules` there), and the
+  swap of the published package for the patched build is now performed **after** every
+  failure-prone step and rolls back when it fails, so the environment is never left
+  without a registered workflow package.
+
 ## [3.3.1] - 2026-09-12
 
 ### Fixed

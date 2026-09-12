@@ -10,6 +10,7 @@
     "bin/setup-ai.mjs",
     "setup-ai.sh",
     "setup-ai.ps1",
+    "pi-packages.example.txt",
     "README.md"
   ],
   "engines": {

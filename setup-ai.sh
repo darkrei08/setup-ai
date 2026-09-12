@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 # ==============================================================================
-# AI Dev Suite — Engineering Excellence Edition
+# AI Dev Suite - Engineering Excellence Edition
 # Version: 3.3.1
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
@@ -74,6 +74,28 @@ DOTENV_DIR="${HOME}/git/personale/dotenv"
 DOTENV_EXT_DIR="${DOTENV_DIR}/pi/agent/extensions/pi-ext-workflows"
 
 COCKPIT_REPO="jlcodes99/cockpit-tools"
+
+# --- Pi packages: per-machine defaults, all overridable ------------------------
+# Declarative manifest of extra Pi packages, one source per line
+# (`npm:<pkg>[@<version>]`, `git:<host>/<owner>/<repo>[@<ref>]`, or a local path;
+# `#` starts a comment). This is how a NEW machine gets every extension the
+# toolchain needs without hand-editing ~/.pi/agent/settings.json.
+#
+# Where the manifest is read from follows the same split vekexasia uses: the Pi
+# CONFIG (settings, package list) lives in the dotenv checkout that ~/.pi/agent
+# points at, while the extensions themselves stay separate packages:
+#   1. PI_PACKAGES_FILE, when set explicitly
+#   2. <pi agent dir>/pi-packages.txt   (the dotenv/config repo)
+#   3. <script dir>/pi-packages.txt     (a profile kept next to the installer)
+# Nothing found is not an error: no extra packages are installed.
+PI_PACKAGES_FILE="${PI_PACKAGES_FILE:-}"
+
+# Local checkout that can carry a fix not yet published upstream. setup-ai only
+# reads/builds from it: it never pushes, publishes, or switches the branch of an
+# existing checkout. See `install_patched_pi_workflows`.
+PI_WORKFLOWS_SOURCE_DIR="${PI_WORKFLOWS_SOURCE_DIR:-${HOME}/git/personale/pi-extensible-workflows}"
+PI_WORKFLOWS_FIX_REF="${PI_WORKFLOWS_FIX_REF:-fix/windows-atomic-persistence}"
+PI_WORKFLOWS_REMOTE="${PI_WORKFLOWS_REMOTE:-https://github.com/darkrei08/pi-extensible-workflows.git}"
 
 # ------------------------------------------------------------------------------
 # Cleanup
@@ -272,7 +294,7 @@ write_report() {
     local function_name="${5:-n/a}" command="${6:-n/a}"
 
     cat > "${REPORT_FILE}" <<EOF
-# AI Dev Suite — Engineering Report
+# AI Dev Suite - Engineering Report
 
 **Status:** ${status}
 **Script version:** ${SCRIPT_VERSION}
@@ -305,7 +327,7 @@ EOF
 # via --all or an explicit --only.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit rotator)
+MODULE_ORDER=(base node bun pi pi-packages go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit rotator)
 
 module_desc() {
     case "$1" in
@@ -313,11 +335,12 @@ module_desc() {
         node) printf '%s\n' "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" ;;
         bun) printf '%s\n' "Bun runtime" ;;
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
+        pi-packages) printf '%s\n' "Extra Pi packages from a declarative manifest (pi-packages.txt)" ;;
         go) printf '%s\n' "Go toolchain" ;;
         dotenv) printf '%s\n' "vekexasia/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" ;;
         ee) printf '%s\n' "Engineering Excellence skill (npx skills add, all detected agents)" ;;
         skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
-        pi-workflows) printf '%s\n' "pi-extensible-workflows (fix module resolution for pi extensions)" ;;
+        pi-workflows) printf '%s\n' "pi-extensible-workflows (patched build + npm 12 remote sources for pi installs)" ;;
         herdr) printf '%s\n' "herdr terminal multiplexer" ;;
         gentle-ai) printf '%s\n' "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" ;;
         codex) printf '%s\n' "OpenAI Codex CLI" ;;
@@ -397,6 +420,486 @@ detect_os() {
 }
 
 # ==============================================================================
+# Pi install roots
+#
+# Concept: pi reads packages from TWO user-scope npm roots, and both must hold
+# the same build or one silently shadows the other.
+#
+#   <agentDir>/npm         managed root: what `pi install` and
+#                          `pi update --extensions` write and load
+#   <agentDir>/extensions  shared resolution root: what setup-ai installs into so
+#                          extension code can `import` these packages
+#
+# Every write into those roots goes through the helpers below, so npm behavior and
+# artifact verification live in one place instead of being duplicated per module.
+# ==============================================================================
+
+# npm 12 turns URL/tarball ("remote") sources off by default and aborts with
+# EALLOWREMOTE. pi runs its managed installs as
+# `npm install <spec> --prefix <agentDir>/npm --legacy-peer-deps`, and npm resolves
+# its local .npmrc from the prefix it is given, so the opt-in belongs in the
+# install root itself - never globally, never in the caller's cwd.
+# npm < 12 does not know the key, so it is only written when npm >= 12.
+ensure_npm_remote_sources() {
+    local dir="$1" phase="pi-npm"
+    local npmrc="${dir}/.npmrc"
+
+    mkdir -p "${dir}"
+    # Mark the directory as an npm project root, so this helper can never make npm
+    # walk up into an ancestor project.
+    if [[ ! -f "${dir}/package.json" ]]; then
+        printf '%s\n' '{"name":"pi-extensions","private":true}' > "${dir}/package.json"
+    fi
+
+    if ! command -v npm >/dev/null 2>&1; then
+        log_event "WARN" "${phase}" "npm_missing" \
+            "npm is unavailable; remote-source opt-in was not written" 0 "dir=${dir}"
+        return 0
+    fi
+
+    local npm_version npm_major
+    if ! capture_cmd npm_version "${phase}" npm --version; then
+        log_event "WARN" "${phase}" "npm_version_unavailable" \
+            "Could not read the npm version; remote-source opt-in was not written" 0 "dir=${dir}"
+        return 0
+    fi
+    npm_major="${npm_version%%.*}"
+    if [[ ! "${npm_major}" =~ ^[0-9]+$ ]]; then
+        log_event "WARN" "${phase}" "npm_version_unparsed" \
+            "Could not parse the npm version; remote-source opt-in was not written" 0 \
+            "version=${npm_version}"
+        return 0
+    fi
+
+    if (( npm_major < 12 )); then
+        log_event "INFO" "${phase}" "remote_sources_default" \
+            "npm ${npm_version} fetches remote sources by default; no opt-in needed" 0 \
+            "npmrc=${npmrc}"
+        return 0
+    fi
+
+    # Append-only: an existing .npmrc belongs to the user and may hold other keys.
+    # npm 12 gates URL/tarball AND git sources separately (allow-remote, allow-git), and
+    # pi's managed installs must be able to fetch a package that depends on either.
+    local key
+    for key in 'allow-remote=all' 'allow-git=all'; do
+        if ! grep -qxF "${key}" "${npmrc}" 2>/dev/null; then
+            printf '%s\n' "${key}" >> "${npmrc}"
+        fi
+    done
+
+    # Verify the file npm will actually read, not the write we intended.
+    for key in 'allow-remote=all' 'allow-git=all'; do
+        if ! grep -qxF "${key}" "${npmrc}" 2>/dev/null; then
+            log_event "ERROR" "${phase}" "remote_sources_unverified" \
+                "Could not enable npm 12 sources; pi install/update would fail with EALLOWREMOTE" 1 \
+                "npmrc=${npmrc};missing=${key}"
+            return 1
+        fi
+    done
+    log_event "INFO" "${phase}" "remote_sources_enabled" \
+        "npm ${npm_version} remote (URL/tarball) sources enabled for this install root" 0 \
+        "npmrc=${npmrc}"
+}
+
+# Marker of the transient-rename retry in pi-extensible-workflows.
+# The published release writes state as a bare write(.tmp) + rename() without
+# retry, so a transient lock on the target (Defender, indexing, sync client, or a
+# concurrent pi process) fails the run with EPERM. The fix adds `renameWithRetry`
+# (EACCES/EBUSY/EPERM, bounded backoff); that symbol is the marker because the
+# package version does NOT change when the fix is applied locally - only the
+# artifact content proves which build is loaded.
+PI_WORKFLOWS_RETRY_MARKER="renameWithRetry"
+
+# Prove a built/installed atomic-write module carries the transient-rename retry.
+# Returns 1 with a WARN when it cannot be proven, so callers decide the fallback.
+assert_transient_rename_retry() {
+    local io_js="$1" phase="$2" context="$3"
+
+    if [[ ! -f "${io_js}" ]]; then
+        log_event "WARN" "${phase}" "retry_probe_missing" \
+            "Atomic-write module not found; cannot prove the transient-rename retry" 0 \
+            "path=${io_js};context=${context}"
+        return 1
+    fi
+    if ! grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${io_js}"; then
+        log_event "WARN" "${phase}" "retry_missing" \
+            "Artifact has no transient-rename retry; EPERM-prone state writes stay unfixed" 0 \
+            "path=${io_js};context=${context}"
+        return 1
+    fi
+    log_event "INFO" "${phase}" "retry_verified" \
+        "Transient-rename retry present in the loaded artifact" 0 \
+        "path=${io_js};context=${context}"
+}
+
+# Derive the stable id of a Pi package source (`npm:`/`git:`/local path) so a
+# readback check can match pi's own record regardless of version or ref noise.
+pi_package_id() {
+    local spec="$1"
+    case "${spec}" in
+        npm:*) spec="${spec#npm:}" ;;
+        git:*) spec="${spec#git:}" ;;
+    esac
+    spec="${spec%%#*}"
+    spec="${spec%.git}"
+    # Strip a trailing @ref/@version, but keep a leading @scope.
+    if [[ "${spec}" == *@* && "${spec%@*}" == *[!/] ]]; then
+        spec="${spec%@*}"
+    fi
+    printf '%s' "${spec##*/}"
+}
+
+# Prove pi recorded a package by reading back pi's own registry, not by trusting
+# the install command we just ran. With `expect_absent` set, the check is inverted:
+# it passes only when NO entry with that id is registered (used to prove that the
+# published workflow package was really replaced by the patched local source).
+assert_pi_package_registered() {
+    local phase="$1" spec="$2" expectation="${3:-present}"
+    local settings="${PI_AGENT_DIR}/settings.json" want
+    want="$(pi_package_id "${spec}")"
+
+    if [[ ! -f "${settings}" ]]; then
+        log_event "ERROR" "${phase}" "settings_missing" \
+            "pi settings.json not found; cannot verify installed packages" 1 "path=${settings}"
+        return 1
+    fi
+    local rc=0
+    node -e '
+        const fs = require("node:fs");
+        const id = (source) => {
+            let spec = String(source).trim();
+            spec = spec.replace(/^(npm|git):/, "").split("#")[0].replace(/\.git$/, "");
+            const at = spec.lastIndexOf("@");
+            if (at > 0) spec = spec.slice(0, at);
+            const parts = spec.split("/");
+            return parts[parts.length - 1];
+        };
+        let settings;
+        try {
+            settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        } catch {
+            // An unreadable or malformed registry cannot prove absence: fail closed.
+            process.exit(2);
+        }
+        const path = require("node:path");
+        // Identity keeps scope and owner: comparing basenames made @scope/pkg match pkg,
+        // and two repos with the same name match each other. Local paths resolve against
+        // the base dir of the registry, because pi records them relative to the agent dir.
+        const identity = (source, baseDir) => {
+            let spec = String(source).trim();
+            if (spec.startsWith("npm:")) {
+                spec = spec.slice(4);
+                const at = spec.lastIndexOf("@");
+                if (at > 0) spec = spec.slice(0, at);
+                return "npm:" + spec;
+            }
+            if (spec.startsWith("git:")) {
+                spec = spec.split("#")[0].replace(/\.git$/, "");
+                const at = spec.lastIndexOf("@");
+                if (at > 0) spec = spec.slice(0, at);
+                return "git:" + spec;
+            }
+            const resolved = path.resolve(baseDir, spec);
+            return "local:" + (process.platform === "win32" ? resolved.toLowerCase() : resolved);
+        };
+        const baseDir = path.dirname(process.argv[1]);
+        const packages = settings.packages ?? [];
+        const want = identity(process.argv[2], process.cwd());
+        const found = packages.some((entry) => identity(typeof entry === "string" ? entry : entry?.source, baseDir) === want);
+        process.exit(found === (process.argv[3] === "present") ? 0 : 1);
+    ' "${settings}" "${want}" "${expectation}" || rc=$?
+    if (( rc == 2 )); then
+        log_event "ERROR" "${phase}" "settings_unreadable" \
+            "pi settings.json could not be parsed; cannot prove the package state" 1 "path=${settings}"
+        return 1
+    fi
+    if (( rc == 0 )); then
+        if [[ "${expectation}" == "absent" ]]; then
+            log_event "INFO" "${phase}" "package_absent" \
+                "pi no longer registers the replaced package" 0 "spec=${spec}"
+        else
+            log_event "INFO" "${phase}" "package_registered" \
+                "pi registered the package" 0 "spec=${spec}"
+        fi
+        return 0
+    fi
+    if [[ "${expectation}" == "absent" ]]; then
+        log_event "ERROR" "${phase}" "package_still_registered" \
+            "The replaced package is still registered in settings.json" 1 \
+            "spec=${spec};settings=${settings}"
+        return 1
+    fi
+    log_event "ERROR" "${phase}" "package_not_registered" \
+        "pi did not register the package in settings.json" 1 \
+        "spec=${spec};settings=${settings}"
+    return 1
+}
+
+# Restore the published workflow package after a failed swap. Once the npm source is
+# unregistered, a failure must not leave the workflow package missing from settings:
+# the environment has to look exactly like it did before the patch attempt.
+rollback_published_pi_workflows() {
+    local phase="pi-workflows-patch"
+    local pkg_dir="${PI_WORKFLOWS_SOURCE_DIR}/packages/core"
+    local root root_pkg root_version root_io restore_failed=0
+
+    log_event "WARN" "${phase}" "patch_rollback_start" \
+        "Restoring the published workflow package after a failed swap" 0 \
+        "version=${PI_WORKFLOW_VERSION}"
+
+    # Undo the swap in reverse order: drop the local source, register the published one
+    # again, then put the published build back into every npm root this module overwrote
+    # (the managed root included). Ending as we started is the point.
+    run_optional "${phase}" pi uninstall "${pkg_dir}"
+    run_optional "${phase}" pi install "npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
+
+    for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}" "${PI_NPM_DIR}"; do
+        [[ -f "${root}/package.json" ]] || continue
+        pushd "${root}" >/dev/null
+        run_optional "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
+            "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
+        popd >/dev/null
+    done
+
+    # Prove the restore instead of trusting the commands: registration must be the
+    # published one, the local source must be gone, and every root must hold the published
+    # version without the patched marker.
+    if ! assert_pi_package_registered "${phase}" "npm:pi-extensible-workflows"; then
+        restore_failed=1
+    fi
+    if ! assert_pi_package_registered "${phase}" "${pkg_dir}" absent; then
+        restore_failed=1
+    fi
+    for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}" "${PI_NPM_DIR}"; do
+        [[ -f "${root}/package.json" ]] || continue
+        root_pkg="${root}/node_modules/pi-extensible-workflows/package.json"
+        if [[ ! -f "${root_pkg}" ]]; then
+            log_event "WARN" "${phase}" "rollback_artifact_missing" \
+                "Published workflow package did not come back in this root" 0 "root=${root}"
+            restore_failed=1
+            continue
+        fi
+        root_version="$(grep -m1 '"version"' "${root_pkg}" | cut -d'"' -f4)"
+        if [[ "${root_version}" != "${PI_WORKFLOW_VERSION}" ]]; then
+            log_event "WARN" "${phase}" "rollback_artifact_version_mismatch" \
+                "Root holds a different workflow version after rollback" 0 \
+                "root=${root};expected=${PI_WORKFLOW_VERSION};actual=${root_version}"
+            restore_failed=1
+            continue
+        fi
+        root_io="${root}/node_modules/pi-extensible-workflows/dist/src/io.js"
+        if [[ -f "${root_io}" ]] && grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${root_io}"; then
+            log_event "WARN" "${phase}" "rollback_artifact_still_patched" \
+                "Root still holds the patched build after rollback" 0 "root=${root}"
+            restore_failed=1
+        fi
+    done
+
+    if (( restore_failed == 0 )); then
+        log_event "INFO" "${phase}" "patch_rolled_back" \
+            "Published workflow package and npm roots verified after rollback" 0
+        return 0
+    fi
+    # An unrestored environment is a hard failure, not a warning: continuing would let the
+    # module report a healthy install while the roots hold a mix of both builds.
+    log_event "ERROR" "${phase}" "patch_rollback_failed" \
+        "Could not fully restore the published workflow package; run: pi install npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}" 1
+    exit 1
+}
+
+# Resolve the Pi package manifest. Order: explicit override, then the Pi config
+# repo (~/.pi/agent usually symlinks into a dotenv checkout), then a profile kept
+# next to the installer. Prints the chosen path, or returns 1 when none exists.
+pi_packages_manifest() {
+    local candidate
+    for candidate in "${PI_PACKAGES_FILE}" "${PI_AGENT_DIR}/pi-packages.txt" "${SCRIPT_DIR}/pi-packages.txt"; do
+        [[ -n "${candidate}" && -f "${candidate}" ]] && {
+            printf '%s' "${candidate}"
+            return 0
+        }
+    done
+    return 1
+}
+
+# Build the patched workflow package from the local checkout and install it into
+# BOTH pi roots. Nothing is guessed: the fix is proven in the source, then in the
+# built artifact, then in the installed artifact. Any unproven step returns 1 and
+# the caller keeps the published release.
+install_patched_pi_workflows() {
+    local phase="pi-workflows-patch"
+    local src="${PI_WORKFLOWS_SOURCE_DIR}"
+    local ref="${PI_WORKFLOWS_FIX_REF}"
+    local pkg_dir="${src}/packages/core"
+    local io_ts="${pkg_dir}/src/io.ts"
+    local io_js="${pkg_dir}/dist/src/io.js"
+
+    command -v git >/dev/null 2>&1 || {
+        log_event "WARN" "${phase}" "git_missing" \
+            "git is unavailable; cannot build the patched workflow package" 0 "source=${src}"
+        return 1
+    }
+
+    # Accept a worktree too: `.git` is a file there, not a directory.
+    if [[ ! -e "${src}/.git" ]]; then
+        if [[ -e "${src}" ]]; then
+            log_event "WARN" "${phase}" "source_not_git" \
+                "Configured workflow source is not a git checkout" 0 "source=${src}"
+            return 1
+        fi
+        run_cmd "${phase}" git clone "${PI_WORKFLOWS_REMOTE}" "${src}" || return 1
+        # A checkout setup-ai created itself may freely move to the fix ref.
+        run_optional "${phase}" git -C "${src}" checkout "${ref}"
+    fi
+
+    # Prefer a ref that already resolves locally (a shared checkout can hold the fix
+    # before it is pushed), then try the remote once. The fetched ref lands in
+    # refs/remotes, so that is what the second probe has to resolve.
+    if ! git -C "${src}" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
+        run_optional "${phase}" git -C "${src}" fetch origin \
+            "+refs/heads/${ref}:refs/remotes/origin/${ref}"
+    fi
+    if ! git -C "${src}" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null \
+        && ! git -C "${src}" rev-parse --verify --quiet "refs/remotes/origin/${ref}^{commit}" >/dev/null; then
+        log_event "WARN" "${phase}" "fix_ref_unavailable" \
+            "Workflow fix ref is unavailable; keeping the published release" 0 \
+            "ref=${ref};source=${src}"
+        return 1
+    fi
+
+    # Trust the CONTENT, not the branch name: the checkout may sit on another branch,
+    # and setup-ai must never switch a checkout the user owns.
+    if [[ ! -f "${io_ts}" ]]; then
+        log_event "WARN" "${phase}" "source_missing" \
+            "Workflow source file not found; keeping the published release" 0 "path=${io_ts}"
+        return 1
+    fi
+    if ! grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${io_ts}"; then
+        log_event "WARN" "${phase}" "retry_missing_in_source" \
+            "Checked-out workflow source has no transient-rename retry" 0 \
+            "path=${io_ts};ref=${ref};hint=git -C ${src} checkout ${ref}"
+        return 1
+    fi
+    log_event "INFO" "${phase}" "retry_found_in_source" \
+        "Workflow source carries the transient-rename retry" 0 "path=${io_ts}"
+
+    # packages/core builds through the workspace toolchain, so install the workspace
+    # first. packages/core's own build script is POSIX-only (rm -rf, cp -R), which is
+    # why the patched build is a Unix/WSL path: Windows keeps the published release
+    # unless a POSIX shell is available to run that script.
+    # The checkout must be an npm project root, or npm would walk up into an unrelated
+    # ancestor project and rewrite its manifest.
+    if [[ ! -f "${src}/package.json" ]]; then
+        log_event "WARN" "${phase}" "source_not_npm_project" \
+            "Workflow checkout has no package.json; nothing is installed into it" 0 \
+            "source=${src}"
+        return 1
+    fi
+    pushd "${src}" >/dev/null
+    # --no-save --package-lock=false: install only what the build needs without
+    # writing to the checkout's tracked manifest or lockfile - this source tree
+    # belongs to the user, and setup-ai must not leave edits behind in it.
+    if ! run_cmd "${phase}" npm install --no-save --package-lock=false --no-audit --no-fund; then
+        popd >/dev/null
+        log_event "WARN" "${phase}" "workspace_install_failed" \
+            "Workspace dependencies could not be installed; keeping the published release" 0 \
+            "source=${src};hint=npm 12 blocks dependency install scripts by default"
+        return 1
+    fi
+    if ! run_cmd "${phase}" npm run build --workspace=packages/core; then
+        popd >/dev/null
+        log_event "WARN" "${phase}" "patch_build_failed" \
+            "Workflow package build failed; keeping the published release" 0 \
+            "source=${src};hint=the core build script needs a POSIX shell (rm, cp)"
+        return 1
+    fi
+    popd >/dev/null
+
+    assert_transient_rename_retry "${io_js}" "${phase}" "built" || return 1
+
+    # Shared resolution roots FIRST: this only writes node_modules, so it can still
+    # fail without any settings change - nothing is swapped while it can fail.
+    local root verified_roots=0 skipped_roots=""
+    for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}"; do
+        [[ -d "${root}" ]] || continue
+        # Never run npm in a directory that is not an npm project root: without a local
+        # package.json npm walks UP the tree and installs into an ancestor project,
+        # rewriting that project's manifest.
+        if [[ ! -f "${root}/package.json" ]]; then
+            log_event "WARN" "${phase}" "root_not_npm_project" \
+                "Resolution root has no package.json; skipping it instead of installing into an ancestor" 0 \
+                "root=${root}"
+            skipped_roots="${skipped_roots}${skipped_roots:+,}${root}"
+            continue
+        fi
+        pushd "${root}" >/dev/null
+        if ! run_cmd "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
+            popd >/dev/null
+            # The root may already carry the patched build: restore before leaving, so a
+            # failure here never leaves a mixed patched/published installation behind.
+            rollback_published_pi_workflows
+            return 1
+        fi
+        popd >/dev/null
+        if ! assert_transient_rename_retry \
+            "${root}/node_modules/pi-extensible-workflows/dist/src/io.js" \
+            "${phase}" "root=${root}"; then
+            rollback_published_pi_workflows
+            return 1
+        fi
+        verified_roots=$(( verified_roots + 1 ))
+    done
+
+    # Swap, do not add: `pi install <local path>` only ADDS an entry, so leaving the
+    # npm source in place would keep the unpatched copy in the managed root and
+    # register two copies of the same extension at once. From this point the published
+    # package is unregistered, so every failure path restores it.
+    run_optional "${phase}" pi uninstall npm:pi-extensible-workflows
+    if ! assert_pi_package_registered "${phase}" "npm:pi-extensible-workflows" absent; then
+        rollback_published_pi_workflows
+        return 1
+    fi
+    if ! run_cmd "${phase}" pi install "${pkg_dir}"; then
+        rollback_published_pi_workflows
+        return 1
+    fi
+    if ! assert_pi_package_registered "${phase}" "${pkg_dir}"; then
+        rollback_published_pi_workflows
+        return 1
+    fi
+
+    # An unpatched copy left in the managed root would shadow the patched build at
+    # import time. `pi uninstall` normally removes it; repair and verify when it
+    # survived. Past the swap the whole operation is all-or-nothing, so a failure here
+    # restores the published registration instead of leaving a half-patched install.
+    local managed_io="${PI_NPM_DIR}/node_modules/pi-extensible-workflows/dist/src/io.js"
+    if [[ -f "${managed_io}" ]]; then
+        if ! grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${managed_io}"; then
+            log_event "WARN" "${phase}" "managed_copy_stale" \
+                "Unpatched copy survived in the managed root; replacing it with the patched build" 0 \
+                "path=${managed_io}"
+            pushd "${PI_NPM_DIR}" >/dev/null
+            if ! run_cmd "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
+                popd >/dev/null
+                rollback_published_pi_workflows
+                return 1
+            fi
+            popd >/dev/null
+        fi
+        if ! assert_transient_rename_retry "${managed_io}" "${phase}" "managed-root"; then
+            rollback_published_pi_workflows
+            return 1
+        fi
+    fi
+
+    # Report what was ACTUALLY verified: a skipped root is not a verified root, and the
+    # message must never claim more than the checks proved.
+    log_event "INFO" "${phase}" "patched_workflow_installed" \
+        "Patched pi-extensible-workflows installed and verified in ${verified_roots} resolution root(s)" 0 \
+        "source=${pkg_dir};ref=${ref};verified_roots=${verified_roots};skipped_roots=${skipped_roots:-none}"
+}
+
+# ==============================================================================
 # Modules
 # ==============================================================================
 
@@ -466,7 +969,7 @@ mod_node() {
 
     assert_node_minimum
 
-    # npm@latest (NOT npm@12 — that version does not exist).
+    # npm@latest (NOT npm@12 - that version does not exist).
     run_cmd "node" npm install -g npm@latest
     run_optional "node" npm cache verify
 
@@ -537,6 +1040,11 @@ mod_pi() {
     fi
     log_event "INFO" "pi" "cli_ready" "Pi CLI detected" 0 "version=${PI_VERSION}"
     mkdir -p "${PI_AGENT_DIR}" "${PI_EXTENSIONS_DIR}" "${PI_NPM_DIR}" "${PI_AGENT_DIR}/skills"
+
+    # pi's managed npm root is where `pi install` and `pi update --extensions` land.
+    # npm 12 refuses URL/tarball dependencies in that root unless it opts in, so
+    # configure it as soon as the root exists - independent of any workflow module.
+    ensure_npm_remote_sources "${PI_NPM_DIR}"
 }
 
 # --- go ---------------------------------------------------------------------
@@ -730,7 +1238,7 @@ mod_ee() {
     done
 
     if (( installed_any == 0 )); then
-        # No agent detected yet — install at least for pi (created by mod_pi).
+        # No agent detected yet - install at least for pi (created by mod_pi).
         run_cmd "engineering-excellence" \
             npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
             --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent pi --copy --yes
@@ -752,7 +1260,7 @@ mod_skills() {
     require_command npx
 
     # Agent keys are the `skills` CLI names (claude-code, gemini-cli, ...),
-    # detected by their config dir — same mapping as mod_ee.
+    # detected by their config dir - same mapping as mod_ee.
     local agent
     local -a agents=()
     for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
@@ -786,11 +1294,21 @@ mod_skills() {
 }
 
 # --- pi-extensible-workflows ------------------------------------------------
+# Concept split for this module:
+#   1. npm behavior of both pi roots (npm 12 EALLOWREMOTE on remote sources)
+#   2. published pi-extensible-workflows (baseline that always stays usable)
+#   3. patched local build (transient-rename retry for EPERM-prone state writes)
 mod_pi_workflows() {
     section "pi-extensible-workflows"
     require_command pi
     require_command node
     assert_node_minimum
+
+    # 1. Configure npm before the first install: both roots are written below, and
+    #    `pi update --extensions` later reinstalls every configured package through
+    #    the managed root.
+    ensure_npm_remote_sources "${PI_NPM_DIR}"
+    ensure_npm_remote_sources "${PI_EXTENSIONS_DIR}"
 
     if [[ -z "${PI_WORKFLOW_VERSION}" ]]; then
         capture_cmd PI_WORKFLOW_VERSION "pi-workflows" npm view pi-extensible-workflows version
@@ -805,7 +1323,10 @@ mod_pi_workflows() {
 
     mkdir -p "${PI_EXTENSIONS_DIR}"
     pushd "${PI_EXTENSIONS_DIR}" >/dev/null
-    printf '%s\n' 'ignore-scripts=false' > .npmrc
+    # Append-only, so the npm 12 remote-source opt-in written above survives.
+    if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
+        printf '%s\n' 'ignore-scripts=false' >> .npmrc
+    fi
     # Mark this directory as an npm project root so `npm install` lands HERE and
     # cannot walk up the tree into an ancestor project. This matters when
     # ~/.pi/agent is symlinked into another repo (e.g. the dotenv dotfiles):
@@ -814,7 +1335,7 @@ mod_pi_workflows() {
     if [[ ! -f package.json ]]; then
         printf '%s\n' '{"name":"pi-extensions","private":true}' > package.json
     fi
-    run_cmd "pi-workflows-node" npm install --save-exact --no-audit --no-fund \
+    run_cmd "pi-workflows-node" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
         "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
     popd >/dev/null
 
@@ -841,11 +1362,15 @@ mod_pi_workflows() {
 
     if [[ -d "${DOTENV_EXT_DIR}" ]]; then
         pushd "${DOTENV_EXT_DIR}" >/dev/null
-        printf '%s\n' 'ignore-scripts=false' > .npmrc
         if [[ ! -f package.json ]]; then
             printf '%s\n' '{"name":"pi-ext-workflows","private":true}' > package.json
         fi
-        run_cmd "dotenv-workflows" npm install --save-exact --no-audit --no-fund \
+        # Same npm 12 opt-in for this install root.
+        ensure_npm_remote_sources "${DOTENV_EXT_DIR}"
+        if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
+            printf '%s\n' 'ignore-scripts=false' >> .npmrc
+        fi
+        run_cmd "dotenv-workflows" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
             "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
         popd >/dev/null
 
@@ -868,6 +1393,79 @@ mod_pi_workflows() {
         log_event "INFO" "dotenv-workflows" "module_verified" \
             "Verified installed dotenv workflow package" 0 "path=${dotenv_workflow_pkg}"
     fi
+
+    # 3. Patched local build LAST, so it wins in both roots over the published
+    #    release installed above. A failure here is reported, never hidden: the
+    #    environment keeps working with the published release.
+    if install_patched_pi_workflows; then
+        local patched_version="unknown"
+        if ! capture_cmd patched_version "pi-workflows-patch" node -e \
+            'console.log(require(process.argv[1]).version)' \
+            "${PI_EXTENSIONS_DIR}/node_modules/pi-extensible-workflows/package.json"; then
+            patched_version="unknown"
+        fi
+        log_event "INFO" "pi-workflows-patch" "patched_version_active" \
+            "Effective workflow package is the patched local build" 0 \
+            "version=${patched_version};published=${PI_WORKFLOW_VERSION}"
+    else
+        log_event "WARN" "pi-workflows-patch" "patched_build_unavailable" \
+            "Keeping the published pi-extensible-workflows; EPERM-prone state writes may still fail" 0 \
+            "source=${PI_WORKFLOWS_SOURCE_DIR};ref=${PI_WORKFLOWS_FIX_REF}"
+    fi
+}
+
+# --- pi-packages ------------------------------------------------------------
+# Declarative Pi packages: the manifest resolved by `pi_packages_manifest` lists one
+# source per line, so a NEW machine gets every extension the toolchain needs
+# without hand-editing ~/.pi/agent/settings.json. Supported sources are whatever
+# `pi install` accepts: `npm:<pkg>[@<version>]`,
+# `git:<host>/<owner>/<repo>[@<ref>]`, or a local path. Blank lines and `#`
+# comments are ignored, and every install is verified by reading pi's own
+# settings.json back. pi-extensible-workflows is skipped here on purpose: the
+# pi-workflows module owns that package (published + patched build).
+mod_pi_packages() {
+    section "pi-packages"
+    require_command pi
+    require_command node
+
+    # Manifest entries are arbitrary sources, so the managed root must already
+    # tolerate remote (URL/tarball) dependencies before the first install.
+    ensure_npm_remote_sources "${PI_NPM_DIR}"
+
+    local manifest
+    if ! manifest="$(pi_packages_manifest)"; then
+        log_event "INFO" "pi-packages" "manifest_absent" \
+            "No Pi package manifest; nothing extra to install" 0 \
+            "override=${PI_PACKAGES_FILE:-<unset>};config=${PI_AGENT_DIR}/pi-packages.txt;profile=${SCRIPT_DIR}/pi-packages.txt"
+        return 0
+    fi
+    log_event "INFO" "pi-packages" "manifest_loaded" "Pi package manifest found" 0 \
+        "manifest=${manifest}"
+
+    local line installed=0 skipped=0
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+        line="${line%%#*}"
+        # Trim surrounding whitespace only; internal whitespace stays invalid input.
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "${line}" ]] && continue
+
+        if [[ "$(pi_package_id "${line}")" == "$(pi_package_id 'npm:pi-extensible-workflows')" ]]; then
+            log_event "WARN" "pi-packages" "workflow_owned_elsewhere" \
+                "Skipping pi-extensible-workflows; the pi-workflows module owns that package" 0 \
+                "spec=${line}"
+            skipped=$(( skipped + 1 ))
+            continue
+        fi
+
+        run_cmd "pi-packages" pi install "${line}" || return 1
+        assert_pi_package_registered "pi-packages" "${line}" || return 1
+        installed=$(( installed + 1 ))
+    done < "${manifest}"
+
+    log_event "INFO" "pi-packages" "manifest_applied" \
+        "Pi package manifest applied" 0 \
+        "installed=${installed};skipped=${skipped};manifest=${manifest}"
 }
 
 # --- herdr ------------------------------------------------------------------
@@ -928,7 +1526,7 @@ mod_gentle_ai() {
         fi
     fi
 
-    # Verify the CLI is present (a binary, not an npm tree — command -v + --version
+    # Verify the CLI is present (a binary, not an npm tree - command -v + --version
     # is the correct check). Required for both the selector and the pi harness.
     command -v gentle-ai >/dev/null 2>&1 || {
         log_event "ERROR" "gentle-ai" "binary_missing" "gentle-ai CLI not found on PATH after install" 1
@@ -946,7 +1544,7 @@ mod_gentle_ai() {
 
     # Per-agent / per-IDE selection + MCP wiring, owned by gentle-ai. This is a
     # core step and must actually run: with a real TTY we launch the interactive
-    # selector (run directly — run_cmd would redirect stdout and hide prompts);
+    # selector (run directly - run_cmd would redirect stdout and hide prompts);
     # otherwise we run it non-interactively over the detected agents so CI/pipes
     # never hang. A failure fails the module (no silent downgrade).
     if [[ -t 0 && -t 1 ]]; then
@@ -1056,7 +1654,7 @@ mod_opencode() {
     log_event "INFO" "opencode" "zen_hint" "OpenCode Go / Zen provider hint" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
   OpenCode Go (paid) is hosted-model access; after install run: opencode auth login
-  The SAME key works in pi.dev (no lock-in) — add a custom provider in pi:
+  The SAME key works in pi.dev (no lock-in) - add a custom provider in pi:
     pi.registerProvider("opencode-go", {
       baseUrl: "https://opencode.ai/zen/v1",
       apiKey: "$OPENCODE_API_KEY",
@@ -1323,7 +1921,7 @@ is_selected() {
 }
 
 print_list() {
-    printf 'AI Dev Suite %s — modules (core = installed by default):\n\n' "${SCRIPT_VERSION}"
+    printf 'AI Dev Suite %s - modules (core = installed by default):\n\n' "${SCRIPT_VERSION}"
     local m tag
     for m in "${MODULE_ORDER[@]}"; do
         if module_is_optional "${m}"; then tag="optional"; else tag="core    "; fi
@@ -1333,7 +1931,17 @@ print_list() {
 }
 
 print_help() {
-    sed -n '3,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    # Print the header comment (lines 3-25) without external commands: a missing or
+    # failing `sed` would be an unchecked external call inside `--help`, and the
+    # ERR trap would then abort the script with a confusing error.
+    local line
+    local -a header=()
+    mapfile -t -s 2 -n 23 header < "${BASH_SOURCE[0]}"
+    for line in "${header[@]}"; do
+        line="${line#'# '}"
+        line="${line#\#}"
+        printf '%s\n' "${line}"
+    done
     printf '\n'
     print_list
 }

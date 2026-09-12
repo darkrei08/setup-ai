@@ -1,0 +1,52 @@
+# Extra Pi packages installed on every machine (setup-ai `pi-packages` module).
+#
+# WHERE THIS FILE LIVES (first match wins):
+#   1. the path in PI_PACKAGES_FILE, when you set it explicitly
+#   2. <pi agent dir>/pi-packages.txt   -> the dotenv / Pi config repo, because
+#      ~/.pi/agent is normally a symlink into that checkout (the same split
+#      vekexasia uses: configuration in dotenv, extensions as separate packages)
+#   3. <setup-ai dir>/pi-packages.txt   -> a profile kept next to the installer
+#
+# Nothing found is not an error: no extra packages are installed.
+# Recommended: copy this file to `<dotenv>/pi/agent/pi-packages.txt`, uncomment
+# what you need, and every machine that clones dotenv converges on the same set.
+# A missing/empty manifest installs nothing, so an empty list is safe.
+#
+# One package source per line; blank lines and `#` comments are ignored.
+# Supported sources are exactly what `pi install` accepts:
+#
+#   npm:<package>[@<version>]             published package; pin a version when
+#                                         the machine must not drift
+#   git:<host>/<owner>/<repo>[@<ref>]     public repo pinned to a branch/tag/commit
+#   <path>                                local checkout (absolute path, or ~/...)
+#
+# Every line is verified after install by reading ~/.pi/agent/settings.json back,
+# so a source that pi silently ignored fails the module instead of passing
+# unnoticed. Re-running the installer is idempotent.
+#
+# pi-extensible-workflows is intentionally NOT listed here: the `pi-workflows`
+# module owns that package (published release + patched local build).
+#
+# On another machine, point setup-ai at any list without copying files:
+#   PI_PACKAGES_FILE=/path/to/list.txt bash setup-ai.sh --only pi-packages
+#   $env:PI_PACKAGES_FILE = "C:\path\to\list.txt"; .\setup-ai.ps1 -Only pi-packages
+#
+# --- Examples (uncomment what you need) --------------------------------------
+#
+# Browser/web access and provider helpers
+# npm:pi-web-access
+# npm:pi-anthropic-oauth
+#
+# Editor and UI extensions
+# npm:pi-vim
+# npm:pi-markdown-preview
+# npm:@plannotator/pi-extension
+#
+# Pinned build: keeps the machine on a known-good version
+# npm:pi-btw@0.3.1
+#
+# A branch of a public repo (useful to test a fix before it is released)
+# git:github.com/vekexasia/pi-notify@feat/customizable-notifications
+#
+# A local checkout you build yourself
+# ~/git/personale/pi-cockpit-tools-sync

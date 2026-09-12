@@ -3,5 +3,7 @@ logs/
 node_modules/
 # Local Pi runtime state
 .atl/
+# Session/project-local Pi + workflow settings (never committed)
+.pi/
 # Local CodeGraph index artifact
 .codegraph/

@@ -92,6 +92,19 @@ install, optional packages (`@piewf/cli`, `@piewf/herdr`), Herdr integration, th
 `/workflow` picker, the `workflow` tool, model selection, roles/aliases, and Neovim, see
 the bilingual guide: [docs/pi-workflows-guide.md](docs/pi-workflows-guide.md).
 
+## Pi packages and extensions
+
+pi reads packages from two user-scope npm roots — `~/.pi/agent/npm` (the managed root
+`pi install` and `pi update --extensions` write and load) and `~/.pi/agent/extensions`
+(the shared resolution root setup-ai installs into) — and both must hold the same build.
+The **`pi-packages`** module reads a declarative manifest, one source per line
+(`npm:<pkg>[@<version>]`, `git:<host>/<owner>/<repo>[@<ref>]`, or a local path), and
+verifies every package by reading `~/.pi/agent/settings.json` back instead of trusting
+the install command. Start from `pi-packages.example.txt`; the reference page
+[docs/pi-extensions.md](docs/pi-extensions.md) covers npm 12 `EALLOWREMOTE`, where
+configuration lives (dotenv vs the extension), models and roles for subagents, per-role
+resource selectors, and troubleshooting.
+
 ## OpenCode Go inside pi
 
 An OpenCode Go subscription is reusable in pi (no lock-in). After
