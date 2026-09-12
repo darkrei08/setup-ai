@@ -582,7 +582,7 @@ mod_dotenv() {
 
     # Idempotent upstream-quirk patches (no-ops once upstream merges the fixes).
     if grep_probe "dotenv" "${TMP_DIR}/monokai_hits" \
-        -RIl --exclude-dir=.git "gthelding/monokai-pro.nvim" "${DOTENV_DIR}"; then
+        -rIl --exclude-dir=.git "gthelding/monokai-pro.nvim" "${DOTENV_DIR}"; then
         while IFS= read -r file; do
             run_cmd "dotenv" sed -i 's|gthelding/monokai-pro.nvim|loctvl842/monokai-pro.nvim|g' "${file}"
             log_event "INFO" "dotenv" "reference_patched" "Updated stale monokai-pro reference" 0 "file=${file}"
@@ -590,7 +590,7 @@ mod_dotenv() {
     fi
 
     if grep_probe "dotenv" "${TMP_DIR}/sudo_npm_hits" \
-        -RIl --exclude-dir=.git 'sudo npm install -g --prefix /usr/local bun' "${DOTENV_DIR}"; then
+        -rIl --exclude-dir=.git 'sudo npm install -g --prefix /usr/local bun' "${DOTENV_DIR}"; then
         while IFS= read -r file; do
             run_cmd "dotenv" sed -i 's|sudo npm install -g --prefix /usr/local bun|sudo "$(command -v npm)" install -g --prefix /usr/local bun|g' "${file}"
             log_event "INFO" "dotenv" "reference_patched" "Patched sudo npm call to absolute path" 0 "file=${file}"
@@ -598,7 +598,7 @@ mod_dotenv() {
     fi
 
     if grep_probe "dotenv" "${TMP_DIR}/treesitter_hits" \
-        -RIl --exclude-dir=.git -e 'npm install -g --prefix "\$HOME/.local" tree-sitter-cli' "${DOTENV_DIR}"; then
+        -rIl --exclude-dir=.git -e 'npm install -g --prefix "\$HOME/.local" tree-sitter-cli' "${DOTENV_DIR}"; then
         while IFS= read -r file; do
             local marker_rc=0
             grep -q 'AI_DEV_TS_CLI_PATCH' "${file}" 2>>"${HUMAN_LOG}" || marker_rc=$?
