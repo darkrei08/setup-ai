@@ -533,8 +533,9 @@ assert_transient_rename_retry() {
         "path=${io_js};context=${context}"
 }
 
-# Derive the stable id of a Pi package source (`npm:`/`git:`/local path) so a
-# readback check can match pi's own record regardless of version or ref noise.
+# Derive the last path segment of a Pi package source, so a manifest line can be
+# recognised as the workflow package the pi-workflows module owns. Identity
+# comparisons for the readback check live in the Node/PowerShell helper.
 pi_package_id() {
     local spec="$1"
     case "${spec}" in
@@ -556,8 +557,7 @@ pi_package_id() {
 # published workflow package was really replaced by the patched local source).
 assert_pi_package_registered() {
     local phase="$1" spec="$2" expectation="${3:-present}"
-    local settings="${PI_AGENT_DIR}/settings.json" want
-    want="$(pi_package_id "${spec}")"
+    local settings="${PI_AGENT_DIR}/settings.json"
 
     if [[ ! -f "${settings}" ]]; then
         log_event "ERROR" "${phase}" "settings_missing" \
@@ -567,14 +567,6 @@ assert_pi_package_registered() {
     local rc=0
     node -e '
         const fs = require("node:fs");
-        const id = (source) => {
-            let spec = String(source).trim();
-            spec = spec.replace(/^(npm|git):/, "").split("#")[0].replace(/\.git$/, "");
-            const at = spec.lastIndexOf("@");
-            if (at > 0) spec = spec.slice(0, at);
-            const parts = spec.split("/");
-            return parts[parts.length - 1];
-        };
         let settings;
         try {
             settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
@@ -600,15 +592,22 @@ assert_pi_package_registered() {
                 if (at > 0) spec = spec.slice(0, at);
                 return "git:" + spec;
             }
+            // A leading ~ means the user profile, not a directory named "~" under
+            // the agent dir, and the shell cannot expand it inside a quoted argument.
+            if (spec === "~" || spec.startsWith("~/") || spec.startsWith("~\\")) {
+                spec = path.join(process.env.HOME || require("node:os").homedir(), spec.slice(1).replace(/^[\\/]+/, ""));
+            }
             const resolved = path.resolve(baseDir, spec);
             return "local:" + (process.platform === "win32" ? resolved.toLowerCase() : resolved);
         };
         const baseDir = path.dirname(process.argv[1]);
         const packages = settings.packages ?? [];
-        const want = identity(process.argv[2], process.cwd());
+        // Resolve a local want exactly as the recorded entries are resolved:
+        // against the agent dir, where pi records them, never the caller cwd.
+        const want = identity(process.argv[2], baseDir);
         const found = packages.some((entry) => identity(typeof entry === "string" ? entry : entry?.source, baseDir) === want);
         process.exit(found === (process.argv[3] === "present") ? 0 : 1);
-    ' "${settings}" "${want}" "${expectation}" || rc=$?
+    ' "${settings}" "${spec}" "${expectation}" || rc=$?
     if (( rc == 2 )); then
         log_event "ERROR" "${phase}" "settings_unreadable" \
             "pi settings.json could not be parsed; cannot prove the package state" 1 "path=${settings}"
@@ -795,7 +794,15 @@ install_patched_pi_workflows() {
             "source=${src}"
         return 1
     fi
-    pushd "${src}" >/dev/null
+    # Called as an `if` condition, so errexit is suspended in here: every directory change
+    # before an npm command is checked, or npm would run in the previous directory and
+    # rewrite an unrelated project's manifest.
+    if ! pushd "${src}" >/dev/null; then
+        log_event "ERROR" "${phase}" "workspace_unavailable" \
+            "Could not enter the workflow checkout; refusing to install into an unrelated directory" 1 \
+            "path=${src}"
+        return 1
+    fi
     # --no-save --package-lock=false: install only what the build needs without
     # writing to the checkout's tracked manifest or lockfile - this source tree
     # belongs to the user, and setup-ai must not leave edits behind in it.
@@ -832,7 +839,13 @@ install_patched_pi_workflows() {
             skipped_roots="${skipped_roots}${skipped_roots:+,}${root}"
             continue
         fi
-        pushd "${root}" >/dev/null
+        if ! pushd "${root}" >/dev/null; then
+            log_event "ERROR" "${phase}" "root_unavailable" \
+                "Could not enter the resolution root; refusing to install into an unrelated directory" 1 \
+                "root=${root}"
+            rollback_published_pi_workflows
+            return 1
+        fi
         if ! run_cmd "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
             popd >/dev/null
             # The root may already carry the patched build: restore before leaving, so a
@@ -872,13 +885,29 @@ install_patched_pi_workflows() {
     # import time. `pi uninstall` normally removes it; repair and verify when it
     # survived. Past the swap the whole operation is all-or-nothing, so a failure here
     # restores the published registration instead of leaving a half-patched install.
-    local managed_io="${PI_NPM_DIR}/node_modules/pi-extensible-workflows/dist/src/io.js"
+    local managed_pkg="${PI_NPM_DIR}/node_modules/pi-extensible-workflows"
+    local managed_io="${managed_pkg}/dist/src/io.js"
+    # A root that still carries the package without its entry point is not a skipped root,
+    # it is an unverifiable one: the loaded build cannot be proven patched, so fail closed.
+    if [[ -d "${managed_pkg}" && ! -f "${managed_io}" ]]; then
+        log_event "ERROR" "${phase}" "managed_artifact_missing" \
+            "The managed root still carries the workflow package without its entry point; cannot prove the patched build is the one loaded" 1 \
+            "path=${managed_pkg}"
+        rollback_published_pi_workflows
+        return 1
+    fi
     if [[ -f "${managed_io}" ]]; then
         if ! grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${managed_io}"; then
             log_event "WARN" "${phase}" "managed_copy_stale" \
                 "Unpatched copy survived in the managed root; replacing it with the patched build" 0 \
                 "path=${managed_io}"
-            pushd "${PI_NPM_DIR}" >/dev/null
+            if ! pushd "${PI_NPM_DIR}" >/dev/null; then
+                log_event "ERROR" "${phase}" "managed_root_unavailable" \
+                    "Could not enter the managed root; refusing to install into an unrelated directory" 1 \
+                    "root=${PI_NPM_DIR}"
+                rollback_published_pi_workflows
+                return 1
+            fi
             if ! run_cmd "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
                 popd >/dev/null
                 rollback_published_pi_workflows
@@ -1320,6 +1349,14 @@ mod_pi_workflows() {
     log_event "INFO" "pi-workflows" "version_selected" "Workflow version selected" 0 "version=${PI_WORKFLOW_VERSION}"
 
     run_cmd "pi-workflows" pi install "npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
+    # Prove what pi recorded instead of trusting the command's exit code: the parity rule
+    # here is the same readback the PowerShell sibling performs right after its install.
+    if ! assert_pi_package_registered "pi-workflows" "npm:pi-extensible-workflows"; then
+        log_event "ERROR" "pi-workflows" "published_package_not_registered" \
+            "pi did not register the published workflow package" 1 \
+            "version=${PI_WORKFLOW_VERSION}"
+        return 1
+    fi
 
     mkdir -p "${PI_EXTENSIONS_DIR}"
     pushd "${PI_EXTENSIONS_DIR}" >/dev/null

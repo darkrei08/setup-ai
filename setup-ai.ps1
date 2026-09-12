@@ -502,6 +502,10 @@ function Get-PiPackageIdentity {
         return "git:$spec"
     }
     # Local sources may be recorded relative to the agent directory.
+    # A leading ~ is the user profile, not a directory named "~" under the agent dir.
+    if ($spec -eq '~' -or $spec.StartsWith('~/') -or $spec.StartsWith('~\')) {
+        $spec = Join-Path $HOME $spec.Substring(1).TrimStart([char]'\', [char]'/')
+    }
     $full = if ([System.IO.Path]::IsPathRooted($spec)) { [System.IO.Path]::GetFullPath($spec) } else { [System.IO.Path]::GetFullPath((Join-Path $BaseDir $spec)) }
     return "local:" + $full.ToLowerInvariant()
 }
@@ -610,7 +614,16 @@ function Restore-PublishedPiWorkflows {
             $restoreFailed = $true
             continue
         }
-        $rootVersion = (Get-Content -Raw $rootPkg | ConvertFrom-Json).version
+        $rootVersion = $null
+        try {
+            $rootVersion = (Get-Content -Raw -LiteralPath $rootPkg | ConvertFrom-Json).version
+        } catch {
+            # An unreadable artifact cannot prove the restore: fail closed here instead of
+            # letting the exception escape past the rollback-failure latch below.
+            Write-Log WARN $phase "rollback_artifact_unreadable" "Published workflow package metadata could not be read after rollback" 0 "root=$root;error=$($_.Exception.Message)"
+            $restoreFailed = $true
+            continue
+        }
         if ($rootVersion -ne $ver) {
             Write-Log WARN $phase "rollback_artifact_version_mismatch" "Root holds a different workflow version after rollback" 0 "root=$root;expected=$ver;actual=$rootVersion"
             $restoreFailed = $true
@@ -651,6 +664,7 @@ function Install-PatchedPiWorkflows {
     $phase = "pi-workflows-patch"
     # One attempt, one verdict: never inherit a previous run's rollback outcome.
     $script:SetupAiRollbackFailed = $false
+    $swapStarted = $false
     $src = $PiWorkflowsSourceDir
     $ref = $PiWorkflowsFixRef
     $pkgDir = Join-Path $src "packages\core"
@@ -802,9 +816,14 @@ function Install-PatchedPiWorkflows {
         # npm source in place would keep the unpatched copy in the managed root and
         # register two copies of the same extension at once. From this point the published
         # package is unregistered, so every failure path restores it.
+        # Past this point the published package is unregistered, so an unexpected exception
+        # must still put the environment back before the fallback is reported.
+        $swapStarted = $true
         $null = Invoke-Step -Phase $phase -Optional -Action { pi uninstall npm:pi-extensible-workflows }
         try {
-            Assert-PiPackageRegistered -Phase $phase -Spec $pkgDir -Expectation "absent"
+            # The local source may already be registered by a previous successful run: a
+            # rerun must converge, so only the npm source is required to be gone. Bash does
+            # the same, and requiring the local source to be absent made every rerun roll back.
             Assert-PiPackageRegistered -Phase $phase -Spec "npm:pi-extensible-workflows" -Expectation "absent"
             $null = Invoke-Step -Phase $phase -Action { pi install $pkgDir }
             Assert-PiPackageRegistered -Phase $phase -Spec $pkgDir
@@ -817,7 +836,15 @@ function Install-PatchedPiWorkflows {
         # import time. `pi uninstall` normally removes it; repair and verify when it
         # survived. Past the swap the whole operation is all-or-nothing, so a failure here
         # restores the published registration instead of leaving a half-patched install.
-        $managedIo = Join-Path $PiNpmDir "node_modules\pi-extensible-workflows\dist\src\io.js"
+        $managedPkg = Join-Path $PiNpmDir "node_modules\pi-extensible-workflows"
+        $managedIo = Join-Path $managedPkg "dist\src\io.js"
+        # A root that still carries the package without its entry point is not a skipped
+        # root, it is an unverifiable one, so fail closed instead of reporting success.
+        if ((Test-Path -LiteralPath $managedPkg -PathType Container) -and -not (Test-Path -LiteralPath $managedIo -PathType Leaf)) {
+            Write-Log ERROR $phase "managed_artifact_missing" "The managed root still carries the workflow package without its entry point; cannot prove the patched build is the one loaded" 1 "path=$managedPkg"
+            $null = Restore-PublishedPiWorkflows
+            return $false
+        }
         if (Test-Path -LiteralPath $managedIo -PathType Leaf) {
             if (-not (Test-TransientRenameMarker -IoJs $managedIo)) {
                 Write-Log WARN $phase "managed_copy_stale" "Unpatched copy survived in the managed root; replacing it with the patched build" 0 "path=$managedIo"
@@ -846,6 +873,12 @@ function Install-PatchedPiWorkflows {
     } catch {
         # Invoke-Step already logged the failing step; the caller falls back to the
         # published release instead of failing the module, but the cause is still reported.
+        # Once the swap started, a throw may have left the local source registered, so the
+        # restore runs here too and its own failure raises the hard rollback-failure latch.
+        if ($swapStarted) {
+            try { $null = Restore-PublishedPiWorkflows }
+            catch { $script:SetupAiRollbackFailed = $true }
+        }
         Write-Log WARN $phase "patch_unexpected_failure" "Unexpected failure while installing the patched build" 0 "error=$($_.Exception.Message)"
         return $false
     }
@@ -1110,7 +1143,12 @@ function Mod-PiWorkflows {
     # installed above. A failure here is reported, never hidden: the environment
     # keeps working with the published release.
     $patchedActive = $false
-    try { $patchedActive = [bool](Install-PatchedPiWorkflows) } catch { $patchedActive = $false }
+    try { $patchedActive = [bool](Install-PatchedPiWorkflows) } catch {
+        # A throw after a failed restore means the environment was not put back: surface it
+        # instead of degrading to a published release we cannot prove is intact.
+        if ($script:SetupAiRollbackFailed) { throw }
+        $patchedActive = $false
+    }
     if ($patchedActive) {
         $patchedVersion = "unknown"
         try { $patchedVersion = (Get-Content -Raw $localPkg | ConvertFrom-Json).version } catch { $patchedVersion = "unknown" }
