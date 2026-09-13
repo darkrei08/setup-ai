@@ -1518,15 +1518,65 @@ function Get-RotatorExecutable {
 # scheduled task, which runs hidden and needs no console. Registering only, not starting:
 # the process is started by its own step and only when nothing answers its port, so an
 # already-running gateway is never doubled.
+#
+# Windows has no counterpart to the Linux unit's Restart=on-failure, so the task also carries a
+# repeating trigger as a watchdog: every tick starts the gateway only when nothing listens on
+# 51200 yet. IgnoreNew skips the tick while the gateway it started is still running, and
+# the tick's own probe skips it while a gateway started elsewhere holds the port.
 function Register-RotatorTask {
     $binPath = Get-RotatorExecutable
+    $watchdogMinutes = 5
     try {
-        $action = New-ScheduledTaskAction -Execute $binPath -Argument 'start'
-        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
-        Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger $trigger -Settings $taskSettings `
+        # The tick probes before it starts anything, because a manual or installer-detached
+        # gateway owns the port without owning this task instance, and IgnoreNew alone cannot
+        # keep that one single. A connect to the address the module's own probe uses is the
+        # cheapest test that answers "is a gateway already answering?": it is milliseconds,
+        # while Get-NetTCPConnection costs seconds and loads the NetTCPIP module.
+        #NOTE: a gateway bound to a non-loopback address only would read as free here; the
+        # gateway itself binds 0.0.0.0 (tuxevil-rotator's default) and 127.0.0.1 is what the
+        # module and the Pi extension probe, so this asks the same question they do.
+        # The path lands in a single-quoted string inside the task's command line, so a quote
+        # in it would end that string early; doubling it is PowerShell's own escaping.
+        $shim = $binPath.Replace("'", "''")
+        $tick = "try { (New-Object Net.Sockets.TcpClient('127.0.0.1', 51200)).Close() } catch { & '$shim' start }"
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ('-NoProfile -WindowStyle Hidden -Command "' + $tick + '"')
+        # Logon starts the gateway; the once-trigger's repetition is the watchdog. A
+        # repetition attached to the logon trigger itself never fires: measured on Windows 11,
+        # such a task reports no NextRunTime and only ever runs at logon.
+        $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $watchdogMinutes)
+        # A zero execution time limit is what keeps a long-running gateway from being killed
+        # at the scheduler's default three days.
+        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger @($atLogon, $watchdog) -Settings $taskSettings `
             -Description "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200" -Force | Out-Null
-        Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon through a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath"
+        # A registration can half-apply, and the promise is about the next logon rather than about
+        # this run, so the task is read back and checked: what it runs, that it still starts at
+        # logon for this user, and the two settings the supervision rests on. This also covers the
+        # trap above, where a repetition attached to the wrong trigger reads back as no watchdog.
+        $registered = Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction Stop
+        $actions = @($registered.Actions)
+        $actionOk = $actions.Count -eq 1 -and $actions[0].Execute -eq $action.Execute -and $actions[0].Arguments -eq $action.Arguments
+        $logonOk = @($registered.Triggers | Where-Object {
+            $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" -and $_.Enabled -and ($_.UserId -split '\\')[-1] -eq $env:USERNAME
+        }).Count -gt 0
+        # Both sides are read as ISO durations, because the scheduler hands the interval back as
+        # the string "PT5M" while the trigger built here holds it as a TimeSpan.
+        $interval = [System.Xml.XmlConvert]::ToTimeSpan($watchdog.Repetition.Interval)
+        $watchdogOk = @($registered.Triggers | Where-Object {
+            $_.Enabled -and $_.Repetition -and $_.Repetition.Interval -and [System.Xml.XmlConvert]::ToTimeSpan($_.Repetition.Interval) -eq $interval
+        }).Count -gt 0
+        # A disabled task or trigger is registered and inert, so both are part of the check.
+        $enabledOk = [bool]$registered.Settings.Enabled
+        $instancesOk = $registered.Settings.MultipleInstances -eq "IgnoreNew"
+        $limitOk = [System.Xml.XmlConvert]::ToTimeSpan($registered.Settings.ExecutionTimeLimit) -eq [TimeSpan]::Zero
+        if (-not ($actionOk -and $logonOk -and $watchdogOk -and $enabledOk -and $instancesOk -and $limitOk)) {
+            $flags = "task=tuxevil-rotator;action=$actionOk;logon=$logonOk;watchdog=$watchdogOk;enabled=$enabledOk;ignoreNew=$instancesOk;noTimeLimit=$limitOk"
+            Write-Log WARN "rotator" "task_unverified" "Scheduled task registered without the action, logon trigger, or watchdog settings this module relies on; the gateway may stay down until the next setup-ai run" 0 $flags
+            return $false
+        }
+        Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes by a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m"
         return $true
     } catch {
         Write-Log WARN "rotator" "task_failed" "Scheduled task not registered; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"

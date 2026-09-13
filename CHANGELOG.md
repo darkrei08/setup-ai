@@ -19,6 +19,14 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   on port 51200, and proves that start with a bounded re-probe before reporting it. A
   machine with neither mechanism still gets a detached process and a `WARN`, never a
   failed install.
+- **`rotator` module: the Windows task supervises the gateway.** The task now also carries a
+  five-minute repeating trigger, with `-MultipleInstances IgnoreNew` so a tick is skipped while
+  the gateway it started is still running and `-ExecutionTimeLimit 0` so the scheduler never
+  kills a long-running one. Each tick checks the port before it starts anything, so a gateway
+  owned by a session or by the detached fallback is not doubled, and a gateway that dies comes
+  back without waiting for the next logon, the next `setup-ai` run, or the next Pi session.
+  Linux already restarts through the unit's `Restart=on-failure`/`RestartSec=5` and needs no
+  code change.
 - **`rotator` module: Linux detection verified across distributions.** The apt/dnf/pacman/
   zypper families and their derivatives resolve through `ID_LIKE`, including CachyOS ->
   pacman; a distribution the installer cannot map still fails closed at preflight with
