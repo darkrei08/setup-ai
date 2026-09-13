@@ -33,6 +33,9 @@ LOG_DIR="${SCRIPT_DIR}/logs"
 mkdir -p "${LOG_DIR}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+# RUN_ID is already a UTC timestamp: slice it instead of paying a second `date` call.
+RUN_STARTED_AT="${RUN_ID:0:4}-${RUN_ID:4:2}-${RUN_ID:6:2}T${RUN_ID:9:2}:${RUN_ID:11:2}:${RUN_ID:13:2}Z"
+RUN_STARTED_SECONDS="${SECONDS}"
 
 HUMAN_LOG="${LOG_DIR}/setup_${RUN_ID}.log"
 JSONL_LOG="${LOG_DIR}/setup_${RUN_ID}.jsonl"
@@ -104,7 +107,9 @@ PI_WORKFLOWS_REMOTE="${PI_WORKFLOWS_REMOTE:-https://github.com/darkrei08/pi-exte
 cleanup() {
     rm -rf -- "${TMP_DIR}"
 }
-trap cleanup EXIT
+# The run summary is written from the exit trap rather than from write_report: several
+# failure paths end in a direct `exit` and never reach the ERR trap.
+trap 'on_exit $?' EXIT
 
 # ------------------------------------------------------------------------------
 # JSON escaping without Python (works before Python is installed)
@@ -122,7 +127,7 @@ json_escape() {
 
 json_log() {
     local timestamp="$1" level="$2" phase="$3" event="$4" message="$5"
-    local return_code="${6:-0}" meta="${7:-}"
+    local return_code="${6:-0}" meta="${7:-}" extra="${8:-}"
 
     local j_ts j_level j_phase j_event j_message j_meta
     j_ts="$(json_escape "${timestamp}")"
@@ -139,18 +144,31 @@ json_log() {
         if [[ -n "${meta}" ]]; then
             printf ',"meta":"%s"' "${j_meta}"
         fi
+        if [[ -n "${extra}" ]]; then
+            # Pre-serialized object body, used by the terminal run summary record.
+            printf ',"summary":%s' "${extra}"
+        fi
         printf '}\n'
     } >> "${JSONL_LOG}"
 }
 
 log_event() {
     local level="$1" phase="$2" event="$3" message="$4"
-    local return_code="${5:-0}" meta="${6:-}"
+    local return_code="${5:-0}" meta="${6:-}" extra="${7:-}"
 
     local timestamp
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}"
+    json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}"
+
+    # First failure wins: later wrapper events (`script_failed`) only announce the failure
+    # this one named, so they must not replace the root cause the summary falls back to.
+    if [[ "${level}" == "ERROR" && -z "${LAST_ERROR_STEP}" ]]; then
+        # Fallback diagnosis for the run summary when no step recorded the failure
+        # itself (a module that exits directly, or a preflight check).
+        LAST_ERROR_STEP="${event}: ${message}"
+        LAST_ERROR_RC="${return_code}"
+    fi
 
     local line="${timestamp} [${level}] ${phase} ${event}: ${message}"
     printf '%s\n' "${line}" >> "${HUMAN_LOG}"
@@ -162,6 +180,146 @@ log_event() {
         DEBUG) (( DEBUG == 1 )) && printf '\033[0;90m%s\033[0m\n' "${line}" ;;
         *)     printf '%s\n' "${line}" ;;
     esac
+}
+
+# ------------------------------------------------------------------------------
+# Run summary state
+#
+# One `run_summary` record per run, built from the state below as the run progresses.
+# Step counters are incremented by record_step from the command helpers; module
+# outcomes come from run_module, plus the module (or phase) current at the failure.
+# ------------------------------------------------------------------------------
+
+SELECTED_MODULES=()
+SELECTED_DISPLAY=""
+CURRENT_MODULE=""
+RUN_ACTIVE=0
+MODULES_OK=""
+STEP_INSTALLED=0
+STEP_VERIFIED=0
+STEP_SKIPPED=0
+STEP_FAILED=0
+STEP_FAIL_STEP=""
+STEP_FAIL_RC=0
+LAST_ERROR_STEP=""
+LAST_ERROR_RC=0
+SUMMARY_WRITTEN=0
+
+# Space-delimited on purpose: a plain string keeps the empty case safe under
+# `set -u` on the bash 3.2 that macOS ships. Module names never contain spaces.
+module_succeeded() {
+    [[ " ${MODULES_OK} " == *" $1 "* ]]
+}
+
+# One machine-readable outcome per executed step, so the summary is counted from the
+# run itself instead of by re-parsing the log. status: installed|verified|skipped|failed.
+record_step() {
+    local phase="$1" status="$2" return_code="$3" step="$4" level="INFO"
+    case "${status}" in
+        installed) STEP_INSTALLED=$(( STEP_INSTALLED + 1 )) ;;
+        verified)  STEP_VERIFIED=$(( STEP_VERIFIED + 1 )) ;;
+        skipped)   STEP_SKIPPED=$(( STEP_SKIPPED + 1 )); level="WARN" ;;
+        failed)
+            STEP_FAILED=$(( STEP_FAILED + 1 ))
+            level="ERROR"
+            STEP_FAIL_STEP="${step}"
+            STEP_FAIL_RC="${return_code}"
+            ;;
+    esac
+    log_event "${level}" "${phase}" "step_result" "Step ${status}" "${return_code}" \
+        "step=${step};module=${CURRENT_MODULE};status=${status}"
+}
+
+# Terminal record for the run, emitted once from the exit trap so a failed run
+# reports why it failed regardless of the path it left through.
+write_run_summary() {
+    local rc="${1:-0}"
+    # `--list` and `--help` exit inside parse_args: they are queries, not runs.
+    (( RUN_ACTIVE == 1 )) || return 0
+    (( SUMMARY_WRITTEN == 1 )) && return 0
+    SUMMARY_WRITTEN=1
+
+    local outcome="success" level="INFO"
+    if (( rc != 0 )); then
+        outcome="failed"
+        level="ERROR"
+    fi
+
+    # A summary with a missing timestamp is worse than one that repeats the start time,
+    # and the duration comes from the shell's own clock, so neither needs a helper.
+    local ended_at duration
+    ended_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)" || ended_at="${RUN_STARTED_AT}"
+    duration=$(( SECONDS - RUN_STARTED_SECONDS ))
+    (( duration < 0 )) && duration=0
+
+    # A failed step names itself; anything else falls back to the last ERROR record.
+    local failed_step="${STEP_FAIL_STEP}" failed_rc="${STEP_FAIL_RC}"
+    if [[ -z "${failed_step}" ]]; then
+        failed_step="${LAST_ERROR_STEP}"
+        failed_rc="${LAST_ERROR_RC}"
+    fi
+    (( failed_rc > 0 )) || failed_rc=1
+
+    local -a module_names=()
+    if (( ${#SELECTED_MODULES[@]} > 0 )); then
+        module_names=("${SELECTED_MODULES[@]}")
+    fi
+    if [[ "${outcome}" == "failed" && -n "${CURRENT_MODULE}" ]] && ! is_selected "${CURRENT_MODULE}"; then
+        # A gate or the shell environment can fail outside any selected module.
+        module_names+=("${CURRENT_MODULE}")
+    fi
+
+    local m status entry modules_json="" m_success=0 m_failed=0 m_skipped=0
+    local -a report_lines=("## Run summary" "" "- Run ID: \`${RUN_ID}\`" "- Outcome: ${outcome}")
+    report_lines+=("- Started: ${RUN_STARTED_AT}")
+    report_lines+=("- Ended: ${ended_at} (${duration}s)")
+    for m in "${module_names[@]}"; do
+        if module_succeeded "${m}"; then
+            status="success"; m_success=$(( m_success + 1 ))
+        elif [[ "${outcome}" == "failed" && "${m}" == "${CURRENT_MODULE}" ]]; then
+            status="failed"; m_failed=$(( m_failed + 1 ))
+        else
+            status="skipped"; m_skipped=$(( m_skipped + 1 ))
+        fi
+        entry="{\"name\":\"$(json_escape "${m}")\",\"status\":\"${status}\""
+        if [[ "${status}" == "failed" ]]; then
+            entry="${entry},\"failed_step\":\"$(json_escape "${failed_step}")\",\"return_code\":${failed_rc}}"
+            report_lines+=("- Module \`${m}\`: failed at \`${failed_step}\` (return code ${failed_rc})")
+        else
+            entry="${entry}}"
+            report_lines+=("- Module \`${m}\`: ${status}")
+        fi
+        modules_json="${modules_json}${modules_json:+,}${entry}"
+    done
+    report_lines+=("- Steps: ${STEP_INSTALLED} installed, ${STEP_VERIFIED} verified, ${STEP_SKIPPED} skipped, ${STEP_FAILED} failed")
+
+    local message="Run summary: outcome=${outcome};duration_seconds=${duration}"
+    message="${message};modules_success=${m_success};modules_failed=${m_failed};modules_skipped=${m_skipped}"
+    message="${message};steps_installed=${STEP_INSTALLED};steps_verified=${STEP_VERIFIED}"
+    message="${message};steps_skipped=${STEP_SKIPPED};steps_failed=${STEP_FAILED}"
+    if [[ "${outcome}" == "failed" ]]; then
+        message="${message};failed_step=${failed_step};return_code=${failed_rc}"
+    fi
+
+    # A run that failed before write_report still ends with a report, as it does in
+    # setup-ai.ps1, and the summary is what it has to carry.
+    if [[ ! -f "${REPORT_FILE}" ]]; then
+        printf '# AI Dev Suite - Engineering Report\n' > "${REPORT_FILE}"
+    fi
+    printf '\n' >> "${REPORT_FILE}"
+    printf '%s\n' "${report_lines[@]}" >> "${REPORT_FILE}"
+
+    log_event "${level}" "bootstrap" "run_summary" "${message}" "${rc}" "" \
+        "$(printf '{"run_id":"%s","outcome":"%s","started_at":"%s","ended_at":"%s","duration_seconds":%s,"modules":[%s],"steps":{"installed":%s,"verified":%s,"skipped":%s,"failed":%s}}' \
+            "$(json_escape "${RUN_ID}")" "${outcome}" "${RUN_STARTED_AT}" "${ended_at}" \
+            "${duration}" "${modules_json}" "${STEP_INSTALLED}" "${STEP_VERIFIED}" \
+            "${STEP_SKIPPED}" "${STEP_FAILED}")"
+}
+
+on_exit() {
+    local rc="${1:-0}"
+    cleanup
+    write_run_summary "${rc}"
 }
 
 # ------------------------------------------------------------------------------
@@ -208,53 +366,88 @@ require_command() {
     fi
 }
 
+# Run a command. --verify marks a read-back whose success is counted as verification
+# rather than as an install; --optional marks one whose failure the caller recovers from.
+# Both keep the command's own events and its return code, and mirror -Verify / -Optional
+# on Invoke-Step in setup-ai.ps1.
 run_cmd() {
     local phase="$1"; shift
+    local optional=0 verify=0
+    while [[ "${1:-}" == --* ]]; do
+        case "$1" in
+            --optional) optional=1 ;;
+            --verify)   verify=1 ;;
+            *)          break ;;
+        esac
+        shift
+    done
     local display; printf -v display '%q ' "$@"
-    log_event "INFO" "${phase}" "command_start" "Executing command" 0 "${display}"
+    local start_event="command_start" finish_event="command_success" fail_event="command_failed"
+    local start_message="Executing command" finish_message="Command completed"
+    local fail_message="Command returned non-zero status" level="ERROR" status="failed" ok_status="installed"
+    if (( verify == 1 )); then
+        ok_status="verified"
+    fi
+    if (( optional == 1 )); then
+        start_event="optional_command_start"; finish_event="optional_command_success"
+        fail_event="optional_command_failed"; start_message="Executing optional command"
+        finish_message="Optional command completed"
+        fail_message="Optional command failed; continuing"; level="WARN"; status="skipped"
+    fi
+    log_event "INFO" "${phase}" "${start_event}" "${start_message}" 0 "${display}"
 
     local output="${TMP_DIR}/command_${RANDOM}.log" rc=0
     "$@" >"${output}" 2>&1 || rc=$?
     cat "${output}" | tee -a "${HUMAN_LOG}"
 
     if (( rc == 0 )); then
-        log_event "INFO" "${phase}" "command_success" "Command completed" 0 "${display}"
+        log_event "INFO" "${phase}" "${finish_event}" "${finish_message}" 0 "${display}"
+        record_step "${phase}" "${ok_status}" 0 "${display}"
         return 0
     fi
-    log_event "ERROR" "${phase}" "command_failed" "Command returned non-zero status" "${rc}" "${display}"
+    log_event "${level}" "${phase}" "${fail_event}" "${fail_message}" "${rc}" "${display}"
+    record_step "${phase}" "${status}" "${rc}" "${display}"
     return "${rc}"
 }
 
+# Run a command whose failure the run ignores: the status is deliberately dropped (this
+# helper has no fallback to choose), so run_cmd keeps the single implementation.
 run_optional() {
     local phase="$1"; shift
-    local display; printf -v display '%q ' "$@"
-    log_event "INFO" "${phase}" "optional_command_start" "Executing optional command" 0 "${display}"
-
-    local output="${TMP_DIR}/optional_${RANDOM}.log" rc=0
-    "$@" >"${output}" 2>&1 || rc=$?
-    cat "${output}" | tee -a "${HUMAN_LOG}"
-
-    if (( rc == 0 )); then
-        log_event "INFO" "${phase}" "optional_command_success" "Optional command completed" 0 "${display}"
-    else
-        log_event "WARN" "${phase}" "optional_command_failed" "Optional command failed; continuing" "${rc}" "${display}"
-    fi
+    run_cmd "${phase}" --optional "$@" || :
     return 0
 }
 
 capture_cmd() {
     local output_var="$1" phase="$2"; shift 2
+    # --optional marks a readback the caller tolerates: its failure is the `skipped`
+    # outcome, matching what -Optional means for Invoke-Step in setup-ai.ps1.
+    local optional=0
+    if [[ "${1:-}" == "--optional" ]]; then
+        optional=1
+        shift
+    fi
     local display; printf -v display '%q ' "$@"
     local output="${TMP_DIR}/capture_${RANDOM}.log" rc=0
     log_event "INFO" "${phase}" "capture_start" "Collecting command output" 0 "${display}"
     "$@" >"${output}" 2>&1 || rc=$?
     cat "${output}" | tee -a "${HUMAN_LOG}"
     if (( rc != 0 )); then
-        log_event "ERROR" "${phase}" "capture_failed" "Command failed while collecting output" "${rc}" "${display}"
+        if (( optional == 1 )); then
+            # A tolerated readback is a warning, never an error the run did not take:
+            # the caller falls back and the step is counted as skipped.
+            log_event "WARN" "${phase}" "optional_capture_failed" \
+                "Optional command failed while collecting output; continuing" "${rc}" "${display}"
+            record_step "${phase}" "skipped" "${rc}" "${display}"
+        else
+            log_event "ERROR" "${phase}" "capture_failed" "Command failed while collecting output" "${rc}" "${display}"
+            record_step "${phase}" "failed" "${rc}" "${display}"
+        fi
         return "${rc}"
     fi
     printf -v "${output_var}" '%s' "$(cat "${output}")"
     log_event "INFO" "${phase}" "capture_success" "Output captured" 0 "${display}"
+    record_step "${phase}" "verified" 0 "${display}"
 }
 
 # Run a `grep` probe that distinguishes "no match" from a real failure.
@@ -282,7 +475,7 @@ report_version() {
         printf -v "${output_var}" '%s' "n/a"
         return 0
     fi
-    if ! capture_cmd "${output_var}" "report" "${command_name}" "$@"; then
+    if ! capture_cmd "${output_var}" "report" --optional "${command_name}" "$@"; then
         printf -v "${output_var}" '%s' "n/a"
         log_event "WARN" "report" "version_unavailable" \
             "Could not read command version" 0 "command=${command_name}"
@@ -458,7 +651,7 @@ ensure_npm_remote_sources() {
     fi
 
     local npm_version npm_major
-    if ! capture_cmd npm_version "${phase}" npm --version; then
+    if ! capture_cmd npm_version "${phase}" --optional npm --version; then
         log_event "WARN" "${phase}" "npm_version_unavailable" \
             "Could not read the npm version; remote-source opt-in was not written" 0 "dir=${dir}"
         return 0
@@ -974,14 +1167,14 @@ install_patched_pi_workflows() {
     # --no-save --package-lock=false: install only what the build needs without
     # writing to the checkout's tracked manifest or lockfile - this source tree
     # belongs to the user, and setup-ai must not leave edits behind in it.
-    if ! run_cmd "${phase}" npm install --no-save --package-lock=false --no-audit --no-fund; then
+    if ! run_cmd "${phase}" --optional npm install --no-save --package-lock=false --no-audit --no-fund; then
         popd >/dev/null
         log_event "WARN" "${phase}" "workspace_install_failed" \
             "Workspace dependencies could not be installed; keeping the published release" 0 \
             "source=${src};hint=npm 12 blocks dependency install scripts by default"
         return 1
     fi
-    if ! run_cmd "${phase}" npm run build --workspace=packages/core; then
+    if ! run_cmd "${phase}" --optional npm run build --workspace=packages/core; then
         popd >/dev/null
         log_event "WARN" "${phase}" "patch_build_failed" \
             "Workflow package build failed; keeping the published release" 0 \
@@ -1014,7 +1207,7 @@ install_patched_pi_workflows() {
             rollback_published_pi_workflows
             return 1
         fi
-        if ! run_cmd "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
+        if ! run_cmd "${phase}" --optional npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
             popd >/dev/null
             # The root may already carry the patched build: restore before leaving, so a
             # failure here never leaves a mixed patched/published installation behind.
@@ -1076,7 +1269,7 @@ install_patched_pi_workflows() {
                 rollback_published_pi_workflows
                 return 1
             fi
-            if ! run_cmd "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
+            if ! run_cmd "${phase}" --optional npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
                 popd >/dev/null
                 rollback_published_pi_workflows
                 return 1
@@ -1622,7 +1815,7 @@ mod_pi_workflows() {
     #    environment keeps working with the published release.
     if install_patched_pi_workflows; then
         local patched_version="unknown"
-        if ! capture_cmd patched_version "pi-workflows-patch" node -e \
+        if ! capture_cmd patched_version "pi-workflows-patch" --optional node -e \
             'console.log(require(process.argv[1]).version)' \
             "${PI_EXTENSIONS_DIR}/node_modules/pi-extensible-workflows/package.json"; then
             patched_version="unknown"
@@ -1755,7 +1948,7 @@ mod_gentle_ai() {
         log_event "ERROR" "gentle-ai" "binary_missing" "gentle-ai CLI not found on PATH after install" 1
         return 1
     }
-    run_cmd "gentle-ai" gentle-ai --version
+    run_cmd "gentle-ai" --verify gentle-ai --version
 
     # Detect the agents/IDEs present on this machine (same mapping as mod_ee).
     local agent
@@ -2140,6 +2333,7 @@ HINT
 # ==============================================================================
 
 configure_shell_env() {
+    CURRENT_MODULE="shell"
     section "Shell environment"
     local shell_config="${HOME}/.bashrc"
     [[ -n "${ZSH_VERSION:-}" ]] && shell_config="${HOME}/.zshrc"
@@ -2171,14 +2365,15 @@ EOF
 # ==============================================================================
 
 quality_gates() {
+    CURRENT_MODULE="quality"
     section "Quality gates"
-    run_cmd "quality" bash -n "${BASH_SOURCE[0]}"
+    run_cmd "quality" --verify bash -n "${BASH_SOURCE[0]}"
 
-    is_selected node && { run_cmd "quality" node --version; run_cmd "quality" npm --version; }
-    is_selected bun && run_cmd "quality" bun --version
+    is_selected node && { run_cmd "quality" --verify node --version; run_cmd "quality" --verify npm --version; }
+    is_selected bun && run_cmd "quality" --verify bun --version
     if is_selected pi; then
         require_command pi
-        run_cmd "quality" pi --no-extensions --version
+        run_cmd "quality" --verify pi --no-extensions --version
     fi
 
     if is_selected node || is_selected pi-workflows; then
@@ -2193,7 +2388,7 @@ quality_gates() {
                 "expected_path=${workflow_pkg}"
             exit 1
         fi
-        run_cmd "quality" node -e \
+        run_cmd "quality" --verify node -e \
             'const fs=require("fs"); const path=process.argv[1]; const pkg=JSON.parse(fs.readFileSync(path,"utf8")); console.log("VERSION="+pkg.version)' \
             "${workflow_pkg}"
     fi
@@ -2253,8 +2448,7 @@ quality_gates() {
 # CLI parsing / module selection
 # ==============================================================================
 
-SELECTED_MODULES=()
-SELECTED_DISPLAY=""
+# SELECTED_MODULES / SELECTED_DISPLAY are initialized with the run summary state.
 
 is_selected() {
     local needle="$1" m
@@ -2364,7 +2558,9 @@ run_module() {
         log_event "WARN" "modules" "unknown_module" "No function for module ${name}"
         return 0
     fi
+    CURRENT_MODULE="${name}"
     "${fn}"
+    MODULES_OK="${MODULES_OK} ${name}"
 }
 
 # ==============================================================================
@@ -2378,6 +2574,10 @@ log_event "INFO" "bootstrap" "start" "AI Dev Suite setup started" 0 "script_vers
 
 parse_args "$@"
 
+# --list / --help exit inside parse_args: only a real run gets a summary.
+RUN_ACTIVE=1
+
+CURRENT_MODULE="preflight"
 section "Preflight"
 require_command bash
 detect_os
@@ -2402,6 +2602,7 @@ done
 
 # npm 12 install-script approval can only name an installed package, so converge
 # after the modules that install pi packages and before the gates that use them.
+CURRENT_MODULE="pi-npm"
 if is_selected pi || is_selected pi-packages || is_selected gentle-ai || is_selected pi-workflows; then
     approve_npm_install_scripts "${PI_NPM_DIR}"
 fi
@@ -2409,8 +2610,8 @@ fi
 configure_shell_env
 quality_gates
 
+CURRENT_MODULE="report"
 write_report "SUCCESS" 0 "n/a" "n/a" "n/a" "n/a"
-
 report_version REPORT_NODE_VERSION node --version
 report_version REPORT_NPM_VERSION npm --version
 report_version REPORT_BUN_VERSION bun --version
