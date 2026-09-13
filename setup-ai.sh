@@ -2052,7 +2052,6 @@ mod_rotator() {
     else
         log_event "INFO" "rotator" "cockpit_absent" "No cockpit-tools data directory detected; the rotator can still use its own accounts" 0
     fi
-    # Non-fatal health probe.
     # Non-fatal health probe. gw_up drives the background start further below.
     local gw="http://localhost:51200/v1/models" body count gw_up=0
     if body="$(curl -fsS -m 5 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then

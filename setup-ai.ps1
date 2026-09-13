@@ -99,6 +99,8 @@ $PiWorkflowsRetryMarker = 'renameWithRetry'
 # that into a hard failure instead of a warning. Initialized here because StrictMode
 # throws when a variable is read before it has been set.
 $script:SetupAiRollbackFailed = $false
+# Read by Restore-PublishedPiWorkflows before Mod-PiWorkflows ever assigns it.
+$script:SetupAiWorkflowVersion = ''
 
 # Upstream agent-skill stack mirrored from vekexasia/dotenv setup_env.sh so the
 # same skills land on every OS (dotenv itself is Linux-only). Installed via
@@ -1232,7 +1234,6 @@ function Mod-PiWorkflows {
     if ($env:PI_WORKFLOW_VERSION) {
         $ver = $env:PI_WORKFLOW_VERSION.Trim()
         $script:SetupAiWorkflowVersion = $ver
-        Write-Log INFO "pi-workflows" "version" "Version $ver"
     }
     try {
         if (-not $ver) {
@@ -1762,7 +1763,7 @@ function Resolve-Selection {
         foreach ($r in ($Only -split ',')) {
             $r = $r.Trim()
             if (-not $r) { continue }
-            if (-not $ModuleDesc.Contains($r)) { Write-Error "Unknown module: $r"; exit 2 }
+            if (-not $ModuleDesc.Contains($r)) { Write-Log ERROR "selection" "invalid_only" "Unknown module: $r" 2; exit 2 }
             $requested += $r
         }
         if ($requested.Count -eq 0) {
