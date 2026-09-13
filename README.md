@@ -80,6 +80,10 @@ base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigrav
   its own MCP list. The interactive selector runs only with a real TTY;
   non-interactive/CI runs log the exact `gentle-ai install` command instead of
   hanging. Idempotent: safe to re-run.
+
+  When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`),
+  the read-only checks and the two continuations are in
+  [docs/rdd-review-troubleshooting.md](docs/rdd-review-troubleshooting.md).
 - **rotator** (opt-in) installs the multi-account `tuxevil-rotator` Gemini/Antigravity
   gateway, registers it to start at boot (a `systemd --user` unit on Linux, a logon
   scheduled task on Windows), starts it in the background when nothing answers on port

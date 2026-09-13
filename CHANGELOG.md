@@ -28,6 +28,12 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   `npm install` with no post-processing, so gentle-pi's postinstall was silently
   skipped on a fresh machine. The installer now approves and rebuilds the packages it
   depends on, and verifies the result. See `docs/pi-extensions.md`.
+- **Native RDD review troubleshooting note.** Documents the `start` failure that
+  reconciles to `status: blocked` / `outcome: native-mutation-status-reconciled` /
+  `mutation_outcome: unknown` with a clean authority store, the read-only commands that
+  prove the store is untouched, the one verified candidate cause (the provider's pinned
+  package-local reviewer binary is not installed), the hypotheses ruled out, and the two
+  continuations. See `docs/rdd-review-troubleshooting.md`.
 
 ### Fixed
 
