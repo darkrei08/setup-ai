@@ -37,6 +37,14 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 
 ### Fixed
 
+- **`rotator` module: the gateway restart loop is bounded.** The `systemd --user` unit
+  carried `Restart=on-failure` with no start limit, so a machine with no account logged in
+  (the state the module documents and expects) respawned `tuxevil-rotator` every 5s forever:
+  measured at 8 starts per minute, ~1.6-3.5s CPU and ~43-53MB per attempt, with the unit
+  enabled at boot. The unit now carries `StartLimitIntervalSec=300` and `StartLimitBurst=5`,
+  and the module clears the resulting `failed` state with `systemctl --user reset-failed`
+  before starting, so a unit that burned through its burst is still startable after
+  `tuxevil-rotator login`.
 - **`rotator` module: the cockpit-sync Pi extension source was uninstallable.** It
   passed `github:darkrei08/pi-cockpit-tools-sync`, which `pi install` resolves as a local
   path (`Path does not exist: <cwd>/github:darkrei08/pi-cockpit-tools-sync`). The accepted
