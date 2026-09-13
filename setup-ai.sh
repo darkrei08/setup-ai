@@ -1962,6 +1962,8 @@ mod_cockpit() {
 # refuses the enable, is logged and the caller still starts the gateway by other means.
 # A failed mkdir or unit write is NOT swallowed, because this module is opt-in and
 # installing a unit nobody can start is worse than failing loudly.
+# The unit bounds its own restart loop: while no account is logged in the gateway
+# exits at once, and Restart=on-failure would respawn it every 5s forever.
 ensure_rotator_unit() {
     # XDG_CONFIG_HOME is not set on every distro or session, so the standard default
     # stays the fallback; the user manager reads the same path.
@@ -1980,6 +1982,8 @@ ensure_rotator_unit() {
     cat >"${unit}" <<UNIT
 [Unit]
 Description=tuxevil-rotator multi-account Gemini/Antigravity gateway
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 ExecStart="${bin_path}" start
@@ -2006,6 +2010,12 @@ UNIT
 start_rotator_gateway() {
     local log_file="$1"
 
+    # A unit that exhausted its start limit stays failed and refuses every later start
+    # until that rate-limit state is cleared, so clear it before asking again. A machine
+    # without systemctl never wrote a unit, so it has no start limit to clear.
+    if command -v systemctl >/dev/null 2>&1; then
+        run_optional "rotator" systemctl --user reset-failed tuxevil-rotator.service
+    fi
     if systemctl --user start tuxevil-rotator.service >/dev/null 2>&1; then
         log_event "INFO" "rotator" "service_started" "tuxevil-rotator started through the systemd user unit" 0 "unit=tuxevil-rotator.service"
         return 0
