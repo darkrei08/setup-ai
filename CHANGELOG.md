@@ -53,6 +53,15 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   and the module clears the resulting `failed` state with `systemctl --user reset-failed`
   before starting, so a unit that burned through its burst is still startable after
   `tuxevil-rotator login`.
+- **`opencode` module: the `opencode-pi` Pi extension could not spawn the CLI on Windows.**
+  The extension runs `child_process.spawn("opencode")` with no shell, so the npm `.cmd`/`.ps1`
+  shims in `%APPDATA%\npm` are not executable for it: every Pi session warned
+  `spawn opencode ENOENT` while `opencode --version` worked in a terminal. The module now probes
+  that no-shell spawn, resolves the packaged `node_modules/opencode-ai/bin/opencode.exe` behind
+  the shim, and persists `OPENCODE_PI_BIN` for the current user (idempotent: an already
+  spawnable launcher is kept and a re-run writes the same value, and a re-run on an install
+  that already spawns writes nothing). On Linux/macOS the same probe verifies the PATH entry
+  instead of assuming it.
 - **`rotator` module: the cockpit-sync Pi extension source was uninstallable.** It
   passed `github:darkrei08/pi-cockpit-tools-sync`, which `pi install` resolves as a local
   path (`Path does not exist: <cwd>/github:darkrei08/pi-cockpit-tools-sync`). The accepted

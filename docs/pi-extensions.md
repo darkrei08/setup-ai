@@ -881,6 +881,7 @@ Variabili correlate / Related variables:
 | `PI_WORKFLOW_VERSION` | unset → resolved with `npm view pi-extensible-workflows version` | Pins the published workflow version installed into the roots | `setup-ai.sh` only; read by the `pi-workflows` module. |
 | `DEBUG` | `0` | `DEBUG=1` prints `DEBUG`-level lines from the logger | Both scripts. |
 | `PI_CODING_AGENT_DIR` | unset (`~/.pi/agent`) | Relocates **pi**'s agent directory | Read by pi, **not** by `setup-ai.sh` (which builds the path from `$HOME`). |
+| `OPENCODE_PI_BIN` | unset → the `opencode` on `PATH` | Native launcher the `opencode-pi` Pi extension spawns for the local OpenCode CLI | Written (user scope) by `setup-ai.ps1` when the npm shim is not directly spawnable, because the extension spawns without a shell and a `.cmd`/`.ps1` shim fails there; read by the extension, never by the scripts. `setup-ai.sh` only verifies the spawn. |
 
 ---
 

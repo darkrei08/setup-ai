@@ -100,6 +100,15 @@ base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigrav
   every five minutes with `-MultipleInstances IgnoreNew`, so a tick is skipped while the
   gateway it started still runs, and each tick checks the port first so a gateway started by a
   session or by the detached fallback is never doubled. The Linux side needs no code change.
+- **opencode** installs the `opencode-ai` CLI and makes the `opencode-pi` Pi extension able to
+  use it. That extension starts the CLI with `child_process.spawn` and no shell, so on Windows
+  the npm `.cmd`/`.ps1` shims in `%APPDATA%\npm` are not executable for it and Node fails with
+  `spawn opencode ENOENT` even when `opencode --version` works in a terminal. The module probes
+  that same no-shell spawn, resolves the packaged
+  `node_modules/opencode-ai/bin/opencode.exe` behind the shim, and persists `OPENCODE_PI_BIN`
+  for the current user: a re-run leaves the value unchanged and an install that already spawns
+  is left alone. On Linux/macOS the npm shim resolves through its shebang, so a `spawn` of the
+  PATH entry works and the module only verifies and logs it.
 
 ## pi workflows (pi-extensible-workflows)
 

@@ -1849,24 +1849,48 @@ mod_antigravity() {
 }
 
 # --- opencode ---------------------------------------------------------------
+# opencode-pi spawns the CLI with child_process.spawn and no shell. On POSIX the
+# npm shim resolves through its shebang, so the PATH entry is enough; probe it
+# instead of assuming, and name OPENCODE_PI_BIN when it does not resolve.
+opencode_spawn_ok() {
+    local bin="$1"
+    OPENCODE_PI_SPAWN_PROBE="${bin}" node -e \
+        'const {spawnSync}=require("node:child_process");const r=spawnSync(process.env.OPENCODE_PI_SPAWN_PROBE||"opencode",["--version"],{stdio:"ignore"});process.exit(!r.error&&r.status===0?0:1)' \
+        >/dev/null 2>&1
+}
+
+verify_opencode_spawn() {
+    if ! command -v node >/dev/null 2>&1; then
+        log_event "WARN" "opencode" "spawn_unverified" "node not found; cannot verify the opencode-pi spawn path" 0
+        return 0
+    fi
+    local bin="${OPENCODE_PI_BIN:-opencode}"
+    if opencode_spawn_ok "${bin}"; then
+        log_event "INFO" "opencode" "spawn_ok" "opencode is spawnable without a shell (opencode-pi requirement)" 0 "bin=${bin}"
+    else
+        log_event "WARN" "opencode" "spawn_failed" "opencode is not spawnable without a shell; set OPENCODE_PI_BIN for the opencode-pi extension" 0 "bin=${bin}"
+    fi
+    return 0
+}
 mod_opencode() {
     section "opencode"
     if command -v opencode >/dev/null 2>&1; then
         log_event "INFO" "opencode" "already_present" "opencode already installed" 0
-        return
-    fi
-    if [[ "${OS_FAMILY}" == "macos" ]]; then
-        run_cmd "opencode" brew install anomalyco/tap/opencode
     else
-        local installer="${TMP_DIR}/install-opencode.sh"
-        run_cmd "opencode" curl -fsSL https://opencode.ai/install -o "${installer}"
-        [[ -s "${installer}" ]] || {
-            log_event "ERROR" "opencode" "installer_missing" "opencode installer is empty" 1 "path=${installer}"
-            return 1
-        }
-        run_cmd "opencode" bash "${installer}"
+        if [[ "${OS_FAMILY}" == "macos" ]]; then
+            run_cmd "opencode" brew install anomalyco/tap/opencode
+        else
+            local installer="${TMP_DIR}/install-opencode.sh"
+            run_cmd "opencode" curl -fsSL https://opencode.ai/install -o "${installer}"
+            [[ -s "${installer}" ]] || {
+                log_event "ERROR" "opencode" "installer_missing" "opencode installer is empty" 1 "path=${installer}"
+                return 1
+            }
+            run_cmd "opencode" bash "${installer}"
+        fi
+        require_command opencode
     fi
-    require_command opencode
+    verify_opencode_spawn
 
     log_event "INFO" "opencode" "zen_hint" "OpenCode Go / Zen provider hint" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
