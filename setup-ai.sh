@@ -710,9 +710,12 @@ ensure_npm_remote_sources() {
 #
 # Idempotent: every present target is approved and then rebuilt, and npm must
 # report none of them pending afterwards, so the end state is the same on every run
-# - and a build that failed on a previous run is retried. A version bump re-blocks
-# the package and re-converges on the next run. An absent package and an npm without
-# `install-scripts` are skips, never failures.
+# - and a build that failed on a previous run is retried. Approval is by NAME, not
+# npm's default <pkg>@<version> pin: pi updates packages on its own (`pi update
+# --extensions`), and a pinned entry stops covering the new version, re-blocking the
+# script and silently removing what it installs (gentle-pi's review binary) until
+# this pass runs again. An absent package and an npm without `install-scripts` are
+# skips, never failures.
 
 # Print the comma-separated subset of "$@" that npm still reports as pending
 # (unreviewed) install scripts for the project at $1. Returns 1 when npm's state
@@ -781,7 +784,10 @@ approve_npm_install_scripts() {
     for pkg in "${present[@]}"; do
         # Approval is a policy change and stays optional: a package that refuses it is
         # still covered by the rebuild check below.
-        run_optional "${phase}" npm install-scripts approve "${pkg}" --prefix "${dir}"
+        # --no-allow-scripts-pin approves the package by name, so the policy keeps
+        # covering the versions pi installs later; npm collapses an existing pinned
+        # entry for the same package into it.
+        run_optional "${phase}" npm install-scripts approve --no-allow-scripts-pin "${pkg}" --prefix "${dir}"
         # The rebuild is load-bearing: a blocked postinstall can be the step that
         # installs a required artifact (gentle-pi ships its review binary this way), so
         # a failure here fails the run instead of degrading to a warning.
