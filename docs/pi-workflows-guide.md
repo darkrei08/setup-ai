@@ -16,7 +16,7 @@
 
 **Italiano**
 
-- **Node.js >= 22.19** (engine richiesto: `>=22.19.0`). Verifica con `node --version`.
+- **Node.js >= 22.19** (engine richiesto: `>=22.19.0` da `pi-extensible-workflows` e da `@earendil-works/pi-coding-agent`). Verifica con `node --version`.
 - **pi** installato e funzionante (vedi il README principale di `setup-ai`).
 - **Avviso pacchetto attendibile / trusted package:** la prima volta che installi
   un'estensione pi ti verrà chiesto di considerare il pacchetto come attendibile
@@ -25,7 +25,7 @@
 
 **English**
 
-- **Node.js >= 22.19** (required engine: `>=22.19.0`). Check with `node --version`.
+- **Node.js >= 22.19** (engine required by both `pi-extensible-workflows` and `@earendil-works/pi-coding-agent`: `>=22.19.0`). Check with `node --version`.
 - **pi** installed and working (see the main `setup-ai` README).
 - **Trusted package warning:** the first time you install a pi extension, pi asks you
   to mark the package as a *trusted package*. This is expected: only confirm for

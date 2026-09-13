@@ -104,6 +104,19 @@ Cosa fa setup-ai (`ensure_npm_remote_sources`):
 setup-ai scrive anche `ignore-scripts=false` (append-only) nelle root delle
 estensioni, così gli script di installazione delle dipendenze sono ammessi lì.
 
+Inoltre npm 12 **blocca gli script di installazione** di ogni dipendenza finché il
+pacchetto non è approvato (`allowScripts` in `<root>/package.json`). `pi install`
+esegue un semplice `npm install`, quindi su una macchina nuova lo script bloccato non
+viene mai eseguito: per `gentle-pi` è lo script che installa il binario locale di
+review `gentle-ai`. L'helper `approve_npm_install_scripts` gira **dopo** i moduli che
+installano i pacchetti pi (l'approvazione accetta solo pacchetti già installati),
+approva i tre pacchetti con script - `gentle-pi`, `node-pty`, `pi-tool-display` - e
+poi esegue `npm rebuild`, perché l'approvazione da sola non riesegue lo script già
+installato. `allow-scripts-pin=true` pinna `<pkg>@<versione>`, quindi un salto di
+versione ri-blocca e riconverge al run successivo. Verifica rileggendo lo stato di
+npm: evento `install_scripts_approved`; un npm senza `install-scripts` (npm < 12)
+logga `install_scripts_unsupported` e viene saltato, un pacchetto assente è un salto.
+
 **English**
 
 npm 12 defaults to `allow-remote=none`: any dependency that resolves a URL/tarball
@@ -133,6 +146,19 @@ What setup-ai does (`ensure_npm_remote_sources`):
 setup-ai also writes `ignore-scripts=false` (append-only) into the extensions
 roots, so dependency install scripts are allowed there.
 
+npm 12 also **blocks dependency install scripts** until the package is approved
+(`allowScripts` in `<root>/package.json`). `pi install` runs a plain `npm install`,
+so on a fresh machine a blocked script never runs; for `gentle-pi` that script
+installs the package-local `gentle-ai` review binary. The
+`approve_npm_install_scripts` helper runs **after** the modules that install pi
+packages (approval only accepts installed packages), approves the three packages with
+install scripts - `gentle-pi`, `node-pty`, `pi-tool-display` - and then runs
+`npm rebuild`, because approval alone does not re-run an already-installed script.
+`allow-scripts-pin=true` pins `<pkg>@<version>`, so a version bump re-blocks and
+re-converges on the next run. It is verified by re-reading npm's own state: event
+`install_scripts_approved`; an npm without `install-scripts` (npm < 12) logs
+`install_scripts_unsupported` and is skipped, and an absent package is a skip.
+
 ```bash
 # what setup-ai enables, per install root
 grep -Hx 'allow-remote=all'   ~/.pi/agent/npm/.npmrc ~/.pi/agent/extensions/.npmrc
@@ -142,6 +168,10 @@ grep -Hx 'ignore-scripts=false' ~/.pi/agent/extensions/.npmrc
 printf '%s\n' 'allow-remote=all' >> ~/.pi/agent/npm/.npmrc
 printf '%s\n' 'allow-remote=all' >> ~/.pi/agent/extensions/.npmrc
 printf '%s\n' 'ignore-scripts=false' >> ~/.pi/agent/extensions/.npmrc
+
+# manual fallback for the blocked install scripts (managed root)
+npm install-scripts approve gentle-pi node-pty pi-tool-display --prefix ~/.pi/agent/npm
+npm rebuild --foreground-scripts --prefix ~/.pi/agent/npm gentle-pi node-pty pi-tool-display
 ```
 
 ```powershell
@@ -149,14 +179,18 @@ printf '%s\n' 'ignore-scripts=false' >> ~/.pi/agent/extensions/.npmrc
 Add-Content "$HOME\.pi\agent\npm\.npmrc" "allow-remote=all"
 Add-Content "$HOME\.pi\agent\extensions\.npmrc" "allow-remote=all"
 Add-Content "$HOME\.pi\agent\extensions\.npmrc" "ignore-scripts=false"
+
+# manual fallback for the blocked install scripts (managed root)
+Push-Location "$HOME\.pi\agent\npm"; npm install-scripts approve gentle-pi node-pty pi-tool-display; npm rebuild --foreground-scripts gentle-pi node-pty pi-tool-display; Pop-Location
 ```
 
-Nota di piattaforma: l'opt-in automatico è implementato in **`setup-ai.sh`**
-(`ensure_npm_remote_sources`). `setup-ai.ps1` non configura le root npm, quindi su
-Windows usa il fallback manuale qui sopra.
-Platform note: the automatic opt-in is implemented in **`setup-ai.sh`**
-(`ensure_npm_remote_sources`). `setup-ai.ps1` does not configure the npm roots, so
-on Windows use the manual fallback above.
+Nota di piattaforma: entrambi gli script configurano le root npm
+(`ensure_npm_remote_sources` in `setup-ai.sh`, `Enable-NpmRemoteSources` in
+`setup-ai.ps1`) e approvano gli script di installazione (`approve_npm_install_scripts`
+/ `Approve-NpmInstallScripts`).
+Platform note: both scripts configure the npm roots (`ensure_npm_remote_sources` in
+`setup-ai.sh`, `Enable-NpmRemoteSources` in `setup-ai.ps1`) and approve install
+scripts (`approve_npm_install_scripts` / `Approve-NpmInstallScripts`).
 
 > **(raccomandazione / recommendation)** Non impostare `allow-remote` con
 > `npm config set ... -g`: setup-ai scrive solo il `.npmrc` della root di
@@ -668,9 +702,10 @@ await agent("Review this change", {
 4. **esegui setup-ai**: `bash setup-ai.sh --all` (o `--only pi,pi-packages,pi-workflows`;
    su Windows `powershell -File .\setup-ai.ps1 -Only pi,pi-packages,pi-workflows`).
 5. **verifica dagli eventi** (non a occhio): `remote_sources_enabled` per entrambe
-   le root, `manifest_loaded` + `manifest_applied` (`installed=`, `skipped=`),
-   `retry_found_in_source` + due `retry_verified` + `patched_workflow_installed`
-   **oppure** `patched_build_unavailable` con la release pubblicata.
+   le root, `install_scripts_approved` (script di installazione), `manifest_loaded` +
+   `manifest_applied` (`installed=`, `skipped=`), `retry_found_in_source` + due
+   `retry_verified` + `patched_workflow_installed` **oppure**
+   `patched_build_unavailable` con la release pubblicata.
 6. **verifica l'artefatto** con il marcatore `renameWithRetry` (§9): `2` = patchato,
    `0` = release pubblicata.
 7. **pinna ciò che non deve derivare** (`npm:pkg@1.2.3`) e tieni come path locale
@@ -690,9 +725,10 @@ await agent("Review this change", {
 4. **run setup-ai**: `bash setup-ai.sh --all` (or `--only pi,pi-packages,pi-workflows`;
    on Windows `powershell -File .\setup-ai.ps1 -Only pi,pi-packages,pi-workflows`).
 5. **verify from the events** (not by eye): `remote_sources_enabled` for both roots,
-   `manifest_loaded` + `manifest_applied` (`installed=`, `skipped=`),
-   `retry_found_in_source` + two `retry_verified` + `patched_workflow_installed`
-   **or** `patched_build_unavailable` with the published release.
+   `install_scripts_approved` (install scripts), `manifest_loaded` +
+   `manifest_applied` (`installed=`, `skipped=`), `retry_found_in_source` + two
+   `retry_verified` + `patched_workflow_installed` **or** `patched_build_unavailable`
+   with the published release.
 6. **verify the artifact** with the `renameWithRetry` marker (§9): `2` = patched,
    `0` = published release.
 7. **pin what must not drift** (`npm:pkg@1.2.3`) and keep local paths only for
@@ -709,6 +745,11 @@ await agent("Review this change", {
   scrive `allow-remote=all` nelle root), oppure il fallback manuale di §2. Verifica:
   `grep -Hx 'allow-remote=all' ~/.pi/agent/npm/.npmrc ~/.pi/agent/extensions/.npmrc`.
   Evento atteso: `remote_sources_enabled`.
+- **Script di installazione bloccati / binario `gentle-ai` mancante** — causa: npm 12
+  blocca gli script di installazione finché il pacchetto non è approvato. Fix: riesegui
+  setup-ai (che approva i pacchetti ed esegue `npm rebuild`), oppure il fallback
+  manuale di §2. Verifica: `npm install-scripts ls` non deve elencare `gentle-pi`,
+  `node-pty`, `pi-tool-display`; evento atteso: `install_scripts_approved`.
 - **`EPERM: operation not permitted, rename '...state.json.tmp'`** — causa: la
   release pubblicata scrive lo stato con write(`.tmp`) + `rename()` senza retry, e
   un lock transitorio (Defender, indicizzazione, client di sync o un pi concorrente)
@@ -760,7 +801,7 @@ await agent("Review this change", {
   `engineering-report_<runid>.md`. Ogni riga JSONL ha `phase`, `event`, `meta`:
 
   ```bash
-  jq -r 'select(.event|test("remote_sources_enabled|retry_verified|retry_found_in_source|patched_workflow_installed|patched_build_unavailable|manifest_applied|workflow_owned_elsewhere")) | "\(.phase)\t\(.event)\t\(.meta // "")"' \
+  jq -r 'select(.event|test("remote_sources_enabled|install_scripts_approved|install_scripts_unverified|retry_verified|retry_found_in_source|patched_workflow_installed|patched_build_unavailable|manifest_applied|workflow_owned_elsewhere")) | "\(.phase)\t\(.event)\t\(.meta // "")"' \
     logs/setup_<runid>.jsonl
   ```
 
@@ -777,6 +818,11 @@ await agent("Review this change", {
   (it writes `allow-remote=all` into the roots), or use the manual fallback in §2.
   Verify: `grep -Hx 'allow-remote=all' ~/.pi/agent/npm/.npmrc ~/.pi/agent/extensions/.npmrc`.
   Expected event: `remote_sources_enabled`.
+- **Blocked install scripts / missing `gentle-ai` binary** — cause: npm 12 blocks
+  install scripts until the package is approved. Fix: re-run setup-ai (it approves the
+  packages and runs `npm rebuild`), or the manual fallback in §2. Verify:
+  `npm install-scripts ls` must not list `gentle-pi`, `node-pty`, `pi-tool-display`;
+  expected event: `install_scripts_approved`.
 - **`EPERM: operation not permitted, rename '...state.json.tmp'`** — cause: the
   published release writes state with write(`.tmp`) + `rename()` without retry, and
   a transient lock (Defender, indexing, a sync client, or a concurrent pi process)

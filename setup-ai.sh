@@ -502,6 +502,140 @@ ensure_npm_remote_sources() {
         "npmrc=${npmrc}"
 }
 
+# npm 12 blocks a dependency's install scripts until that package is explicitly
+# approved, and `pi install` runs a plain `npm install` with no post-processing, so
+# a blocked script never runs on a fresh machine. gentle-pi's postinstall is the
+# load-bearing one: it installs the package-local gentle-ai review binary the `gga`
+# gate uses; node-pty and pi-tool-display ship install scripts too.
+#
+# This is deliberately a post-install pass and NOT part of
+# ensure_npm_remote_sources: `npm install-scripts approve` only accepts an
+# INSTALLED package (it exits ENOMATCH otherwise) and the npm-root helper runs
+# before the first package exists, so on a fresh machine an approval there would be
+# a silent no-op. The installer calls this once after the modules that install pi
+# packages.
+#
+# Idempotent: every present target is approved and then rebuilt, and npm must
+# report none of them pending afterwards, so the end state is the same on every run
+# - and a build that failed on a previous run is retried. A version bump re-blocks
+# the package and re-converges on the next run. An absent package and an npm without
+# `install-scripts` are skips, never failures.
+
+# Print the comma-separated subset of "$@" that npm still reports as pending
+# (unreviewed) install scripts for the project at $1. Returns 1 when npm's state
+# cannot be read, so the caller decides whether that is fatal.
+npm_pending_install_scripts() {
+    local dir="$1"; shift
+    local state_file="${TMP_DIR}/install_scripts_${RANDOM}.json" rc=0
+    # stderr goes to the human log, not into the JSON the parser reads.
+    npm install-scripts ls --json --prefix "${dir}" >"${state_file}" 2>>"${HUMAN_LOG}" || rc=$?
+    if (( rc != 0 )); then
+        return 1
+    fi
+    if ! node -e '
+        const fs = require("node:fs");
+        const data = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        const want = new Set(process.argv.slice(2));
+        const pending = (data.allowScripts ?? [])
+            .filter((entry) => (entry.changes ?? []).some((change) => change.change === "pending"))
+            .map((entry) => entry.name)
+            .filter((name) => want.has(name));
+        process.stdout.write(pending.join(","));
+    ' "${state_file}" "$@"; then
+        return 1
+    fi
+}
+
+approve_npm_install_scripts() {
+    local dir="$1" phase="${2:-pi-npm}"
+    local pkg_json="${dir}/package.json"
+
+    # No project here means no pi package was ever installed into this root.
+    if [[ ! -f "${pkg_json}" ]]; then
+        return 0
+    fi
+    if ! command -v npm >/dev/null 2>&1; then
+        log_event "WARN" "${phase}" "npm_missing" \
+            "npm is unavailable; dependency install scripts cannot be approved" 0 "dir=${dir}"
+        return 0
+    fi
+    # Probe the subcommand instead of trusting a version number: npm < 12, and any
+    # other package manager pi can be configured with, does not implement it.
+    if ! npm install-scripts --help >/dev/null 2>&1; then
+        log_event "INFO" "${phase}" "install_scripts_unsupported" \
+            "This npm does not implement install-scripts; dependency install-script approval skipped" 0 \
+            "dir=${dir}"
+        return 0
+    fi
+
+    # The packages whose blocked install scripts the toolchain depends on; one that
+    # is not installed in this root is a skip, never an error.
+    local -a present=()
+    local pkg
+    for pkg in gentle-pi node-pty pi-tool-display; do
+        [[ -f "${dir}/node_modules/${pkg}/package.json" ]] && present+=("${pkg}")
+    done
+    if (( ${#present[@]} == 0 )); then
+        log_event "INFO" "${phase}" "install_scripts_none_installed" \
+            "None of the install-script packages are installed; nothing to approve" 0 "dir=${dir}"
+        return 0
+    fi
+
+    # Approve every installed target and THEN run its script: approval alone does
+    # not re-run a script that was blocked at install time (npm treats the package
+    # as already installed), and skipping that would make a failed build permanent.
+    # Re-running it is idempotent.
+    for pkg in "${present[@]}"; do
+        # Approval is a policy change and stays optional: a package that refuses it is
+        # still covered by the rebuild check below.
+        run_optional "${phase}" npm install-scripts approve "${pkg}" --prefix "${dir}"
+        # The rebuild is load-bearing: a blocked postinstall can be the step that
+        # installs a required artifact (gentle-pi ships its review binary this way), so
+        # a failure here fails the run instead of degrading to a warning.
+        # --foreground-scripts keeps build output and errors in the log.
+        run_cmd "${phase}" npm rebuild "${pkg}" --foreground-scripts --prefix "${dir}"
+    done
+
+    # An exit code is not proof that the artifact exists, so the load-bearing one is
+    # read from disk: gentle-pi's postinstall is what installs the review binary.
+    local review_binary=""
+    if [[ -d "${dir}/node_modules/gentle-pi" ]]; then
+        if ! review_binary="$(find "${dir}/node_modules/gentle-pi/.gentle-ai" -type f -name 'gentle-ai*' -print -quit 2>/dev/null)"; then
+            review_binary=""
+        fi
+        if [[ -z "${review_binary}" ]]; then
+            log_event "ERROR" "${phase}" "review_binary_missing" \
+                "gentle-pi review binary missing after its install scripts ran" 1 \
+                "dir=${dir};expected=${dir}/node_modules/gentle-pi/.gentle-ai/*/gentle-ai*"
+            return 1
+        fi
+        log_event "INFO" "${phase}" "review_binary_verified" \
+            "gentle-pi review binary present after the rebuild" 0 "binary=${review_binary}"
+    fi
+
+    # Verify by re-reading npm's own state: nothing we approved may still be
+    # pending. A present package without install scripts never appears here.
+    local pending_csv="" rc=0
+    pending_csv="$(npm_pending_install_scripts "${dir}" "${present[@]}")" || rc=$?
+    if (( rc != 0 )); then
+        # Fail closed: without npm's own state there is no proof the blocked scripts
+        # ran, and reporting success would ship an unverified install.
+        log_event "ERROR" "${phase}" "install_scripts_state_unreadable" \
+            "Could not re-read the npm install-script state to verify approval" "${rc}" \
+            "dir=${dir}"
+        return 1
+    fi
+    if [[ -n "${pending_csv}" ]]; then
+        log_event "ERROR" "${phase}" "install_scripts_unverified" \
+            "npm still reports install scripts as unapproved after approve" 1 \
+            "dir=${dir};packages=${pending_csv}"
+        return 1
+    fi
+    log_event "INFO" "${phase}" "install_scripts_approved" \
+        "Dependency install scripts approved and executed" 0 \
+        "dir=${dir};packages=$(IFS=,; printf '%s' "${present[*]}")"
+}
+
 # Marker of the transient-rename retry in pi-extensible-workflows.
 # The published release writes state as a bare write(.tmp) + rename() without
 # retry, so a transient lock on the target (Defender, indexing, sync client, or a
@@ -1054,10 +1188,10 @@ assert_node_minimum() {
 
     if (( major < 22 || (major == 22 && minor < 19) )); then
         log_event "ERROR" "node" "version_unsupported" \
-            "Node.js ${node_version} is too old; pi-extensible-workflows needs >= 22.19" 1
+            "Node.js ${node_version} is too old; pi-extensible-workflows and @earendil-works/pi-coding-agent need >= 22.19" 1
         return 1
     fi
-    log_event "INFO" "node" "runtime_validated" "Node.js version satisfies workflow requirement" 0 \
+    log_event "INFO" "node" "runtime_validated" "Node.js version satisfies the pi and workflow requirements" 0 \
         "version=${node_version};minimum=22.19"
 }
 
@@ -2249,6 +2383,12 @@ PI_VERSION=""
 for _mod in "${SELECTED_MODULES[@]}"; do
     run_module "${_mod}"
 done
+
+# npm 12 install-script approval can only name an installed package, so converge
+# after the modules that install pi packages and before the gates that use them.
+if is_selected pi || is_selected pi-packages || is_selected gentle-ai || is_selected pi-workflows; then
+    approve_npm_install_scripts "${PI_NPM_DIR}"
+fi
 
 configure_shell_env
 quality_gates
