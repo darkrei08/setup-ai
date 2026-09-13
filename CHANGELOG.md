@@ -9,6 +9,29 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [Unreleased]
+
+### Added
+
+- **`rotator` module: the gateway is started, not just installed.** The module keeps a
+  `systemd --user` unit (Linux) or a logon scheduled task (Windows) so the gateway
+  survives a reboot, starts `tuxevil-rotator` in the background only when nothing answers
+  on port 51200, and proves that start with a bounded re-probe before reporting it. A
+  machine with neither mechanism still gets a detached process and a `WARN`, never a
+  failed install.
+- **`rotator` module: Linux detection verified across distributions.** The apt/dnf/pacman/
+  zypper families and their derivatives resolve through `ID_LIKE`, including CachyOS ->
+  pacman; a distribution the installer cannot map still fails closed at preflight with
+  `unsupported_distribution`.
+
+### Fixed
+
+- **`rotator` module: the cockpit-sync Pi extension source was uninstallable.** It
+  passed `github:darkrei08/pi-cockpit-tools-sync`, which `pi install` resolves as a local
+  path (`Path does not exist: <cwd>/github:darkrei08/pi-cockpit-tools-sync`). The accepted
+  form is `git:github.com/darkrei08/pi-cockpit-tools-sync`, and the readback checks that
+  source instead of a string an earlier run may have left in settings.
+
 ## [3.3.2] - 2026-09-12
 
 ### Added

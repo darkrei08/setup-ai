@@ -347,7 +347,7 @@ module_desc() {
         antigravity) printf '%s\n' "Google Antigravity CLI (agy)" ;;
         opencode) printf '%s\n' "opencode agent CLI (opencode-ai)" ;;
         cockpit) printf '%s\n' "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" ;;
-        rotator) printf '%s\n' "tuxevil-rotator multi-account Gemini/Antigravity gateway (optional, opt-in)" ;;
+        rotator) printf '%s\n' "tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)" ;;
         *) return 1 ;;
     esac
 }
@@ -1260,7 +1260,12 @@ verify_skill_for_agents() {
         found=0
         own=0
         checked=""
-        own_root="$(agent_skill_root "${agent}" || true)"
+        if ! own_root="$(agent_skill_root "${agent}")"; then
+            log_event "WARN" "${phase}" "agent_root_unknown" \
+                "No skill root is known for this agent; only the shared root is checked" 0 \
+                "agent=${agent}"
+            own_root=""
+        fi
         while IFS= read -r root; do
             checked="${checked:+${checked}, }${root}/${skill}/SKILL.md"
             if [[ -f "${root}/${skill}/SKILL.md" ]]; then
@@ -1806,6 +1811,79 @@ mod_cockpit() {
 }
 
 # --- rotator (opt-in: tuxevil-rotator multi-account gateway) -----------------
+
+# Register the gateway with the machine's own autostart so it survives a reboot: a
+# systemd --user unit where the machine has one, and nothing anywhere else (macOS and
+# containers fall back to the detached start below). Enabling without --now is
+# deliberate: the process is started by its own step, and only when nothing answers the
+# port, so an already-running gateway is never doubled.
+#
+# Returns 0 for every expected outcome: a machine without a user manager, or one that
+# refuses the enable, is logged and the caller still starts the gateway by other means.
+# A failed mkdir or unit write is NOT swallowed, because this module is opt-in and
+# installing a unit nobody can start is worse than failing loudly.
+ensure_rotator_unit() {
+    # XDG_CONFIG_HOME is not set on every distro or session, so the standard default
+    # stays the fallback; the user manager reads the same path.
+    local unit_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+    local unit="${unit_dir}/tuxevil-rotator.service"
+    local bin_path
+
+    if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
+        log_event "INFO" "rotator" "service_skipped" \
+            "No working systemctl --user session; the gateway is only started as a detached process" 0
+        return 0
+    fi
+    bin_path="$(command -v tuxevil-rotator)"
+    mkdir -p "${unit_dir}"
+    # Rewritten on every run so a moved binary or a stale unit converges here.
+    cat >"${unit}" <<UNIT
+[Unit]
+Description=tuxevil-rotator multi-account Gemini/Antigravity gateway
+
+[Service]
+ExecStart="${bin_path}" start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+    if run_cmd "rotator" systemctl --user enable tuxevil-rotator.service; then
+        log_event "INFO" "rotator" "service_enabled" \
+            "tuxevil-rotator is enabled as a systemd user service and starts at boot" 0 "unit=${unit}"
+        return 0
+    fi
+    log_event "WARN" "rotator" "service_enable_failed" \
+        "systemd user unit could not be enabled; the gateway is started as a detached process only" 0 "unit=${unit}"
+    return 0
+}
+
+# Start the gateway in the background and leave the proof of that start to the caller's
+# probe. The systemd unit is preferred because it also restarts the gateway when it
+# dies; anywhere else (macOS, WSL without systemd, containers) the process is detached
+# from this installer instead.
+start_rotator_gateway() {
+    local log_file="$1"
+
+    if systemctl --user start tuxevil-rotator.service >/dev/null 2>&1; then
+        log_event "INFO" "rotator" "service_started" "tuxevil-rotator started through the systemd user unit" 0 "unit=tuxevil-rotator.service"
+        return 0
+    fi
+    # macOS has no setsid and a shell without job control refuses disown; setsid or nohup
+    # has already detached the process, so a refused disown is informational.
+    if command -v setsid >/dev/null 2>&1; then
+        setsid nohup tuxevil-rotator start >>"${log_file}" 2>&1 &
+    else
+        nohup tuxevil-rotator start >>"${log_file}" 2>&1 &
+    fi
+    if ! disown 2>/dev/null; then
+        log_event "INFO" "rotator" "disown_unavailable" \
+            "This shell cannot disown jobs; setsid or nohup already detached the gateway" 0
+    fi
+    log_event "INFO" "rotator" "gateway_spawned" "tuxevil-rotator started in the background" 0 "log=${log_file}"
+    return 0
+}
 mod_rotator() {
     section "tuxevil-rotator gateway"
     # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
@@ -1831,26 +1909,60 @@ mod_rotator() {
         log_event "INFO" "rotator" "cockpit_absent" "No cockpit-tools data directory detected; the rotator can still use its own accounts" 0
     fi
     # Non-fatal health probe.
-    local gw="http://localhost:51200/v1/models" body count
+    # Non-fatal health probe. gw_up drives the background start further below.
+    local gw="http://localhost:51200/v1/models" body count gw_up=0
     if body="$(curl -fsS -m 5 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then
         # curl -fsS already proved reachability; the count is informational only
         # (awk always exits 0, so no operational failure is masked here).
         count="$(printf '%s' "${body}" | awk '{c+=gsub(/"id"/,"&")} END{print c+0}')"
+        gw_up=1
         log_event "INFO" "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=${gw};models=${count}"
     else
-        log_event "INFO" "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; start it with 'tuxevil-rotator start'" 0 "url=${gw}"
+        log_event "INFO" "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=${gw}"
     fi
-    # Install the CLI idempotently. Never runs login/start or writes secrets.
+    # Install the CLI idempotently. Never runs login and never writes secrets; the
+    # start below is best-effort and never fails the module.
     if command -v tuxevil-rotator >/dev/null 2>&1; then
         log_event "INFO" "rotator" "already_present" "tuxevil-rotator already installed" 0
     else
         run_cmd "rotator" npm install --global tuxevil-rotator
         require_command tuxevil-rotator
     fi
+    # Register boot persistence first: enabling the unit or the task never starts a
+    # second process, so this is safe whether or not the gateway is already up. The
+    # helper logs its own WARN when the machine has neither.
+    ensure_rotator_unit
+    # Start the gateway only when nothing answers its port: the dotenv Gemini aliases are
+    # unusable without it, so a gateway that only ever gets started by hand is the failure
+    # this module exists to prevent. The start is proven by the probe below, because a
+    # process that dies immediately must be reported, not assumed.
+    if (( gw_up == 0 )); then
+        local gw_log="${LOG_DIR}/rotator-gateway.log" attempt
+        start_rotator_gateway "${gw_log}"
+        for (( attempt = 1; attempt <= 20; attempt++ )); do
+            if body="$(curl -fsS -m 2 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then
+                count="$(printf '%s' "${body}" | awk '{c+=gsub(/"id"/,"&")} END{print c+0}')"
+                gw_up=1
+                log_event "INFO" "rotator" "gateway_started" \
+                    "tuxevil-rotator answered after the background start" 0 "url=${gw};models=${count}"
+                break
+            fi
+            sleep 0.5
+        done
+        if (( gw_up == 0 )); then
+            log_event "WARN" "rotator" "gateway_start_failed" \
+                "tuxevil-rotator did not answer within 10s; run 'tuxevil-rotator login', then check 'systemctl --user status tuxevil-rotator' or ${gw_log}" 0 "url=${gw}"
+        fi
+    fi
     if command -v pi >/dev/null 2>&1; then
-        run_cmd "rotator" pi install "github:darkrei08/pi-cockpit-tools-sync"
+        # `pi install` accepts only protocol URLs without the `git:` prefix, so the bare
+        # `github:owner/repo` this module used to pass resolved as a local path and failed.
+        # A leftover legacy entry from such a run is tolerated by pi (`pi list` skips it)
+        # and cannot be removed with `pi remove`, which only matches installed packages.
+        local extension_source="git:github.com/darkrei08/pi-cockpit-tools-sync"
         local pi_settings="${PI_AGENT_DIR}/settings.json"
-        if [[ ! -f "${pi_settings}" ]] || ! grep -Fq 'github:darkrei08/pi-cockpit-tools-sync' "${pi_settings}"; then
+        run_cmd "rotator" pi install "${extension_source}"
+        if [[ ! -f "${pi_settings}" ]] || ! grep -Fq "${extension_source}" "${pi_settings}"; then
             log_event "ERROR" "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=${pi_settings}"
             return 1
         fi
@@ -1862,10 +1974,14 @@ mod_rotator() {
       tuxevil-rotator installed. To use the multi-account Gemini/Antigravity gateway:
         tuxevil-rotator login     # add a Google Antigravity account (repeat to add more)
         tuxevil-rotator import    # or bulk-import accounts from a cockpit-tools JSON
-        tuxevil-rotator start     # start the rotating proxy on http://localhost:51200
+        tuxevil-rotator status    # accounts, quotas, and routing state
+      setup-ai starts the gateway on http://localhost:51200 in the background, but only
+      when nothing is already listening: a systemd user unit on Linux, a logon scheduled
+      task on Windows, a detached process otherwise. The Pi extension does the same when
+      a session opens and the port is dead.
       Pi reaches it through the 'tuxevil-rotator' provider configured in your dotenv.
       The cockpit sync extension provides /cockpit-sync, /cockpit-provision, and /cockpit-proxy.
-      Login/start are never run by setup-ai and no tokens are read or stored.
+      Login is never run by setup-ai and no tokens are read or stored.
 HINT
 }
 
