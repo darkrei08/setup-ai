@@ -95,6 +95,11 @@ base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigrav
   same at session start when the port is dead, so the `gemini-*` aliases keep working;
   concurrent sessions coordinate through one start claim (one start, not one per
   session) and the detached process log is `~/.tuxevil-rotator/gateway.log`.
+  Both registrations also bring back a gateway that dies, by different means: the Linux unit
+  leaves it to systemd (`Restart=on-failure`, `RestartSec=5`), while the Windows task repeats
+  every five minutes with `-MultipleInstances IgnoreNew`, so a tick is skipped while the
+  gateway it started still runs, and each tick checks the port first so a gateway started by a
+  session or by the detached fallback is never doubled. The Linux side needs no code change.
 
 ## pi workflows (pi-extensible-workflows)
 
