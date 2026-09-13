@@ -936,7 +936,7 @@ $ModuleDesc = [ordered]@{
     'antigravity'  = 'Google Antigravity CLI (agy)'
     'opencode'     = 'opencode agent CLI (opencode-ai)'
     'cockpit'      = 'cockpit-tools desktop GUI app (optional, CC BY-NC-SA)'
-    'rotator'      = 'tuxevil-rotator multi-account Gemini/Antigravity gateway (optional, opt-in)'
+    'rotator'      = 'tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)'
 }
 $ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true }
 
@@ -1386,6 +1386,65 @@ function Mod-Cockpit {
     }
 }
 
+# Resolve the executable a scheduled task must run. npm installs three shims on Windows
+# and PowerShell resolves the .ps1 one, which a task cannot execute directly; the .cmd
+# shim is what the task runs.
+function Get-RotatorExecutable {
+    $command = Get-Command tuxevil-rotator -ErrorAction SilentlyContinue
+    $binPath = if ($command) { $command.Source } else { "tuxevil-rotator" }
+    if ($binPath -like "*.ps1") {
+        $cmdShim = [System.IO.Path]::ChangeExtension($binPath, ".cmd")
+        if (Test-Path -LiteralPath $cmdShim -PathType Leaf) { return $cmdShim }
+    }
+    return $binPath
+}
+
+# Register the gateway with the machine's own autostart so it survives a reboot: a logon
+# scheduled task, which runs hidden and needs no console. Registering only, not starting:
+# the process is started by its own step and only when nothing answers its port, so an
+# already-running gateway is never doubled.
+function Register-RotatorTask {
+    $binPath = Get-RotatorExecutable
+    try {
+        $action = New-ScheduledTaskAction -Execute $binPath -Argument 'start'
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+        Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger $trigger -Settings $taskSettings `
+            -Description "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200" -Force | Out-Null
+        Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon through a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath"
+        return $true
+    } catch {
+        Write-Log WARN "rotator" "task_failed" "Scheduled task not registered; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"
+        return $false
+    }
+}
+
+# Start the gateway in the background and leave the proof of that start to the caller's
+# probe. The scheduled task is preferred because it also covers the next session;
+# anywhere it cannot run, the process is detached from this installer instead.
+function Start-RotatorGateway {
+    param([string]$LogFile)
+    if (Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction SilentlyContinue) {
+        try {
+            Start-ScheduledTask -TaskName "tuxevil-rotator"
+            Write-Log INFO "rotator" "task_started" "tuxevil-rotator started through the logon scheduled task" 0 "task=tuxevil-rotator"
+            return $true
+        } catch {
+            Write-Log WARN "rotator" "task_start_failed" "Scheduled task did not start; falling back to a detached process" 0 "error=$($_.Exception.Message)"
+        }
+    }
+    $binPath = Get-RotatorExecutable
+    try {
+        Start-Process -FilePath $binPath -ArgumentList "start" -WindowStyle Hidden `
+            -RedirectStandardOutput $LogFile -RedirectStandardError ([System.IO.Path]::ChangeExtension($LogFile, ".err.log"))
+        Write-Log INFO "rotator" "gateway_spawned" "tuxevil-rotator started in the background" 0 "log=$LogFile"
+        return $true
+    } catch {
+        Write-Log WARN "rotator" "gateway_spawn_failed" "tuxevil-rotator could not be started in the background" 0 "error=$($_.Exception.Message)"
+        return $false
+    }
+}
+
 function Mod-Rotator {
     Write-Log INFO "rotator" "start" "tuxevil-rotator gateway"
     # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
@@ -1413,18 +1472,21 @@ function Mod-Rotator {
         Write-Log INFO "rotator" "cockpit_absent" "No cockpit-tools data directory detected; the rotator can still use its own accounts" 0
     }
 
-    # Non-fatal health probe.
+    # Non-fatal health probe. $gatewayUp drives the background start further below.
     $gw = "http://localhost:51200/v1/models"
+    $gatewayUp = $false
     try {
         $response = Invoke-WebRequest -Uri $gw -Headers @{ Authorization = "Bearer tuxevil" } -TimeoutSec 5
         $body = $response.Content
         $count = if ($body) { ([regex]::Matches($body, '"id"')).Count } else { 0 }
+        $gatewayUp = $true
         Write-Log INFO "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=$gw;models=$count"
     } catch {
-        Write-Log INFO "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; start it with 'tuxevil-rotator start'" 0 "url=$gw"
+        Write-Log INFO "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=$gw"
     }
 
-    # Install the CLI idempotently. Never runs login/start or writes secrets.
+    # Install the CLI idempotently. Never runs login and never writes secrets; the
+    # start below is best-effort and never fails the module.
     if (Test-Cmd tuxevil-rotator) {
         Write-Log INFO "rotator" "already_present" "tuxevil-rotator already installed"
     } else {
@@ -1435,11 +1497,44 @@ function Mod-Rotator {
             throw "tuxevil-rotator not found on PATH after npm install"
         }
     }
+
+    # Register boot persistence first: registering the task never starts a second
+    # process, so this is safe whether or not the gateway is already up.
+    [void](Register-RotatorTask)
+
+    # Start the gateway only when nothing answers its port: the dotenv Gemini aliases are
+    # unusable without it, so a gateway that only ever gets started by hand is the failure
+    # this module exists to prevent. The start is proven by the probe below, because a
+    # process that dies immediately must be reported, not assumed.
+    if (-not $gatewayUp) {
+        $gatewayLog = Join-Path $LogDir "rotator-gateway.log"
+        [void](Start-RotatorGateway -LogFile $gatewayLog)
+        for ($attempt = 1; $attempt -le 20; $attempt++) {
+            try {
+                $probe = Invoke-WebRequest -Uri $gw -Headers @{ Authorization = "Bearer tuxevil" } -TimeoutSec 2
+                $body = $probe.Content
+                $count = if ($body) { ([regex]::Matches($body, '"id"')).Count } else { 0 }
+                $gatewayUp = $true
+                Write-Log INFO "rotator" "gateway_started" "tuxevil-rotator answered after the background start" 0 "url=$gw;models=$count"
+                break
+            } catch {
+                Start-Sleep -Milliseconds 500
+            }
+        }
+        if (-not $gatewayUp) {
+            Write-Log WARN "rotator" "gateway_start_failed" "tuxevil-rotator did not answer within 10s; run 'tuxevil-rotator login', then check '$gatewayLog' or the 'tuxevil-rotator' scheduled task" 0 "url=$gw"
+        }
+    }
     if (Test-Cmd pi) {
-        Invoke-Step -Phase "rotator" -Action { pi install "github:darkrei08/pi-cockpit-tools-sync" }
+        # `pi install` accepts only protocol URLs without the `git:` prefix, so the bare
+        # `github:owner/repo` this module used to pass resolved as a local path and failed.
+        # A leftover legacy entry from such a run is tolerated by pi (`pi list` skips it)
+        # and cannot be removed with `pi remove`, which only matches installed packages.
+        $extensionSource = "git:github.com/darkrei08/pi-cockpit-tools-sync"
         $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+        Invoke-Step -Phase "rotator" -Action { pi install $extensionSource }
         if (-not (Test-Path -LiteralPath $piSettings -PathType Leaf) -or
-            -not (Select-String -LiteralPath $piSettings -SimpleMatch "github:darkrei08/pi-cockpit-tools-sync" -Quiet)) {
+            -not (Select-String -LiteralPath $piSettings -SimpleMatch $extensionSource -Quiet)) {
             Write-Log ERROR "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=$piSettings"
             throw "Pi did not register cockpit sync extension"
         }
@@ -1451,10 +1546,14 @@ function Mod-Rotator {
       tuxevil-rotator installed. To use the multi-account Gemini/Antigravity gateway:
         tuxevil-rotator login     # add a Google Antigravity account (repeat to add more)
         tuxevil-rotator import    # or bulk-import accounts from a cockpit-tools JSON
-        tuxevil-rotator start     # start the rotating proxy on http://localhost:51200
+        tuxevil-rotator status    # accounts, quotas, and routing state
+      setup-ai starts the gateway on http://localhost:51200 in the background, but only
+      when nothing is already listening: a systemd user unit on Linux, a logon scheduled
+      task on Windows, a detached process otherwise. The Pi extension does the same when
+      a session opens and the port is dead.
       Pi reaches it through the 'tuxevil-rotator' provider configured in your dotenv.
       The cockpit sync extension provides /cockpit-sync, /cockpit-provision, and /cockpit-proxy.
-      Login/start are never run by setup-ai and no tokens are read or stored.
+      Login is never run by setup-ai and no tokens are read or stored.
 "@ | Tee-Object -FilePath $HumanLog -Append | Out-Host
 }
 

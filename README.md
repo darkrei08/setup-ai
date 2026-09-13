@@ -51,6 +51,7 @@ For a one-time installer, `npx` is ideal — nothing is left behind.
 | Go | `go` | `brew install go` | distro pkg | `winget install -e --id GoLang.Go` |
 | opencode | `opencode` | `brew install anomalyco/tap/opencode` | `curl -fsSL https://opencode.ai/install \| bash` | `npm i -g opencode-ai` |
 | cockpit-tools *(opt-in GUI)* | app | `brew install --cask cockpit-tools` | `.deb`/`.rpm`/`.AppImage` | `.msi` |
+| tuxevil-rotator *(opt-in)* | `tuxevil-rotator` | `npm i -g tuxevil-rotator` | same | same |
 | Engineering Excellence | skill | `npx skills@latest add darkrei08/Engineering-Excellence --agent <agent>` | same | same |
 
 ## Modules
@@ -59,7 +60,7 @@ Run `--list` to see them. Core modules install by default; optional ones
 (GUI apps) only via `--all` or an explicit `--only`.
 
 ```
-base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode [cockpit]
+base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode [cockpit] [rotator]
 ```
 
 - **dotenv** is Linux-only (it runs vekexasia/dotenv's apt/pacman `setup_env.sh`); on Windows, explicit selection or `-All` logs and skips it.
@@ -79,6 +80,17 @@ base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigrav
   its own MCP list. The interactive selector runs only with a real TTY;
   non-interactive/CI runs log the exact `gentle-ai install` command instead of
   hanging. Idempotent: safe to re-run.
+- **rotator** (opt-in) installs the multi-account `tuxevil-rotator` Gemini/Antigravity
+  gateway, registers it to start at boot (a `systemd --user` unit on Linux, a logon
+  scheduled task on Windows), starts it in the background when nothing answers on port
+  51200, and installs the `pi-cockpit-tools-sync` Pi extension (source
+  `git:github.com/darkrei08/pi-cockpit-tools-sync`). Login is never run and no tokens are
+  read: add an account once with `tuxevil-rotator login`. Where the machine offers
+  neither unit nor task, the gateway is still started as a detached process and the
+  module logs a `WARN`. On the dotenv side the `rotator-autostart` Pi extension does the
+  same at session start when the port is dead, so the `gemini-*` aliases keep working;
+  concurrent sessions coordinate through one start claim (one start, not one per
+  session) and the detached process log is `~/.tuxevil-rotator/gateway.log`.
 
 ## pi workflows (pi-extensible-workflows)
 
