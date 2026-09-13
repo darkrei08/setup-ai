@@ -112,8 +112,12 @@ review `gentle-ai`. L'helper `approve_npm_install_scripts` gira **dopo** i modul
 installano i pacchetti pi (l'approvazione accetta solo pacchetti già installati),
 approva i tre pacchetti con script - `gentle-pi`, `node-pty`, `pi-tool-display` - e
 poi esegue `npm rebuild`, perché l'approvazione da sola non riesegue lo script già
-installato. `allow-scripts-pin=true` pinna `<pkg>@<versione>`, quindi un salto di
-versione ri-blocca e riconverge al run successivo. Verifica rileggendo lo stato di
+installato. L'approvazione è **per nome** (`npm install-scripts approve
+--no-allow-scripts-pin`), non il pin `<pkg>@<versione>` che npm scrive per default: pi
+aggiorna i pacchetti da sé (`pi update --extensions`) e un pin smette di coprire la
+versione nuova, ri-blocca lo script e rimuove in silenzio ciò che installa (per
+`gentle-pi`, il binario di review) finché l'installer non rigira; il nome copre ogni
+versione e npm converte in nome un pin già presente. Verifica rileggendo lo stato di
 npm: evento `install_scripts_approved`; un npm senza `install-scripts` (npm < 12)
 logga `install_scripts_unsupported` e viene saltato, un pacchetto assente è un salto.
 
@@ -154,8 +158,12 @@ installs the package-local `gentle-ai` review binary. The
 packages (approval only accepts installed packages), approves the three packages with
 install scripts - `gentle-pi`, `node-pty`, `pi-tool-display` - and then runs
 `npm rebuild`, because approval alone does not re-run an already-installed script.
-`allow-scripts-pin=true` pins `<pkg>@<version>`, so a version bump re-blocks and
-re-converges on the next run. It is verified by re-reading npm's own state: event
+Approval is **by name** (`npm install-scripts approve --no-allow-scripts-pin`), not the
+`<pkg>@<version>` pin npm writes by default: pi updates packages on its own (`pi
+update --extensions`), and a pin stops covering the new version, re-blocks the
+script and silently removes what it installs (for `gentle-pi`, the review binary)
+until the installer runs again. The name covers every version, and npm converts an
+existing pin into it. It is verified by re-reading npm's own state: event
 `install_scripts_approved`; an npm without `install-scripts` (npm < 12) logs
 `install_scripts_unsupported` and is skipped, and an absent package is a skip.
 
@@ -170,7 +178,7 @@ printf '%s\n' 'allow-remote=all' >> ~/.pi/agent/extensions/.npmrc
 printf '%s\n' 'ignore-scripts=false' >> ~/.pi/agent/extensions/.npmrc
 
 # manual fallback for the blocked install scripts (managed root)
-npm install-scripts approve gentle-pi node-pty pi-tool-display --prefix ~/.pi/agent/npm
+npm install-scripts approve --no-allow-scripts-pin gentle-pi node-pty pi-tool-display --prefix ~/.pi/agent/npm
 npm rebuild --foreground-scripts --prefix ~/.pi/agent/npm gentle-pi node-pty pi-tool-display
 ```
 
@@ -181,7 +189,7 @@ Add-Content "$HOME\.pi\agent\extensions\.npmrc" "allow-remote=all"
 Add-Content "$HOME\.pi\agent\extensions\.npmrc" "ignore-scripts=false"
 
 # manual fallback for the blocked install scripts (managed root)
-Push-Location "$HOME\.pi\agent\npm"; npm install-scripts approve gentle-pi node-pty pi-tool-display; npm rebuild --foreground-scripts gentle-pi node-pty pi-tool-display; Pop-Location
+Push-Location "$HOME\.pi\agent\npm"; npm install-scripts approve --no-allow-scripts-pin gentle-pi node-pty pi-tool-display; npm rebuild --foreground-scripts gentle-pi node-pty pi-tool-display; Pop-Location
 ```
 
 Nota di piattaforma: entrambi gli script configurano le root npm
@@ -750,6 +758,16 @@ await agent("Review this change", {
   setup-ai (che approva i pacchetti ed esegue `npm rebuild`), oppure il fallback
   manuale di §2. Verifica: `npm install-scripts ls` non deve elencare `gentle-pi`,
   `node-pty`, `pi-tool-display`; evento atteso: `install_scripts_approved`.
+- **RDD "unknown" e review nativa che non parte dopo un aggiornamento di pi** —
+  sintomo: ogni sessione pi stampa `receipt-driven-development status is unavailable`
+  e il prompt rende `Receipt-driven development: unknown`; `gentle_review start` non
+  negozia. Causa: con il pin `<pkg>@<versione>` un `pi update --extensions` porta
+  `gentle-pi` a una versione non approvata, il suo `postinstall` viene bloccato e il
+  binario locale `.gentle-ai/<versione>/gentle-ai` non esiste più. Diagnosi (npm 12):
+  `npm install-scripts ls --prefix ~/.pi/agent/npm` elenca `gentle-pi` come bloccato e
+  `~/.pi/agent/npm/node_modules/gentle-pi/.gentle-ai/` manca. Fix: riesegui setup-ai
+  (che ora approva per nome) o il fallback di §2. Un'approvazione per nome non può
+  più essere scavalcata da un aggiornamento.
 - **`EPERM: operation not permitted, rename '...state.json.tmp'`** — causa: la
   release pubblicata scrive lo stato con write(`.tmp`) + `rename()` senza retry, e
   un lock transitorio (Defender, indicizzazione, client di sync o un pi concorrente)
@@ -823,6 +841,16 @@ await agent("Review this change", {
   packages and runs `npm rebuild`), or the manual fallback in §2. Verify:
   `npm install-scripts ls` must not list `gentle-pi`, `node-pty`, `pi-tool-display`;
   expected event: `install_scripts_approved`.
+- **RDD "unknown" and native review that will not start after a pi update** — symptom:
+  every pi session prints `receipt-driven-development status is unavailable` and the
+  prompt renders `Receipt-driven development: unknown`; `gentle_review start` does not
+  negotiate. Cause: with the `<pkg>@<version>` pin, `pi update --extensions` moves
+  `gentle-pi` to a version that is not approved, its `postinstall` is blocked, and the
+  package-local `.gentle-ai/<version>/gentle-ai` binary is gone. Diagnose (npm 12):
+  `npm install-scripts ls --prefix ~/.pi/agent/npm` lists `gentle-pi` as blocked and
+  `~/.pi/agent/npm/node_modules/gentle-pi/.gentle-ai/` is missing. Fix: re-run setup-ai
+  (it now approves by name) or the §2 fallback. A name-only approval cannot be
+  invalidated by an update.
 - **`EPERM: operation not permitted, rename '...state.json.tmp'`** — cause: the
   published release writes state with write(`.tmp`) + `rename()` without retry, and
   a transient lock (Defender, indexing, a sync client, or a concurrent pi process)

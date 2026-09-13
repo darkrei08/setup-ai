@@ -13,6 +13,14 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 
 ### Added
 
+- **Machine-readable run summary.** Every run now ends with one `run_summary` JSONL record
+  and every executed step adds a `step_result` record: run id, outcome, started/ended
+  timestamps, duration, per-module outcome with the failing step and its return code, and
+  step counts. A failed run writes it too - the bash side does it from the exit trap,
+  which also covers the failure paths that `exit` directly - the engineering report ends
+  with the same summary, and both scripts emit the same fields in the same order. Existing
+  event names and payloads are unchanged. See the README `Logs` section. Implements
+  [#10](https://github.com/darkrei08/setup-ai/issues/10).
 - **`rotator` module: the gateway is started, not just installed.** The module keeps a
   `systemd --user` unit (Linux) or a logon scheduled task (Windows) so the gateway
   survives a reboot, starts `tuxevil-rotator` in the background only when nothing answers
@@ -71,6 +79,15 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   package is no longer an optional step, so a blocked postinstall that fails now fails
   the run; an unreadable npm state fails closed instead of continuing on a warning; and
   the load-bearing `gentle-pi` review binary is read back from disk after the rebuild.
+- **`pi` install-script approval survives a package update.** Approving with npm's
+  default `allow-scripts-pin=true` wrote `gentle-pi@<version>`, so the next `pi update
+  --extensions` moved the package onto a version that no longer matched the entry: the
+  postinstall was re-blocked, the package-local `gentle-ai` review binary disappeared, and
+  every pi session rendered `Receipt-driven development: unknown` (and could not start a
+  native review) until setup-ai ran again. Approval is now name-only
+  (`--no-allow-scripts-pin`), which covers the versions pi installs later, and npm converts
+  an existing pin into the name-only entry. Closes
+  [#26](https://github.com/darkrei08/setup-ai/issues/26).
 
 ## [3.3.2] - 2026-09-12
 
