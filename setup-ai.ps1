@@ -290,7 +290,7 @@ function Test-NodeMinimum {
 
 function Assert-NodeMinimum {
     if (-not (Test-Cmd node)) {
-        throw "Node.js is required; install Node.js 22.19 or newer"
+        throw "Node.js is required; pi-extensible-workflows and @earendil-works/pi-coding-agent need Node.js 22.19 or newer"
     }
     $versionText = ""
     Invoke-Step -Phase "node" -Action {
@@ -303,9 +303,9 @@ function Assert-NodeMinimum {
     $major = [int]$Matches[1]
     $minor = [int]$Matches[2]
     if (($major -lt 22) -or (($major -eq 22) -and ($minor -lt 19))) {
-        throw "Node.js $versionText is too old; pi-extensible-workflows needs >= 22.19"
+        throw "Node.js $versionText is too old; pi-extensible-workflows and @earendil-works/pi-coding-agent need >= 22.19"
     }
-    Write-Log INFO "node" "runtime_validated" "Node.js version satisfies workflow requirement" 0 "version=$versionText;minimum=22.19"
+    Write-Log INFO "node" "runtime_validated" "Node.js version satisfies the pi and workflow requirements" 0 "version=$versionText;minimum=22.19"
 }
 
 function Get-ReportCommandValue {
@@ -426,6 +426,121 @@ function Enable-NpmRemoteSources {
         throw "Could not enable npm remote sources ($npmrc)"
     }
     Write-Log INFO $phase "remote_sources_enabled" "npm $npmVersion remote (URL/tarball) sources enabled for this install root" 0 "npmrc=$npmrc"
+}
+
+# npm 12 blocks a dependency's install scripts until that package is explicitly
+# approved, and `pi install` runs a plain `npm install` with no post-processing, so
+# a blocked script never runs on a fresh machine. gentle-pi's postinstall is the
+# load-bearing one: it installs the package-local gentle-ai review binary the `gga`
+# gate uses; node-pty and pi-tool-display ship install scripts too.
+#
+# This is deliberately a post-install pass and NOT part of Enable-NpmRemoteSources:
+# `npm install-scripts approve` only accepts an INSTALLED package (it exits ENOMATCH
+# otherwise) and the npm-root helper runs before the first package exists, so on a
+# fresh machine an approval there would be a silent no-op. The installer calls this
+# once after the modules that install pi packages.
+#
+# Idempotent: every present target is approved and then rebuilt, and npm must report
+# none of them pending afterwards, so the end state is the same on every run - and a
+# build that failed on a previous run is retried. A version bump re-blocks the
+# package and re-converges on the next run. An absent package and an npm without
+# `install-scripts` are skips, never failures.
+
+# Read npm's own install-script state and return the subset of $Names npm still
+# reports as pending (unreviewed). Sets $script:SetupAiInstallScriptsStateOk so the
+# caller can tell an empty list from an unreadable state; never throws.
+function Get-PendingInstallScripts {
+    param([string]$Dir, [string]$Phase, [string[]]$Names)
+    $script:SetupAiInstallScriptsStateOk = $false
+    $script:SetupAiInstallScriptsJson = ""
+    $read = Invoke-Step -Phase $Phase -Optional -Action {
+        $script:SetupAiInstallScriptsJson = (npm install-scripts ls --json --prefix $Dir | Out-String)
+    }
+    if (-not $read) { return @() }
+    $pending = @()
+    try {
+        $state = $script:SetupAiInstallScriptsJson | ConvertFrom-Json
+        if ($null -eq $state) { return @() }
+        if ($null -ne $state.PSObject.Properties['allowScripts']) {
+            foreach ($entry in @($state.allowScripts)) {
+                if ($null -eq $entry) { continue }
+                if (-not ($Names -contains $entry.name)) { continue }
+                $changes = @()
+                if ($null -ne $entry.PSObject.Properties['changes']) { $changes = @($entry.changes) }
+                if (@($changes | Where-Object { $_.change -eq 'pending' }).Count -gt 0) { $pending += $entry.name }
+            }
+        }
+        $script:SetupAiInstallScriptsStateOk = $true
+        return $pending
+    } catch {
+        return @()
+    }
+}
+
+function Approve-NpmInstallScripts {
+    param([string]$Dir, [string]$Phase = "pi-npm")
+    $pkgJson = Join-Path $Dir "package.json"
+    # No project here means no pi package was ever installed into this root.
+    if (-not (Test-Path -LiteralPath $pkgJson -PathType Leaf)) { return }
+    if (-not (Test-Cmd npm)) {
+        Write-Log WARN $Phase "npm_missing" "npm is unavailable; dependency install scripts cannot be approved" 0 "dir=$Dir"
+        return
+    }
+    # Probe the subcommand instead of trusting a version number: npm < 12, and any
+    # other package manager pi can be configured with, does not implement it.
+    $probe = Invoke-Step -Phase $Phase -Optional -Action { npm install-scripts --help | Out-Null }
+    if (-not $probe) {
+        Write-Log INFO $Phase "install_scripts_unsupported" "This npm does not implement install-scripts; dependency install-script approval skipped" 0 "dir=$Dir"
+        return
+    }
+    # The packages whose blocked install scripts the toolchain depends on; one that
+    # is not installed in this root is a skip, never an error.
+    $present = @()
+    foreach ($pkg in @('gentle-pi','node-pty','pi-tool-display')) {
+        if (Test-Path -LiteralPath (Join-Path $Dir "node_modules/$pkg/package.json") -PathType Leaf) { $present += $pkg }
+    }
+    if ($present.Count -eq 0) {
+        Write-Log INFO $Phase "install_scripts_none_installed" "None of the install-script packages are installed; nothing to approve" 0 "dir=$Dir"
+        return
+    }
+    # Approve every installed target and THEN run its script: approval alone does
+    # not re-run a script that was blocked at install time (npm treats the package
+    # as already installed), and skipping that would make a failed build permanent.
+    # Re-running it is idempotent.
+    foreach ($pkg in $present) {
+        # Approval is a policy change and stays optional: a package that refuses it is
+        # still covered by the rebuild check below.
+        $null = Invoke-Step -Phase $Phase -Optional -Action { npm install-scripts approve $pkg --prefix $Dir }
+        # The rebuild is load-bearing: a blocked postinstall can be the step that installs
+        # a required artifact (gentle-pi ships its review binary this way), so a failure
+        # here fails the run instead of degrading to a warning.
+        # --foreground-scripts keeps build output and errors in the log.
+        $null = Invoke-Step -Phase $Phase -Action { npm rebuild $pkg --foreground-scripts --prefix $Dir }
+    }
+    # An exit code is not proof that the artifact exists, so the load-bearing one is read
+    # from disk: gentle-pi's postinstall is what installs the review binary.
+    $gentlePiDir = Join-Path $Dir "node_modules/gentle-pi"
+    if (Test-Path -LiteralPath $gentlePiDir -PathType Container) {
+        $reviewBinary = @(Get-ChildItem -LiteralPath (Join-Path $gentlePiDir ".gentle-ai") -Recurse -File -Filter "gentle-ai*" -ErrorAction SilentlyContinue)
+        if ($reviewBinary.Count -eq 0) {
+            Write-Log ERROR $Phase "review_binary_missing" "gentle-pi review binary missing after its install scripts ran" 1 "dir=$Dir;expected=$gentlePiDir/.gentle-ai/*/gentle-ai*"
+            throw "gentle-pi review binary missing after rebuild"
+        }
+        Write-Log INFO $Phase "review_binary_verified" "gentle-pi review binary present after the rebuild" 0 "binary=$($reviewBinary[0].FullName)"
+    }
+    # Verify by re-reading npm's own state: nothing we approved may still be pending.
+    $pending = @(Get-PendingInstallScripts -Dir $Dir -Phase $Phase -Names $present)
+    if (-not $script:SetupAiInstallScriptsStateOk) {
+        # Fail closed: without npm's own state there is no proof the blocked scripts ran,
+        # and reporting success would ship an unverified install.
+        Write-Log ERROR $Phase "install_scripts_state_unreadable" "Could not re-read the npm install-script state to verify approval" 1 "dir=$Dir"
+        throw "npm install-script state unreadable; approval could not be verified"
+    }
+    if ($pending.Count -gt 0) {
+        Write-Log ERROR $Phase "install_scripts_unverified" "npm still reports install scripts as unapproved after approve" 1 "dir=$Dir;packages=$($pending -join ',')"
+        throw "npm still reports install scripts as unapproved: $($pending -join ',')"
+    }
+    Write-Log INFO $Phase "install_scripts_approved" "Dependency install scripts approved and executed" 0 "dir=$Dir;packages=$($present -join ',')"
 }
 
 # Raw probe for the transient-rename marker: $true when the file exists and contains
@@ -1695,6 +1810,17 @@ foreach ($m in $selected) {
         # Fail-fast: mirror the Bash ERR trap so we never run modules whose
         # ordered prerequisites just failed.
         break
+    }
+}
+
+# npm 12 install-script approval can only name an installed package, so converge
+# after the modules that install pi packages and before the gates that use them.
+if (-not $failed -and ($selected -contains 'pi' -or $selected -contains 'pi-packages' -or $selected -contains 'gentle-ai' -or $selected -contains 'pi-workflows')) {
+    try {
+        Approve-NpmInstallScripts -Dir $PiNpmDir
+    } catch {
+        $failed += 'pi-npm'
+        Write-Log ERROR "pi-npm" "install_scripts_unverified" $_.Exception.Message 1
     }
 }
 

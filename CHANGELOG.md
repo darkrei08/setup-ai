@@ -23,6 +23,11 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   zypper families and their derivatives resolve through `ID_LIKE`, including CachyOS ->
   pacman; a distribution the installer cannot map still fails closed at preflight with
   `unsupported_distribution`.
+- **`pi` npm 12 install-script approval.** npm 12 blocks a dependency's install
+  scripts until that package is explicitly approved, and `pi install` runs a plain
+  `npm install` with no post-processing, so gentle-pi's postinstall was silently
+  skipped on a fresh machine. The installer now approves and rebuilds the packages it
+  depends on, and verifies the result. See `docs/pi-extensions.md`.
 
 ### Fixed
 
@@ -31,6 +36,10 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   path (`Path does not exist: <cwd>/github:darkrei08/pi-cockpit-tools-sync`). The accepted
   form is `git:github.com/darkrei08/pi-cockpit-tools-sync`, and the readback checks that
   source instead of a string an earlier run may have left in settings.
+- **`pi` install-script approval is verified, not assumed.** The rebuild of a present
+  package is no longer an optional step, so a blocked postinstall that fails now fails
+  the run; an unreadable npm state fails closed instead of continuing on a warning; and
+  the load-bearing `gentle-pi` review binary is read back from disk after the rebuild.
 
 ## [3.3.2] - 2026-09-12
 

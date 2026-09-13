@@ -113,8 +113,8 @@ The **`pi-packages`** module reads a declarative manifest, one source per line
 (`npm:<pkg>[@<version>]`, `git:<host>/<owner>/<repo>[@<ref>]`, or a local path), and
 verifies every package by reading `~/.pi/agent/settings.json` back instead of trusting
 the install command. Start from `pi-packages.example.txt`; the reference page
-[docs/pi-extensions.md](docs/pi-extensions.md) covers npm 12 `EALLOWREMOTE`, where
-configuration lives (dotenv vs the extension), models and roles for subagents, per-role
+[docs/pi-extensions.md](docs/pi-extensions.md) covers npm 12 `EALLOWREMOTE` and
+install-script approval, where configuration lives (dotenv vs the extension), models and
 resource selectors, and troubleshooting.
 
 ## OpenCode Go inside pi
