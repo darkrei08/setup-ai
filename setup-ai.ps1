@@ -101,6 +101,8 @@ $PiWorkflowsRetryMarker = 'renameWithRetry'
 # that into a hard failure instead of a warning. Initialized here because StrictMode
 # throws when a variable is read before it has been set.
 $script:SetupAiRollbackFailed = $false
+# Read by Restore-PublishedPiWorkflows before Mod-PiWorkflows ever assigns it.
+$script:SetupAiWorkflowVersion = ''
 
 # Upstream agent-skill stack mirrored from vekexasia/dotenv setup_env.sh so the
 # same skills land on every OS (dotenv itself is Linux-only). Installed via
@@ -1400,7 +1402,6 @@ function Mod-PiWorkflows {
     if ($env:PI_WORKFLOW_VERSION) {
         $ver = $env:PI_WORKFLOW_VERSION.Trim()
         $script:SetupAiWorkflowVersion = $ver
-        Write-Log INFO "pi-workflows" "version" "Version $ver"
     }
     try {
         if (-not $ver) {
@@ -1633,17 +1634,88 @@ function Mod-Antigravity {
     }
 }
 
+# opencode-pi spawns the CLI with child_process.spawn and no shell, so a Windows
+# .cmd/.ps1 shim is not executable for it: Node reports `spawn opencode ENOENT`
+# even though `opencode --version` works in a terminal. Resolve the native
+# launcher behind the shim and hand it to the extension via OPENCODE_PI_BIN.
+function Get-OpenCodeNativeBin {
+    foreach ($cmd in @(Get-Command opencode -All -ErrorAction SilentlyContinue)) {
+        $path = $cmd.Source
+        if (-not $path) { continue }
+        $ext = [System.IO.Path]::GetExtension($path).ToLowerInvariant()
+        if (($ext -eq '.cmd') -or ($ext -eq '.bat')) {
+            $native = Join-Path (Split-Path -Parent $path) 'node_modules\opencode-ai\bin\opencode.exe'
+            if (Test-Path $native -PathType Leaf) { return $native }
+            continue
+        }
+        if (($ext -eq '.exe') -and (Test-Path $path -PathType Leaf)) { return $path }
+    }
+    return $null
+}
+
+# Probe what opencode-pi will run: no shell, OPENCODE_PI_BIN first, then PATH.
+# $null means node is missing, so the spawn path could not be proven either way.
+function Test-OpenCodeSpawn {
+    param([string]$Bin = "")
+    if (-not (Test-Cmd node)) { return $null }
+    $probe = 'const {spawnSync}=require("node:child_process");' +
+        'const r=spawnSync(process.env.OPENCODE_PI_SPAWN_PROBE||"opencode",["--version"],{stdio:"ignore"});' +
+        'process.exit(!r.error && r.status===0 ? 0 : 1)'
+    $env:OPENCODE_PI_SPAWN_PROBE = $Bin
+    $ok = $false
+    # A nonzero exit may surface as a thrown NativeCommandExitException (the script
+    # sets PSNativeCommandUseErrorActionPreference) or as $LASTEXITCODE; both fail.
+    try {
+        & node -e $probe | Out-Null
+        $ok = ($LASTEXITCODE -eq 0)
+    } catch { $ok = $false }
+    Remove-Item Env:OPENCODE_PI_SPAWN_PROBE -ErrorAction SilentlyContinue
+    return $ok
+}
+
+function Set-OpenCodePiBin {
+    # What a fresh pi session resolves: explicit override first, else bare PATH.
+    $effective = $env:OPENCODE_PI_BIN
+    if (-not $effective) { $effective = [Environment]::GetEnvironmentVariable('OPENCODE_PI_BIN', 'User') }
+    if (-not $effective) { $effective = 'opencode' }
+    $spawnable = Test-OpenCodeSpawn -Bin $effective
+    if ($spawnable -eq $true) {
+        Write-Log INFO "opencode" "spawn_ok" "opencode is spawnable without a shell (opencode-pi requirement)" 0 "bin=$effective"
+        return
+    }
+    if ($null -eq $spawnable) {
+        Write-Log WARN "opencode" "spawn_unverified" "node not found; cannot verify the opencode-pi spawn path" 0
+        return
+    }
+    $native = Get-OpenCodeNativeBin
+    if (-not $native) {
+        Write-Log WARN "opencode" "spawn_unresolved" "opencode is not spawnable without a shell and no native launcher sits behind the shims" 0
+        return
+    }
+    if ((Test-OpenCodeSpawn -Bin $native) -ne $true) {
+        Write-Log WARN "opencode" "spawn_failed" "the resolved opencode launcher is not spawnable without a shell" 0 "bin=$native"
+        return
+    }
+    [Environment]::SetEnvironmentVariable('OPENCODE_PI_BIN', $native, 'User')
+    $env:OPENCODE_PI_BIN = $native
+    Write-Log INFO "opencode" "pi_bin_set" "OPENCODE_PI_BIN points opencode-pi at the native launcher" 0 "bin=$native"
+}
+
 function Mod-Opencode {
     Write-Log INFO "opencode" "start" "opencode"
-    if (Test-Cmd opencode) { Write-Log INFO "opencode" "already_present" "opencode already installed"; return }
-    if (-not (Test-Cmd npm)) {
-        throw "npm not found; opencode cannot be installed"
+    if (Test-Cmd opencode) {
+        Write-Log INFO "opencode" "already_present" "opencode already installed"
+    } else {
+        if (-not (Test-Cmd npm)) {
+            throw "npm not found; opencode cannot be installed"
+        }
+        Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai }
+        if (-not (Test-Cmd opencode)) {
+            Write-Log ERROR "opencode" "install_missing" "opencode not found on PATH after npm install"
+            throw "opencode not found on PATH after npm install"
+        }
     }
-    Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai }
-    if (-not (Test-Cmd opencode)) {
-        Write-Log ERROR "opencode" "install_missing" "opencode not found on PATH after npm install"
-        throw "opencode not found on PATH after npm install"
-    }
+    Set-OpenCodePiBin
     @"
   OpenCode Go (paid) is hosted-model access; after install run: opencode auth login
   The SAME key works in pi.dev - add a custom provider (baseUrl https://opencode.ai/zen/v1,
@@ -1930,7 +2002,7 @@ function Resolve-Selection {
         foreach ($r in ($Only -split ',')) {
             $r = $r.Trim()
             if (-not $r) { continue }
-            if (-not $ModuleDesc.Contains($r)) { Write-Error "Unknown module: $r"; exit 2 }
+            if (-not $ModuleDesc.Contains($r)) { Write-Log ERROR "selection" "invalid_only" "Unknown module: $r" 2; exit 2 }
             $requested += $r
         }
         if ($requested.Count -eq 0) {
