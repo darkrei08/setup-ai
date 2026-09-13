@@ -60,6 +60,8 @@ $RunId = (Get-Date -AsUTC -Format "yyyyMMddTHHmmssZ")
 $HumanLog = Join-Path $LogDir "setup_$RunId.log"
 $JsonlLog = Join-Path $LogDir "setup_$RunId.jsonl"
 $ReportFile = Join-Path $LogDir "engineering-report_$RunId.md"
+$RunStartedAt = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+$RunStartTime = Get-Date
 
 $EE_Slug  = "darkrei08/Engineering-Excellence"
 $EE_Skill = "engineering-excellence"
@@ -150,7 +152,8 @@ foreach ($skillAgent in $SkillAgentNames) {
 function Write-Log {
     param(
         [ValidateSet('INFO','WARN','ERROR','DEBUG')] [string]$Level,
-        [string]$Phase, [string]$Event, [string]$Message, [int]$ReturnCode = 0, [string]$Meta = ""
+        [string]$Phase, [string]$Event, [string]$Message, [int]$ReturnCode = 0, [string]$Meta = "",
+        [System.Collections.IDictionary]$Summary = $null
     )
     $ts = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
     $obj = [ordered]@{
@@ -158,7 +161,19 @@ function Write-Log {
         message = $Message; return_code = $ReturnCode; run_id = $RunId; pid = $PID
     }
     if ($Meta) { $obj.meta = $Meta }
-    ($obj | ConvertTo-Json -Compress) | Add-Content -Path $JsonlLog
+    if ($Summary) { $obj.summary = $Summary }
+    # -Depth 5 keeps the nested summary object (modules/steps) intact; the default of 2
+    # would flatten it to type names.
+    ($obj | ConvertTo-Json -Compress -Depth 5) | Add-Content -Path $JsonlLog
+
+    # First failure wins: later wrapper events (`script_failed`, `module_failed`,
+    # `completed_with_failures`) only announce the failure this one named, so they must not
+    # replace the root cause the summary falls back to.
+    if ($Level -eq 'ERROR' -and -not $script:LastErrorStep) {
+        # Fallback diagnosis for the run summary when no step recorded the failure itself.
+        $script:LastErrorStep = "$Event`: $Message"
+        $script:LastErrorReturnCode = $ReturnCode
+    }
 
     $line = "$ts [$Level] $Phase $Event`: $Message"
     $line | Add-Content -Path $HumanLog
@@ -171,6 +186,137 @@ function Write-Log {
     }
 }
 
+# ------------------------------------------------------------------------------
+# Run summary state
+#
+# One `run_summary` record per run, built from the state below as the run progresses.
+# Step counters are incremented by Write-StepResult from Invoke-Step; module outcomes
+# come from the module loop, plus whatever was current when the failure happened.
+# ------------------------------------------------------------------------------
+
+$script:CurrentModule = ''
+$script:SelectedModules = @()
+$script:SucceededModules = @()
+$script:FailedModules = @()
+$script:RunActive = $false
+$script:StepsInstalled = 0
+$script:StepsVerified = 0
+$script:StepsSkipped = 0
+$script:StepsFailed = 0
+$script:StepFailStep = ''
+$script:StepFailReturnCode = 0
+$script:LastErrorStep = ''
+$script:LastErrorReturnCode = 0
+
+# One machine-readable outcome per executed step, so the summary is counted from the
+# run itself instead of by re-parsing the log.
+# status: installed|verified|skipped|failed.
+function Write-StepResult {
+    param([string]$Phase, [string]$Status, [int]$ReturnCode, [string]$Step)
+    switch ($Status) {
+        'installed' { $script:StepsInstalled++ }
+        'verified'  { $script:StepsVerified++ }
+        'skipped'   { $script:StepsSkipped++ }
+        'failed'    {
+            $script:StepsFailed++
+            $script:StepFailStep = $Step
+            $script:StepFailReturnCode = $ReturnCode
+        }
+    }
+    $level = switch ($Status) { 'failed' { 'ERROR' } 'skipped' { 'WARN' } default { 'INFO' } }
+    Write-Log $level $Phase "step_result" "Step $Status" $ReturnCode "step=$Step;module=$script:CurrentModule;status=$Status"
+}
+
+# Terminal record for the run, written once from the report block, so a failed run
+# still reports what failed and why.
+function Write-RunSummary {
+    param([string[]]$Selected, [string[]]$Succeeded, [string[]]$FailedModules, [int]$ExitCode)
+
+    $outcome = if ($ExitCode -eq 0) { 'success' } else { 'failed' }
+    $level = if ($ExitCode -eq 0) { 'INFO' } else { 'ERROR' }
+    $endedAt = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+    $duration = [int]((Get-Date) - $RunStartTime).TotalSeconds
+    if ($duration -lt 0) { $duration = 0 }
+
+    # A failed step names itself; anything else falls back to the last ERROR record.
+    $failedStep = $script:StepFailStep
+    $failedReturnCode = $script:StepFailReturnCode
+    if (-not $failedStep) {
+        $failedStep = $script:LastErrorStep
+        $failedReturnCode = $script:LastErrorReturnCode
+    }
+    # A negative code is a real Windows exit code (HRESULT style), so only 0 - "failed
+    # without a code" - is replaced.
+    if ($failedReturnCode -eq 0) { $failedReturnCode = 1 }
+
+    $moduleNames = @($Selected)
+    foreach ($f in @($FailedModules)) {
+        # A gate can fail outside any selected module.
+        if ($Selected -notcontains $f) { $moduleNames += $f }
+    }
+
+    $entries = @()
+    $reportLines = @("", "## Run summary", "", "- Run ID: ``$RunId``", "- Outcome: $outcome")
+    $reportLines += "- Started: $RunStartedAt"
+    $reportLines += "- Ended: $endedAt ($($duration)s)"
+    $mSuccess = 0; $mFailed = 0; $mSkipped = 0
+    foreach ($m in $moduleNames) {
+        if ($Succeeded -contains $m) { $status = 'success'; $mSuccess++ }
+        elseif ($FailedModules -contains $m) { $status = 'failed'; $mFailed++ }
+        else { $status = 'skipped'; $mSkipped++ }
+        $entry = [ordered]@{ name = $m; status = $status }
+        if ($status -eq 'failed') {
+            $entry.failed_step = $failedStep
+            $entry.return_code = $failedReturnCode
+            $reportLines += "- Module ``$m``: failed at ``$failedStep`` (return code $failedReturnCode)"
+        } else {
+            $reportLines += "- Module ``$m``: $status"
+        }
+        $entries += $entry
+    }
+    $reportLines += "- Steps: $script:StepsInstalled installed, $script:StepsVerified verified, $script:StepsSkipped skipped, $script:StepsFailed failed"
+
+    $message = "Run summary: outcome=$outcome;duration_seconds=$duration"
+    $message += ";modules_success=$mSuccess;modules_failed=$mFailed;modules_skipped=$mSkipped"
+    $message += ";steps_installed=$script:StepsInstalled;steps_verified=$script:StepsVerified"
+    $message += ";steps_skipped=$script:StepsSkipped;steps_failed=$script:StepsFailed"
+    if ($outcome -eq 'failed') {
+        $message += ";failed_step=$failedStep;return_code=$failedReturnCode"
+    }
+
+    Add-Content -Path $ReportFile -Value $reportLines
+    Write-Log $level "bootstrap" "run_summary" $message $ExitCode -Summary ([ordered]@{
+        run_id = $RunId
+        outcome = $outcome
+        started_at = $RunStartedAt
+        ended_at = $endedAt
+        duration_seconds = $duration
+        modules = $entries
+        steps = [ordered]@{
+            installed = $script:StepsInstalled
+            verified = $script:StepsVerified
+            skipped = $script:StepsSkipped
+            failed = $script:StepsFailed
+        }
+    })
+}
+
+# PowerShell has no exit trap; this is the equivalent of the one in setup-ai.sh. A
+# terminating error that escapes the module loop still ends the run with a summary.
+# Argument errors exit before $script:RunActive is set and stay summary-free, which is
+# also what setup-ai.sh does for `--list`, `--help` and an invalid selection.
+trap {
+    Write-Log ERROR "bootstrap" "script_failed" "Setup failed: $($_.Exception.Message)" 1
+    if ($script:RunActive) {
+        # setup-ai.sh names the module (or phase) that was current when the run failed;
+        # an unexpected failure has no entry in $script:FailedModules yet, so add it here.
+        $failedModules = @($script:FailedModules)
+        if ($script:CurrentModule) { $failedModules += $script:CurrentModule }
+        Write-RunSummary -Selected $script:SelectedModules -Succeeded $script:SucceededModules -FailedModules $failedModules -ExitCode 1
+    }
+    exit 1
+}
+
 function Test-Cmd { param([string]$Name) [bool](Get-Command $Name -ErrorAction SilentlyContinue) }
 
 # winget updates the registry PATH, not the live process. Re-read it so tools
@@ -181,14 +327,21 @@ function Update-SessionPath {
     $env:Path = (@($machine, $user) | Where-Object { $_ }) -join ';'
 }
 
-# Run a step; $Optional means failures are logged as WARN and swallowed.
+# Run a step; $Optional means failures are logged as WARN and swallowed. $Verify marks
+# a readback step, whose successful outcome counts as verified instead of installed.
 function Invoke-Step {
     param(
         [string]$Phase,
         [scriptblock]$Action,
         [switch]$Optional,
-        [int[]]$ExpectedExitCodes = @()
+        [int[]]$ExpectedExitCodes = @(),
+        [switch]$Verify,
+        [string]$Step = ''
     )
+    # Step identity for the step_result record: an explicit label when the helper has
+    # one, otherwise the action source with whitespace collapsed.
+    $step = if ($Step) { $Step } else { ($Action.ToString() -replace '\s+', ' ').Trim() }
+    $kind = if ($Verify) { 'verified' } else { 'installed' }
     Write-Log INFO $Phase "step_start" "Running step"
     try {
         $global:LASTEXITCODE = 0
@@ -197,23 +350,32 @@ function Invoke-Step {
         if ($nativeExitCode -ne 0) {
             if ($ExpectedExitCodes -contains $nativeExitCode) {
                 Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode
+                Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
                 return $null
             }
             throw "Native command exited with code $nativeExitCode"
         }
         Write-Log INFO $Phase "step_ok" "Step completed"
+        Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
         return $true
     } catch {
         $nativeExitCode = $global:LASTEXITCODE
         if ($ExpectedExitCodes -contains $nativeExitCode) {
             Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode
+            Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
             return $null
         }
+        # Keep the real code, including a negative HRESULT-style one; only a missing code
+        # (a wrapped exception rather than a native failure) falls back to 1.
+        $rc = if ($null -ne $nativeExitCode) { [int]$nativeExitCode } else { 1 }
+        if ($rc -eq 0) { $rc = 1 }
         if ($Optional) {
             Write-Log WARN $Phase "step_failed_optional" "$($_.Exception.Message); continuing" 1
+            Write-StepResult -Phase $Phase -Status 'skipped' -ReturnCode $rc -Step $step
             return $false
         }
         Write-Log ERROR $Phase "step_failed" "$($_.Exception.Message)" 1
+        Write-StepResult -Phase $Phase -Status 'failed' -ReturnCode $rc -Step $step
         throw
     }
 }
@@ -226,7 +388,7 @@ function Test-WingetInstalled {
         # Keep the query inside Invoke-Step so its exit status and output are
         # logged; a failed probe is treated as "not installed" and followed
         # by the mandatory install step.
-        $listed = Invoke-Step -Phase $Phase -Optional -ExpectedExitCodes $wingetNoApplicationsFoundExitCode -Action {
+        $listed = Invoke-Step -Phase $Phase -Optional -Verify -ExpectedExitCodes $wingetNoApplicationsFoundExitCode -Action {
             winget list --id $Id -e | Out-File -LiteralPath $probe -Encoding utf8
         }
         if ($null -eq $listed) {
@@ -277,7 +439,7 @@ function Invoke-RemoteScript {
 function Test-NodeMinimum {
     if (-not (Test-Cmd node)) { return $false }
     $versionText = ""
-    $ok = Invoke-Step -Phase "node" -Optional -Action {
+    $ok = Invoke-Step -Phase "node" -Optional -Verify -Action {
         $script:SetupAiNodeVersionProbe = (node --version).Trim()
     }
     if (-not $ok) { return $false }
@@ -293,7 +455,7 @@ function Assert-NodeMinimum {
         throw "Node.js is required; pi-extensible-workflows and @earendil-works/pi-coding-agent need Node.js 22.19 or newer"
     }
     $versionText = ""
-    Invoke-Step -Phase "node" -Action {
+    Invoke-Step -Phase "node" -Verify -Action {
         $script:SetupAiNodeVersion = (node --version).Trim()
     }
     $versionText = $script:SetupAiNodeVersion
@@ -311,7 +473,7 @@ function Assert-NodeMinimum {
 function Get-ReportCommandValue {
     param([string]$Command, [string[]]$Arguments)
     $script:SetupAiReportValue = ""
-    $ok = Invoke-Step -Phase "report" -Optional -Action {
+    $ok = Invoke-Step -Phase "report" -Optional -Verify -Step "$Command $($Arguments -join ' ')" -Action {
         $script:SetupAiReportValue = (& $Command @Arguments).Trim()
     }
     if ($ok -and $script:SetupAiReportValue) { return $script:SetupAiReportValue }
@@ -395,7 +557,7 @@ function Enable-NpmRemoteSources {
         return
     }
 
-    $probeOk = Invoke-Step -Phase $phase -Optional -Action { $script:SetupAiNpmVersion = (npm --version).Trim() }
+    $probeOk = Invoke-Step -Phase $phase -Optional -Verify -Action { $script:SetupAiNpmVersion = (npm --version).Trim() }
     if (-not $probeOk) {
         Write-Log WARN $phase "npm_version_unavailable" "Could not read the npm version; remote-source opt-in was not written" 0 "dir=$Dir"
         return
@@ -453,7 +615,7 @@ function Get-PendingInstallScripts {
     param([string]$Dir, [string]$Phase, [string[]]$Names)
     $script:SetupAiInstallScriptsStateOk = $false
     $script:SetupAiInstallScriptsJson = ""
-    $read = Invoke-Step -Phase $Phase -Optional -Action {
+    $read = Invoke-Step -Phase $Phase -Optional -Verify -Action {
         $script:SetupAiInstallScriptsJson = (npm install-scripts ls --json --prefix $Dir | Out-String)
     }
     if (-not $read) { return @() }
@@ -488,7 +650,7 @@ function Approve-NpmInstallScripts {
     }
     # Probe the subcommand instead of trusting a version number: npm < 12, and any
     # other package manager pi can be configured with, does not implement it.
-    $probe = Invoke-Step -Phase $Phase -Optional -Action { npm install-scripts --help | Out-Null }
+    $probe = Invoke-Step -Phase $Phase -Optional -Verify -Action { npm install-scripts --help | Out-Null }
     if (-not $probe) {
         Write-Log INFO $Phase "install_scripts_unsupported" "This npm does not implement install-scripts; dependency install-script approval skipped" 0 "dir=$Dir"
         return
@@ -689,7 +851,7 @@ function Restore-PublishedPiWorkflows {
     if (-not $ver) {
         # Route the lookup through Invoke-Step so the command and its diagnostics are
         # logged instead of being swallowed by a silent try/catch.
-        $null = Invoke-Step -Phase $phase -Optional -Action { $script:SetupAiWorkflowVersion = (npm view pi-extensible-workflows version).Trim() }
+        $null = Invoke-Step -Phase $phase -Optional -Verify -Action { $script:SetupAiWorkflowVersion = (npm view pi-extensible-workflows version).Trim() }
         $ver = $script:SetupAiWorkflowVersion
     }
 
@@ -833,16 +995,16 @@ function Install-PatchedPiWorkflows {
         # Prefer a ref that already resolves locally (a shared checkout can hold the fix
         # before it is pushed), then try the remote once. The fetched ref lands in
         # refs/remotes, so that is what the second probe has to resolve.
-        $refOk = Invoke-Step -Phase $phase -Optional -ExpectedExitCodes @(1, 128) -Action {
+        $refOk = Invoke-Step -Phase $phase -Optional -Verify -ExpectedExitCodes @(1, 128) -Action {
             git -C $src rev-parse --verify --quiet "$ref^{commit}"
         }
         if (-not $refOk) {
             $null = Invoke-Step -Phase $phase -Optional -Action { git -C $src fetch origin "+refs/heads/$ref`:refs/remotes/origin/$ref" }
-            $refOk = Invoke-Step -Phase $phase -Optional -ExpectedExitCodes @(1, 128) -Action {
+            $refOk = Invoke-Step -Phase $phase -Optional -Verify -ExpectedExitCodes @(1, 128) -Action {
                 git -C $src rev-parse --verify --quiet "$ref^{commit}"
             }
             if (-not $refOk) {
-                $refOk = Invoke-Step -Phase $phase -Optional -ExpectedExitCodes @(1, 128) -Action {
+                $refOk = Invoke-Step -Phase $phase -Optional -Verify -ExpectedExitCodes @(1, 128) -Action {
                     git -C $src rev-parse --verify --quiet "refs/remotes/origin/$ref^{commit}"
                 }
             }
@@ -1076,7 +1238,7 @@ function Mod-Base {
     $workloadPresent = $false
     if (Test-Path $vsWhere) {
         $script:SetupAiVsInstallPath = ""
-        $probeOk = Invoke-Step -Phase "base" -Optional -Action {
+        $probeOk = Invoke-Step -Phase "base" -Optional -Verify -Action {
             $script:SetupAiVsInstallPath = (& $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
         }
         $workloadPresent = $probeOk -and [bool]$script:SetupAiVsInstallPath
@@ -1092,7 +1254,7 @@ function Mod-Base {
     if (-not (Test-Path $vsWhere)) {
         throw "Visual Studio Installer vswhere.exe not found; cannot verify C++ workload"
     }
-    Invoke-Step -Phase "base" -Action {
+    Invoke-Step -Phase "base" -Verify -Action {
         $script:SetupAiVsInstallPath = (& $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
     }
     if (-not $script:SetupAiVsInstallPath) {
@@ -1129,13 +1291,13 @@ function Mod-Node {
 function Mod-Bun {
     Write-Log INFO "bun" "start" "Bun"
     if (Test-Cmd bun) {
-        Invoke-Step -Phase "bun" -Action { bun --version }
+        Invoke-Step -Phase "bun" -Verify -Action { bun --version }
         Write-Log INFO "bun" "already_present" "bun already installed"
         return
     }
     Invoke-RemoteScript -Url "https://bun.sh/install.ps1" -Phase "bun"
     if (Test-Cmd bun) {
-        Invoke-Step -Phase "bun" -Action { bun --version }
+        Invoke-Step -Phase "bun" -Verify -Action { bun --version }
         Write-Log INFO "bun" "installed" "bun available after remote installer"
     } else {
         Write-Log ERROR "bun" "install_missing" "bun not found on PATH after remote installer"
@@ -1166,7 +1328,7 @@ function Mod-Pi {
 function Mod-Go {
     Write-Log INFO "go" "start" "Go toolchain"
     if (Test-Cmd go) {
-        Invoke-Step -Phase "go" -Action { go version }
+        Invoke-Step -Phase "go" -Verify -Action { go version }
         Write-Log INFO "go" "already_present" "Go already installed"
         return
     }
@@ -1236,7 +1398,7 @@ function Mod-PiWorkflows {
     }
     try {
         if (-not $ver) {
-            Invoke-Step -Phase "pi-workflows" -Action {
+            Invoke-Step -Phase "pi-workflows" -Verify -Action {
                 $script:SetupAiWorkflowVersion = (npm view pi-extensible-workflows version).Trim()
             }
             $ver = $script:SetupAiWorkflowVersion
@@ -1357,7 +1519,7 @@ function Mod-PiPackages {
 function Mod-Herdr {
     Write-Log INFO "herdr" "start" "herdr"
     if (Test-Cmd herdr) {
-        Invoke-Step -Phase "herdr" -Action { herdr --version }
+        Invoke-Step -Phase "herdr" -Verify -Action { herdr --version }
         Write-Log INFO "herdr" "already_present" "herdr already installed"
         return
     }
@@ -1393,7 +1555,7 @@ function Mod-GentleAi {
         Write-Log ERROR "gentle-ai" "install_missing" "gentle-ai CLI not found on PATH after remote installer"
         throw "gentle-ai CLI not found on PATH after remote installer"
     }
-    Invoke-Step -Phase "gentle-ai" -Action { & gentle-ai --version }
+    Invoke-Step -Phase "gentle-ai" -Verify -Action { & gentle-ai --version }
 
     # Detect the agents/IDEs present on this machine (same mapping as Mod-Ee).
     $detectedAgents = Get-TargetSkillAgents
@@ -1778,22 +1940,23 @@ function Resolve-Selection {
 
 function Invoke-QualityGates {
     param([string[]]$Selected)
+    $script:CurrentModule = 'quality'
     Write-Log INFO "quality" "start" "Running quality gates"
 
     if ($Selected -contains 'node' -or $Selected -contains 'pi-workflows') {
         Assert-NodeMinimum
     }
     if ($Selected -contains 'node') {
-        Invoke-Step -Phase "quality" -Action { node --version }
-        Invoke-Step -Phase "quality" -Action { npm --version }
+        Invoke-Step -Phase "quality" -Verify -Action { node --version }
+        Invoke-Step -Phase "quality" -Verify -Action { npm --version }
     }
     if ($Selected -contains 'bun') {
         if (-not (Test-Cmd bun)) { throw "bun quality gate could not find bun" }
-        Invoke-Step -Phase "quality" -Action { bun --version }
+        Invoke-Step -Phase "quality" -Verify -Action { bun --version }
     }
     if ($Selected -contains 'pi') {
         if (-not (Test-Cmd pi)) { throw "pi quality gate could not find pi" }
-        Invoke-Step -Phase "quality" -Action { pi --no-extensions --version }
+        Invoke-Step -Phase "quality" -Verify -Action { pi --no-extensions --version }
     }
     if ($Selected -contains 'pi-workflows') {
         $workflowPkg = Join-Path $PiExtDir "node_modules/pi-extensible-workflows/package.json"
@@ -1849,13 +2012,17 @@ if ($List) { Show-List; exit 0 }
 Write-Log INFO "bootstrap" "start" "AI Dev Suite (Windows) started" 0 "script_version=$ScriptVersion"
 
 $selected = Resolve-Selection
+$script:SelectedModules = @($selected)
+$script:RunActive = $true
 Write-Log INFO "bootstrap" "modules_selected" "Modules queued" 0 ("modules=" + ($selected -join ' '))
 
-$failed = @()
+$script:FailedModules = @()
+$script:SucceededModules = @()
 foreach ($m in $selected) {
-    try { & $ModuleFn[$m] }
+    $script:CurrentModule = $m
+    try { & $ModuleFn[$m]; $script:SucceededModules += $m }
     catch {
-        $failed += $m
+        $script:FailedModules += $m
         Write-Log ERROR "modules" "module_failed" "Module $m failed: $($_.Exception.Message)" 1
         # Fail-fast: mirror the Bash ERR trap so we never run modules whose
         # ordered prerequisites just failed.
@@ -1865,26 +2032,28 @@ foreach ($m in $selected) {
 
 # npm 12 install-script approval can only name an installed package, so converge
 # after the modules that install pi packages and before the gates that use them.
-if (-not $failed -and ($selected -contains 'pi' -or $selected -contains 'pi-packages' -or $selected -contains 'gentle-ai' -or $selected -contains 'pi-workflows')) {
+$script:CurrentModule = 'pi-npm'
+if (-not $script:FailedModules -and ($selected -contains 'pi' -or $selected -contains 'pi-packages' -or $selected -contains 'gentle-ai' -or $selected -contains 'pi-workflows')) {
     try {
         Approve-NpmInstallScripts -Dir $PiNpmDir
     } catch {
-        $failed += 'pi-npm'
+        $script:FailedModules += 'pi-npm'
         Write-Log ERROR "pi-npm" "install_scripts_unverified" $_.Exception.Message 1
     }
 }
 
 # Skip quality gates when a module already failed (Bash aborts before them).
-if (-not $failed) {
+if (-not $script:FailedModules) {
     try {
         Invoke-QualityGates -Selected $selected
     } catch {
-        $failed += 'quality'
+        $script:FailedModules += 'quality'
         Write-Log ERROR "quality" "gates_failed" $_.Exception.Message 1
     }
 }
 
 # Report
+$script:CurrentModule = 'report'
 $reportNode = if (Test-Cmd node) { Get-ReportCommandValue -Command "node" -Arguments @("--version") } else { "n/a" }
 $reportNpm = if (Test-Cmd npm) { Get-ReportCommandValue -Command "npm" -Arguments @("--version") } else { "n/a" }
 $reportGo = if (Test-Cmd go) { Get-ReportCommandValue -Command "go" -Arguments @("version") } else { "n/a" }
@@ -1894,7 +2063,7 @@ $reportGo = if (Test-Cmd go) { Get-ReportCommandValue -Command "go" -Arguments @
 **Script version:** $ScriptVersion
 **Run ID:** $RunId
 **Selected modules:** $($selected -join ' ')
-**Failed modules:** $(if ($failed) { $failed -join ' ' } else { 'none' })
+**Failed modules:** $(if ($script:FailedModules) { $script:FailedModules -join ' ' } else { 'none' })
 
 ## Versions
 - Node: $reportNode
@@ -1909,12 +2078,18 @@ Write-Host "`n============================================================" -For
 Write-Host " AI Dev Suite (Windows) setup finished" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host "Modules : $($selected -join ' ')"
-if ($failed) {
-    Write-Host "Failed  : $($failed -join ' ')" -ForegroundColor Yellow
-    Write-Log ERROR "bootstrap" "completed_with_failures" "Setup finished with failed modules or quality gates" 1 "failed=$($failed -join ',')"
-    Write-Host "Report  : $ReportFile"
-    exit 1
+$exitCode = 0
+if ($script:FailedModules) {
+    Write-Host "Failed  : $($script:FailedModules -join ' ')" -ForegroundColor Yellow
+    Write-Log ERROR "bootstrap" "completed_with_failures" "Setup finished with failed modules or quality gates" 1 "failed=$($script:FailedModules -join ',')"
+    $exitCode = 1
+} else {
+    Write-Log INFO "bootstrap" "completed" "Setup completed successfully" 0
 }
-Write-Log INFO "bootstrap" "completed" "Setup completed successfully" 0
+# The summary is the terminal record of the run, as it is in setup-ai.sh.
+Write-RunSummary -Selected $script:SelectedModules -Succeeded $script:SucceededModules -FailedModules $script:FailedModules -ExitCode $exitCode
 Write-Host "Report  : $ReportFile"
-Write-Host "`nNext: open a new terminal so PATH updates apply."
+if ($exitCode -eq 0) {
+    Write-Host "`nNext: open a new terminal so PATH updates apply."
+}
+exit $exitCode

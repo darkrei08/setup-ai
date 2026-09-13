@@ -13,6 +13,14 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 
 ### Added
 
+- **Machine-readable run summary.** Every run now ends with one `run_summary` JSONL record
+  and every executed step adds a `step_result` record: run id, outcome, started/ended
+  timestamps, duration, per-module outcome with the failing step and its return code, and
+  step counts. A failed run writes it too - the bash side does it from the exit trap,
+  which also covers the failure paths that `exit` directly - the engineering report ends
+  with the same summary, and both scripts emit the same fields in the same order. Existing
+  event names and payloads are unchanged. See the README `Logs` section. Implements
+  [#10](https://github.com/darkrei08/setup-ai/issues/10).
 - **`rotator` module: the gateway is started, not just installed.** The module keeps a
   `systemd --user` unit (Linux) or a logon scheduled task (Windows) so the gateway
   survives a reboot, starts `tuxevil-rotator` in the background only when nothing answers
