@@ -1,7 +1,9 @@
 # Logs
 
 Each run writes `logs/setup_<runid>.log` (human), `.jsonl` (structured), and an
-`engineering-report_<runid>.md`.
+`engineering-report_<runid>.md`. For terminal output, add `--verbose` (or `-v`)
+to render spaced event blocks and indented child-command output; log files keep
+their stable machine-readable and plain-text formats.
 
 The JSONL ends with one `run_summary` record per run, and every step that goes
 through the installer's command helpers adds a `step_result` record. Both are

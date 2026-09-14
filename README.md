@@ -22,6 +22,7 @@ Non-interactive:
 ```bash
 npx @darkrei08/setup-ai --only pi,codex,opencode   # just these
 npx @darkrei08/setup-ai --all                       # everything
+npx @darkrei08/setup-ai --verbose                   # spaced, human-readable output
 ```
 
 Three details worth knowing:

@@ -15,6 +15,7 @@
 //   npx @darkrei08/setup-ai --all
 //   npx @darkrei08/setup-ai --only pi,codex,opencode
 //   npx @darkrei08/setup-ai --yes           # core set, no prompt
+//   npx @darkrei08/setup-ai --verbose       # spaced human-readable output
 //   npx @darkrei08/setup-ai --list | --help
 // ============================================================================
 
@@ -99,20 +100,24 @@ function runScript(passArgs) {
 
 // Translate a chosen module list into the platform script's flag.
 function toScriptArgs(mode, csv) {
+  let args;
   if (isWin) {
-    if (mode === "all") return ["-All"];
-    if (mode === "only") return ["-Only", csv];
-    if (mode === "yes") return ["-Yes"];
-    if (mode === "list") return ["-List"];
-    if (mode === "help") return ["-Help"];
-    return [];
+    if (mode === "all") args = ["-All"];
+    else if (mode === "only") args = ["-Only", csv];
+    else if (mode === "yes") args = ["-Yes"];
+    else if (mode === "list") args = ["-List"];
+    else if (mode === "help") args = ["-Help"];
+    else args = [];
+  } else {
+    if (mode === "all") args = ["--all"];
+    else if (mode === "only") args = ["--only", csv];
+    else if (mode === "yes") args = ["--yes"];
+    else if (mode === "list") args = ["--list"];
+    else if (mode === "help") args = ["--help"];
+    else args = [];
   }
-  if (mode === "all") return ["--all"];
-  if (mode === "only") return ["--only", csv];
-  if (mode === "yes") return ["--yes"];
-  if (mode === "list") return ["--list"];
-  if (mode === "help") return ["--help"];
-  return [];
+  if (has("--verbose") || has("-v")) args.push(isWin ? "-Verbose" : "--verbose");
+  return args;
 }
 
 // ---- interactive multi-select ---------------------------------------------

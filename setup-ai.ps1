@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 3.4.2
+ Version: 3.4.3
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, the vendor install.ps1 scripts
@@ -18,6 +18,7 @@
    pwsh -File setup-ai.ps1 -Only pi,codex,opencode
    pwsh -File setup-ai.ps1 -List
    pwsh -File setup-ai.ps1 -Help
+   pwsh -File setup-ai.ps1 -Verbose
 ==============================================================================
 #>
 
@@ -31,6 +32,8 @@ param(
 )
 
 $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
+$script:VerboseOutput = ($VerbosePreference -eq 'Continue' -or $env:VERBOSE -eq '1')
+if ($script:VerboseOutput) { $env:DEBUG = '1' }
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -50,7 +53,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "3.4.2"
+$ScriptVersion = "3.4.3"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
@@ -179,12 +182,20 @@ function Write-Log {
 
     $line = "$ts [$Level] $Phase $Event`: $Message"
     $line | Add-Content -Path $HumanLog
-    switch ($Level) {
-        'INFO'  { Write-Host $line -ForegroundColor Blue }
-        'WARN'  { Write-Host $line -ForegroundColor Yellow }
-        'ERROR' { Write-Host $line -ForegroundColor Red }
-        'DEBUG' { if ($env:DEBUG -eq '1') { Write-Host $line -ForegroundColor DarkGray } }
-        default { Write-Host $line }
+    if ($script:VerboseOutput) {
+        Write-Host ""
+        Write-Host "[$Level] $Phase / $Event"
+        Write-Host "  $Message"
+        if ($Meta) { Write-Host "  Details: $Meta" }
+        if ($ReturnCode -ne 0) { Write-Host "  Return code: $ReturnCode" }
+    } else {
+        switch ($Level) {
+            'INFO'  { Write-Host $line -ForegroundColor Blue }
+            'WARN'  { Write-Host $line -ForegroundColor Yellow }
+            'ERROR' { Write-Host $line -ForegroundColor Red }
+            'DEBUG' { if ($env:DEBUG -eq '1') { Write-Host $line -ForegroundColor DarkGray } }
+            default { Write-Host $line }
+        }
     }
 }
 
@@ -347,7 +358,11 @@ function Invoke-Step {
     Write-Log INFO $Phase "step_start" "Running step"
     try {
         $global:LASTEXITCODE = 0
-        & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Out-Host
+        if ($script:VerboseOutput) {
+            & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | ForEach-Object { "    $_" | Out-Host }
+        } else {
+            & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Out-Host
+        }
         $nativeExitCode = $global:LASTEXITCODE
         if ($nativeExitCode -ne 0) {
             if ($ExpectedExitCodes -contains $nativeExitCode) {
@@ -1994,7 +2009,7 @@ function Show-List {
         $tag = if ($ModuleOptional.ContainsKey($m)) { "optional" } else { "core    " }
         "{0,-10} {1,-14} {2}" -f "[$tag]", $m, $ModuleDesc[$m] | Write-Host
     }
-    Write-Host "`nUse: -Only csv | -All | (default = core)"
+    Write-Host "`nUse: -Only csv | -All | -Verbose | (default = core)"
 }
 
 function Show-Help {

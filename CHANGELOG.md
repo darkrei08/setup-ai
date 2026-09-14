@@ -9,6 +9,18 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [3.4.3] - 2026-09-15
+
+### Fixed
+
+- **ai-memory-kit release downloads.** Patch existing dotenv checkouts that use
+  GitHub's branch-only codeload URL with a tagged `AIMEM_REF`, which caused a 404.
+
+### Added
+
+- **Verbose terminal output.** `--verbose` / `-v` renders spaced event blocks and
+  indents child-command output while preserving the human and JSONL log artifacts.
+
 ## [3.4.2] - 2026-09-14
 
 ### Changed

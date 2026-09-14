@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.4.2
+# Version: 3.4.3
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -21,12 +21,13 @@
 #   ./setup-ai.sh --only pi,codex,opencode
 #   ./setup-ai.sh --list          # print modules and exit
 #   ./setup-ai.sh --help
+#   ./setup-ai.sh --verbose
 # ==============================================================================
 
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.4.2"
+SCRIPT_VERSION="3.4.3"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -46,6 +47,7 @@ TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
 export RUN_ID
 
 DEBUG="${DEBUG:-0}"
+VERBOSE="${VERBOSE:-0}"
 PI_WORKFLOW_VERSION="${PI_WORKFLOW_VERSION:-}"
 
 DOTENV_REPO="${DOTENV_REPO:-https://github.com/darkrei08/dotenv.git}"
@@ -172,6 +174,14 @@ log_event() {
 
     local line="${timestamp} [${level}] ${phase} ${event}: ${message}"
     printf '%s\n' "${line}" >> "${HUMAN_LOG}"
+
+    if (( VERBOSE == 1 )); then
+        printf '\n[%s] %s / %s\n' "${level}" "${phase}" "${event}"
+        printf '  %s\n' "${message}"
+        if [[ -n "${meta}" ]]; then printf '  Details: %s\n' "${meta}"; fi
+        if (( return_code != 0 )); then printf '  Return code: %s\n' "${return_code}"; fi
+        return
+    fi
 
     case "${level}" in
         INFO)  printf '\033[1;34m%s\033[0m\n' "${line}" ;;
@@ -396,9 +406,16 @@ run_cmd() {
     fi
     log_event "INFO" "${phase}" "${start_event}" "${start_message}" 0 "${display}"
 
-    local output="${TMP_DIR}/command_${RANDOM}.log" rc=0
+    local output="${TMP_DIR}/command_${RANDOM}.log" rc=0 line
     "$@" >"${output}" 2>&1 || rc=$?
-    cat "${output}" | tee -a "${HUMAN_LOG}"
+    cat "${output}" >> "${HUMAN_LOG}"
+    if (( VERBOSE == 1 )); then
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            printf '    %s\n' "${line}"
+        done < "${output}"
+    else
+        cat "${output}"
+    fi
 
     if (( rc == 0 )); then
         log_event "INFO" "${phase}" "${finish_event}" "${finish_message}" 0 "${display}"
@@ -428,10 +445,17 @@ capture_cmd() {
         shift
     fi
     local display; printf -v display '%q ' "$@"
-    local output="${TMP_DIR}/capture_${RANDOM}.log" rc=0
+    local output="${TMP_DIR}/capture_${RANDOM}.log" rc=0 line
     log_event "INFO" "${phase}" "capture_start" "Collecting command output" 0 "${display}"
     "$@" >"${output}" 2>&1 || rc=$?
-    cat "${output}" | tee -a "${HUMAN_LOG}"
+    cat "${output}" >> "${HUMAN_LOG}"
+    if (( VERBOSE == 1 )); then
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            printf '    %s\n' "${line}"
+        done < "${output}"
+    else
+        cat "${output}"
+    fi
     if (( rc != 0 )); then
         if (( optional == 1 )); then
             # A tolerated readback is a warning, never an error the run did not take:
@@ -1493,6 +1517,32 @@ mod_dotenv() {
             run_cmd "dotenv" sed -i 's|sudo npm install -g --prefix /usr/local bun|sudo "$(command -v npm)" install -g --prefix /usr/local bun|g' "${file}"
             log_event "INFO" "dotenv" "reference_patched" "Patched sudo npm call to absolute path" 0 "file=${file}"
         done < "${TMP_DIR}/sudo_npm_hits"
+    fi
+
+    # ai-memory-kit v0.1.0 fetched tagged refs through refs/heads, which GitHub
+    # rejects. Patch old dotenv checkouts before they stream that installer.
+    if grep_probe "dotenv" "${TMP_DIR}/memory_installer_hits" \
+        -rIl --exclude-dir=.git -F 'command -v aimem >/dev/null 2>&1 || AIMEM_REF="${AIMEM_REF}" curl -fsSL "https://raw.githubusercontent.com/darkrei08/ai-memory-kit/${AIMEM_REF}/install.sh" | AIMEM_REF="${AIMEM_REF}" bash -s -- --no-skill' "${DOTENV_DIR}"; then
+        while IFS= read -r file; do
+            run_cmd "dotenv" python3 - "${file}" <<'PYPATCH'
+import sys
+path = sys.argv[1]
+with open(path, "r", newline="") as fh:
+    text = fh.read()
+old = 'command -v aimem >/dev/null 2>&1 || AIMEM_REF="${AIMEM_REF}" curl -fsSL "https://raw.githubusercontent.com/darkrei08/ai-memory-kit/${AIMEM_REF}/install.sh" | AIMEM_REF="${AIMEM_REF}" bash -s -- --no-skill\n'
+new = (
+    '# AI_DEV_MEMORY_PATCH: fix tagged ai-memory-kit codeload URL\n'
+    'command -v aimem >/dev/null 2>&1 || AIMEM_REF="${AIMEM_REF}" curl -fsSL "https://raw.githubusercontent.com/darkrei08/ai-memory-kit/${AIMEM_REF}/install.sh" \\\n'
+    '  | sed \'s|/tar.gz/refs/heads/\\$REF|/tar.gz/\\$REF|g\' \\\n'
+    '  | AIMEM_REF="${AIMEM_REF}" bash -s -- --no-skill\n'
+)
+if old not in text:
+    raise SystemExit("ai-memory-kit installer line changed unexpectedly")
+with open(path, "w", newline="") as fh:
+    fh.write(text.replace(old, new))
+PYPATCH
+            log_event "INFO" "dotenv" "reference_patched" "Patched ai-memory-kit tag download URL" 0 "file=${file}"
+        done < "${TMP_DIR}/memory_installer_hits"
     fi
 
     if grep_probe "dotenv" "${TMP_DIR}/treesitter_hits" \
@@ -2560,7 +2610,7 @@ print_list() {
         if module_is_optional "${m}"; then tag="optional"; else tag="core    "; fi
         printf '  [%s] %-14s %s\n' "${tag}" "${m}" "$(module_desc "${m}")"
     done
-    printf '\nUse: --only <csv> | --all | (default = core)\n'
+    printf '\nUse: --only <csv> | --all | --verbose | (default = core)\n'
 }
 
 print_help() {
@@ -2593,6 +2643,7 @@ parse_args() {
                 ;;
             --only=*)     mode="only"; only_csv="${1#*=}"; shift ;;
             --yes|-y)     shift ;;                 # accepted for launcher parity
+            --verbose|-v)  VERBOSE=1; DEBUG=1; shift ;;
             --list)       print_list; exit 0 ;;
             -h|--help)    print_help; exit 0 ;;
             *) printf 'Unknown argument: %s\n' "$1" >&2; exit 2 ;;
@@ -2667,6 +2718,13 @@ run_module() {
 
 : > "${HUMAN_LOG}"
 : > "${JSONL_LOG}"
+
+# Pre-scan only the display flag so the very first event uses verbose formatting.
+for arg in "$@"; do
+    case "${arg}" in
+        --verbose|-v) VERBOSE=1; DEBUG=1 ;;
+    esac
+done
 
 log_event "INFO" "bootstrap" "start" "AI Dev Suite setup started" 0 "script_version=${SCRIPT_VERSION}"
 

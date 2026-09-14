@@ -3,6 +3,22 @@
 Every entry is a real failure from a field run, with the fix. Line references are
 to `setup-ai.sh` unless stated otherwise.
 
+## `ai-memory-kit` returns 404 for `v0.1.0`
+
+```text
+Fetching darkrei08/ai-memory-kit@v0.1.0 ...
+curl: (22) The requested URL returned error: 404
+gzip: stdin: unexpected end of file
+tar: Child returned status 1
+```
+
+`ai-memory-kit` v0.1.0 used GitHub's `refs/heads/<ref>` codeload URL even
+when `<ref>` was a release tag. GitHub returns 404 for that combination. The
+installer now patches this known upstream path to the ref-neutral codeload URL
+before running the dotenv setup script. The skill installation shown before the
+404 can already have succeeded; the failed part is the `aimem` CLI/templates
+bootstrap.
+
 ## `pi` does not start: `Tool "read" conflicts with …`
 
 ```text
