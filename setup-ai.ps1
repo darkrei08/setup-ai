@@ -73,7 +73,7 @@ $PiNpmDir   = Join-Path $PiAgentDir "npm"
 # Declarative manifest of extra Pi packages, one source per line
 # (`npm:<pkg>[@<version>]`, `git:<host>/<owner>/<repo>[@<ref>]`, or a local path;
 # `#` starts a comment). Where the manifest is read from follows the same split
-# vekexasia uses: the Pi CONFIG (settings, package list) lives in the dotenv
+# the dotenv repo uses: the Pi CONFIG (settings, package list) lives in the dotenv
 # checkout that ~/.pi/agent points at, while the extensions stay separate packages:
 #   1. PI_PACKAGES_FILE, when set explicitly
 #   2. <pi agent dir>/pi-packages.txt   (the dotenv/config repo)
@@ -104,7 +104,7 @@ $script:SetupAiRollbackFailed = $false
 # Read by Restore-PublishedPiWorkflows before Mod-PiWorkflows ever assigns it.
 $script:SetupAiWorkflowVersion = ''
 
-# Upstream agent-skill stack mirrored from vekexasia/dotenv setup_env.sh so the
+# Upstream agent-skill stack mirrored from darkrei08/dotenv setup_env.sh so the
 # same skills land on every OS (dotenv itself is Linux-only). Installed via
 # `npx skills add`.
 $UpstreamSkillSources = @(
@@ -1202,7 +1202,7 @@ function Install-PatchedPiWorkflows {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','pi-packages','go','dotenv','ee','skills','pi-workflows','herdr','gentle-ai','codex','antigravity','opencode','cockpit','rotator')
+$ModuleOrder = @('base','node','bun','pi','dotenv','pi-packages','go','ee','skills','pi-workflows','herdr','gentle-ai','codex','antigravity','opencode','cockpit','rotator')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)'
@@ -1211,7 +1211,7 @@ $ModuleDesc = [ordered]@{
     'pi'           = 'pi.dev coding agent CLI'
     'pi-packages'  = 'Extra Pi packages from a declarative manifest (pi-packages.txt)'
     'go'           = 'Go toolchain'
-    'dotenv'       = 'vekexasia/dotenv dotfiles (Linux only: clones + runs setup_env.sh)'
+    'dotenv'       = 'darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)'
     'ee'           = 'Engineering Excellence skill (npx skills add, all detected agents)'
     'skills'       = 'Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add'
     'pi-workflows' = 'pi-extensible-workflows (patched build + npm 12 remote sources for pi installs)'
@@ -1365,7 +1365,7 @@ function Mod-Ee {
     Assert-SkillInstalledForAgents -Phase "ee" -Skill $EE_Skill -Agents $agents
 }
 
-# Installs vekexasia/dotenv's skill stack on every OS via `npx skills add`.
+# Installs darkrei08/dotenv's skill stack on every OS via `npx skills add`.
 # On Linux the dotenv module may already install these; skills add --copy is
 # idempotent, so a re-run is safe.
 function Mod-Skills {
@@ -1599,6 +1599,12 @@ function Mod-GentleAi {
             Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
             throw "gentle-pi and/or pi-mcp-adapter not present in pi settings after install"
         }
+        # gentle-pi quiet-tools re-registers the built-in read/edit/grep tools; a
+        # second extension that shadows one of them makes pi abort at startup.
+        # Warn with the exact remediation instead of ending on a green install.
+        if (($piSettingsRaw -match 'pi-hashline-edit-pro') -and ($env:GENTLE_PI_QUIET_TOOLS -ne '0')) {
+            Write-Log WARN "gentle-ai" "quiet_tools_conflict" "pi-hashline-edit-pro registers read/edit, which gentle-pi quiet-tools also owns; pi aborts at startup. Set GENTLE_PI_QUIET_TOOLS=0 or remove the package." 0 "settings=$piSettings"
+        }
     }
 
     @"
@@ -1710,6 +1716,9 @@ function Mod-Opencode {
             throw "npm not found; opencode cannot be installed"
         }
         Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai }
+        # npm writes the shim into the user PATH; refresh this session so the
+        # verification below sees it without a new shell (parity with setup-ai.sh).
+        Update-SessionPath
         if (-not (Test-Cmd opencode)) {
             Write-Log ERROR "opencode" "install_missing" "opencode not found on PATH after npm install"
             throw "opencode not found on PATH after npm install"

@@ -4,7 +4,7 @@
 #   1. the path in PI_PACKAGES_FILE, when you set it explicitly
 #   2. <pi agent dir>/pi-packages.txt   -> the dotenv / Pi config repo, because
 #      ~/.pi/agent is normally a symlink into that checkout (the same split
-#      vekexasia uses: configuration in dotenv, extensions as separate packages)
+#      the dotenv repo uses: configuration in dotenv, extensions as separate packages)
 #   3. <setup-ai dir>/pi-packages.txt   -> a profile kept next to the installer
 #
 # Nothing found is not an error: no extra packages are installed.

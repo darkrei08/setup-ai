@@ -324,11 +324,11 @@ first `pi install`.
 
 **Italiano**
 
-La separazione è quella usata da vekexasia: **configurazione** in un repo di
+La separazione è quella usata da darkrei08: **configurazione** in un repo di
 dotfiles, **pacchetti** come artefatti separati.
 
 - `~/.pi/agent` è normalmente uno **symlink** dentro un checkout di dotfiles (per
-  esempio un fork di `vekexasia/dotenv`). Quel checkout contiene
+  esempio un fork di `darkrei08/dotenv`). Quel checkout contiene
   `settings.json`, `package.json`, `prompts/`, `keybindings.json`, `models.json`,
   `skills/`, `themes/` e — per i workflow — `pi-extensible-workflows/settings.json`
   e `pi-extensible-workflows/roles/<nome>.md`.
@@ -359,11 +359,11 @@ manuali.
 
 **English**
 
-The split is the same one vekexasia uses: **configuration** in a dotfiles repo,
+The split is the same one darkrei08 uses: **configuration** in a dotfiles repo,
 **packages** as separate artifacts.
 
 - `~/.pi/agent` is normally a **symlink** into a dotfiles checkout (for example a
-  fork of `vekexasia/dotenv`). That checkout holds `settings.json`,
+  fork of `darkrei08/dotenv`). That checkout holds `settings.json`,
   `package.json`, `prompts/`, `keybindings.json`, `models.json`, `skills/`,
   `themes/` and — for workflows — `pi-extensible-workflows/settings.json` and
   `pi-extensible-workflows/roles/<name>.md`.

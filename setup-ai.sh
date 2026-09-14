@@ -48,7 +48,7 @@ export RUN_ID
 DEBUG="${DEBUG:-0}"
 PI_WORKFLOW_VERSION="${PI_WORKFLOW_VERSION:-}"
 
-DOTENV_REPO="${DOTENV_REPO:-https://github.com/vekexasia/dotenv.git}"
+DOTENV_REPO="${DOTENV_REPO:-https://github.com/darkrei08/dotenv.git}"
 
 # Gentle AI ecosystem configurator installer (macOS/Linux). `gentle-ai install`
 # is the interactive per-agent/per-IDE selector that also wires each agent's MCP
@@ -58,7 +58,7 @@ GENTLE_AI_INSTALL="${GENTLE_AI_INSTALL:-https://raw.githubusercontent.com/Gentle
 ENGINEERING_EXCELLENCE_SLUG="${ENGINEERING_EXCELLENCE_SLUG:-darkrei08/Engineering-Excellence}"
 ENGINEERING_EXCELLENCE_SKILL="engineering-excellence"
 
-# Upstream agent-skill stack mirrored from vekexasia/dotenv setup_env.sh so the
+# Upstream agent-skill stack mirrored from darkrei08/dotenv setup_env.sh so the
 # same skills land on every OS (dotenv itself is Linux-only). Each entry is
 # "<source> <skill> [<skill>...]" installed via `npx skills add`.
 UPSTREAM_SKILL_SOURCES=(
@@ -84,7 +84,7 @@ COCKPIT_REPO="jlcodes99/cockpit-tools"
 # `#` starts a comment). This is how a NEW machine gets every extension the
 # toolchain needs without hand-editing ~/.pi/agent/settings.json.
 #
-# Where the manifest is read from follows the same split vekexasia uses: the Pi
+# Where the manifest is read from follows the same split the dotenv repo uses: the Pi
 # CONFIG (settings, package list) lives in the dotenv checkout that ~/.pi/agent
 # points at, while the extensions themselves stay separate packages:
 #   1. PI_PACKAGES_FILE, when set explicitly
@@ -520,7 +520,7 @@ EOF
 # via --all or an explicit --only.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi pi-packages go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit rotator)
+MODULE_ORDER=(base node bun pi dotenv pi-packages go ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit rotator)
 
 module_desc() {
     case "$1" in
@@ -530,7 +530,7 @@ module_desc() {
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
         pi-packages) printf '%s\n' "Extra Pi packages from a declarative manifest (pi-packages.txt)" ;;
         go) printf '%s\n' "Go toolchain" ;;
-        dotenv) printf '%s\n' "vekexasia/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" ;;
+        dotenv) printf '%s\n' "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" ;;
         ee) printf '%s\n' "Engineering Excellence skill (npx skills add, all detected agents)" ;;
         skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
         pi-workflows) printf '%s\n' "pi-extensible-workflows (patched build + npm 12 remote sources for pi installs)" ;;
@@ -1660,7 +1660,7 @@ mod_ee() {
 }
 
 # --- upstream agent skills --------------------------------------------------
-# Installs vekexasia/dotenv's skill stack on every OS via `npx skills add`.
+# Installs darkrei08/dotenv's skill stack on every OS via `npx skills add`.
 # On Linux the dotenv module may already install these; skills add --copy is
 # idempotent, so a re-run is safe.
 mod_skills() {
@@ -1910,6 +1910,21 @@ mod_herdr() {
 }
 
 # --- gentle-ai --------------------------------------------------------------
+# gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools. A
+# second installed extension that registers one of the same names makes `pi`
+# abort at startup ("Tool <name> conflicts"), and the module would still report
+# success. Loading extensions without a model call is not possible, so detect
+# the known shadowing package statically and print the exact remediation.
+warn_on_quiet_tools_conflict() {
+    local settings="${PI_AGENT_DIR}/settings.json"
+    [[ -f "${settings}" ]] || return 0
+    [[ "${GENTLE_PI_QUIET_TOOLS:-}" == "0" ]] && return 0
+    grep -q 'pi-hashline-edit-pro' "${settings}" || return 0
+    log_event "WARN" "gentle-ai" "quiet_tools_conflict" \
+        "pi-hashline-edit-pro registers read/edit, which gentle-pi quiet-tools also owns; pi aborts at startup. Set GENTLE_PI_QUIET_TOOLS=0 or remove the package." 0 \
+        "settings=${settings}"
+}
+
 # Reinstates the Gentle AI ecosystem configurator. `gentle-ai install` is the
 # per-agent/per-IDE selector (Pi, Claude Code, Cursor, Codex, ...) that also
 # wires each selected agent's MCP servers, so tools appear under /mcp. The
@@ -1996,6 +2011,8 @@ mod_gentle_ai() {
         fi
     fi
 
+    warn_on_quiet_tools_conflict
+
     log_event "INFO" "gentle-ai" "next_steps" "gentle-ai post-install hints" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
   gentle-ai next steps (run yourself, per project):
@@ -2071,6 +2088,28 @@ verify_opencode_spawn() {
     fi
     return 0
 }
+
+# The opencode installer drops the binary in ${HOME}/.opencode/bin and appends
+# that dir to the shell rc, so the current non-interactive process cannot see it.
+# Resolve the directory the installer used and export it before verifying, or the
+# require_command below fails with 127 on a fresh machine.
+refresh_opencode_path() {
+    local dir
+    for dir in "${HOME}/.opencode/bin" "${XDG_BIN_HOME:-}" "${HOME}/.local/bin"; do
+        [[ -n "${dir}" && -x "${dir}/opencode" ]] || continue
+        case ":${PATH}:" in
+            *":${dir}:"*) ;;
+            *)
+                export PATH="${dir}:${PATH}"
+                log_event "INFO" "opencode" "path_refreshed" \
+                    "Added the opencode install dir to PATH for this run" 0 "dir=${dir}"
+                ;;
+        esac
+        return 0
+    done
+    return 1
+}
+
 mod_opencode() {
     section "opencode"
     if command -v opencode >/dev/null 2>&1; then
@@ -2086,6 +2125,10 @@ mod_opencode() {
                 return 1
             }
             run_cmd "opencode" bash "${installer}"
+        fi
+        if ! refresh_opencode_path; then
+            log_event "WARN" "opencode" "path_unresolved" \
+                "opencode did not resolve on PATH after the installer; require_command will report it" 0
         fi
         require_command opencode
     fi

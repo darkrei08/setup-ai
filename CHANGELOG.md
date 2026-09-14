@@ -9,6 +9,31 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [Unreleased]
+
+### Changed
+
+- **`dotenv` defaults to the `darkrei08/dotenv` fork and now runs before `pi-packages`.**
+  The fork's `setup_env.sh` detects Arch/Omarchy vs. Debian instead of hardcoding
+  `apt-get`, so the module can succeed on both. Running `dotenv` before
+  `pi-packages` means the first run installs the manifest into the symlinked
+  dotenv config instead of a directory `sync_pi` replaces later. Override the
+  clone source with `DOTENV_REPO`. Fixes
+  [#40](https://github.com/darkrei08/setup-ai/issues/40).
+
+### Fixed
+
+- **`opencode` resolves its install dir after the remote installer.** The
+  installer appends `$HOME/.opencode/bin` to the shell rc only, so the
+  non-interactive run could not see the binary and the module failed with
+  `missing_command` (127), aborting the whole run. Fixes
+  [#38](https://github.com/darkrei08/setup-ai/issues/38).
+- **`gentle-ai` warns when a shadowing extension is installed.** `pi` aborts at
+  startup when another extension registers the same `read`/`edit` tools as
+  gentle-pi quiet-tools; the module now names the package and the
+  `GENTLE_PI_QUIET_TOOLS=0` escape hatch. Partial fix for
+  [#41](https://github.com/darkrei08/setup-ai/issues/41).
+
 ## [3.4.0] - 2026-09-14
 
 ### Added
