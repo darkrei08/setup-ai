@@ -29,7 +29,7 @@ const PKG_ROOT = join(__dirname, "..");
 // Canonical module list (mirrors the registries in setup-ai.sh / setup-ai.ps1).
 // core:false => optional (unchecked by default in the menu).
 const MODULES = [
-  { name: "base",         core: true,  desc: "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)" },
+  { name: "base",         core: true,  desc: "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)" },
   { name: "node",         core: true,  desc: "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" },
   { name: "bun",          core: true,  desc: "Bun runtime" },
   { name: "pi",           core: true,  desc: "pi.dev coding agent CLI" },

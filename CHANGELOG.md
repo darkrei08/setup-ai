@@ -25,6 +25,15 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
   `gentle-ai install --scope global --agents <detected>` in non-interactive runs (it does
   not just log the command), and the `rotator` module logs `INFO service_skipped`, not a
   `WARN`, when the machine offers neither a unit nor a task.
+- **`base` installs a clipboard backend on Linux.** `wl-clipboard` (Wayland) and
+  `xclip` (X11) were missing, so `Ctrl+V` in `pi` attached nothing. Fixes
+  [#51](https://github.com/darkrei08/setup-ai/issues/51).
+- **`gentle-ai` persists `GENTLE_PI_QUIET_TOOLS=0` instead of only warning.**
+  With `pi-hashline-edit-pro` installed, `pi` aborted at startup in any shell
+  that had not sourced an rc file; the module now writes the switch to the shell
+  rc files and `~/.config/environment.d/50-gentle-pi.conf` and logs
+  `quiet_tools_disabled`. Fixes
+  [#52](https://github.com/darkrei08/setup-ai/issues/52).
 
 ## [3.4.1] - 2026-09-14
 

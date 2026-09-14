@@ -1205,7 +1205,7 @@ function Install-PatchedPiWorkflows {
 $ModuleOrder = @('base','node','bun','pi','dotenv','pi-packages','go','ee','skills','pi-workflows','herdr','gentle-ai','codex','antigravity','opencode','cockpit','rotator')
 
 $ModuleDesc = [ordered]@{
-    'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)'
+    'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
     'node'         = 'Node.js v22 + npm@latest (nvm on Unix, winget on Windows)'
     'bun'          = 'Bun runtime'
     'pi'           = 'pi.dev coding agent CLI'
@@ -1603,7 +1603,10 @@ function Mod-GentleAi {
         # second extension that shadows one of them makes pi abort at startup.
         # Warn with the exact remediation instead of ending on a green install.
         if (($piSettingsRaw -match 'pi-hashline-edit-pro') -and ($env:GENTLE_PI_QUIET_TOOLS -ne '0')) {
-            Write-Log WARN "gentle-ai" "quiet_tools_conflict" "pi-hashline-edit-pro registers read/edit, which gentle-pi quiet-tools also owns; pi aborts at startup. Set GENTLE_PI_QUIET_TOOLS=0 or remove the package." 0 "settings=$piSettings"
+            # Persist the switch gentle-pi reads: a warning alone leaves pi unstartable.
+            [Environment]::SetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', '0', 'User')
+            $env:GENTLE_PI_QUIET_TOOLS = '0'
+            Write-Log WARN "gentle-ai" "quiet_tools_disabled" "pi-hashline-edit-pro owns read/grep, so gentle-pi quiet-tools is disabled (GENTLE_PI_QUIET_TOOLS=0) to keep pi startable; pi-tool-display still renders tool output compactly" 0 "scope=User"
         }
     }
 

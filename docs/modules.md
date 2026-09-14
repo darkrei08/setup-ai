@@ -14,8 +14,9 @@ base node bun pi dotenv pi-packages go ee skills pi-workflows herdr gentle-ai co
 ## base
 
 System packages (build tools, `git`, `gh`, `python`, `neovim`, `jq`,
-`imagemagick`, `go`) through the platform package manager: `apt-get`, `dnf`,
-`pacman`, `zypper`, or `brew` on macOS.
+`imagemagick`, `go`, plus the clipboard tools `wl-clipboard` and `xclip` on Linux)
+through the platform package manager: `apt-get`, `dnf`, `pacman`, `zypper`, or
+`brew` on macOS.
 
 ## node / bun / go / pi
 
