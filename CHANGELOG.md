@@ -9,7 +9,7 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
-## [Unreleased]
+## [3.4.2] - 2026-09-14
 
 ### Changed
 
