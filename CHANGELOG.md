@@ -9,6 +9,23 @@ Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
 
+## [Unreleased]
+
+### Changed
+
+- **Documentation split into focused pages.** The README is now a short overview with a
+  `Documentation` index that links each section; the install matrix, the module reference,
+  the logs, OpenCode Go and a new troubleshooting page live under `docs/`, which is now
+  published (`package.json#files`). Fixes
+  [#43](https://github.com/darkrei08/setup-ai/issues/43).
+
+### Fixed
+
+- **`docs/modules.md` matched to the code.** The `gentle-ai` module *executes*
+  `gentle-ai install --scope global --agents <detected>` in non-interactive runs (it does
+  not just log the command), and the `rotator` module logs `INFO service_skipped`, not a
+  `WARN`, when the machine offers neither a unit nor a task.
+
 ## [3.4.1] - 2026-09-14
 
 ### Changed

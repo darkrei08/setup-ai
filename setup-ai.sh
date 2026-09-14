@@ -2339,7 +2339,7 @@ mod_rotator() {
     fi
     # Register boot persistence first: enabling the unit or the task never starts a
     # second process, so this is safe whether or not the gateway is already up. The
-    # helper logs its own WARN when the machine has neither.
+    # helper logs its own INFO (`service_skipped`) when the machine has neither.
     ensure_rotator_unit
     # Start the gateway only when nothing answers its port: the dotenv Gemini aliases are
     # unusable without it, so a gateway that only ever gets started by hand is the failure
