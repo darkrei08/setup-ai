@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.3.2
+# Version: 3.4.0
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -26,7 +26,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.3.2"
+SCRIPT_VERSION="3.4.0"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -2495,14 +2495,17 @@ print_help() {
     # Print the header comment (lines 3-25) without external commands: a missing or
     # failing `sed` would be an unchecked external call inside `--help`, and the
     # ERR trap would then abort the script with a confusing error.
-    local line
-    local -a header=()
-    mapfile -t -s 2 -n 23 header < "${BASH_SOURCE[0]}"
-    for line in "${header[@]}"; do
+    # A read loop instead of `mapfile`: macOS ships bash 3.2, which has no mapfile,
+    # and `--help` must work on every platform this installer claims.
+    local line lineno=0
+    while IFS= read -r line; do
+        lineno=$(( lineno + 1 ))
+        if (( lineno < 3 )); then continue; fi
+        if (( lineno > 25 )); then break; fi
         line="${line#'# '}"
         line="${line#\#}"
         printf '%s\n' "${line}"
-    done
+    done < "${BASH_SOURCE[0]}"
     printf '\n'
     print_list
 }
