@@ -60,13 +60,13 @@ Run `--list` to see them. Core modules install by default; optional ones
 (GUI apps) only via `--all` or an explicit `--only`.
 
 ```
-base node bun pi go dotenv ee skills pi-workflows herdr gentle-ai codex antigravity opencode [cockpit] [rotator]
+base node bun pi dotenv pi-packages go ee skills pi-workflows herdr gentle-ai codex antigravity opencode [cockpit] [rotator]
 ```
 
-- **dotenv** is Linux-only (it runs vekexasia/dotenv's apt/pacman `setup_env.sh`); on Windows, explicit selection or `-All` logs and skips it.
+- **dotenv** is Linux-only (it runs darkrei08/dotenv's apt/pacman `setup_env.sh`); on Windows, explicit selection or `-All` logs and skips it.
 - **ee** installs the Engineering Excellence skill for every detected agent
   (pi, claude, gemini, cursor, antigravity, codex, opencode) via `npx skills add`.
-- **skills** installs vekexasia/dotenv's agent-skill stack on **every OS** via
+- **skills** installs darkrei08/dotenv's agent-skill stack on **every OS** via
   `npx skills add` (dotenv itself is Linux-only): `herdr` (herdrdev/herdr);
   `triage grill-me grilling wayfinder domain-modeling prototype research`
   (mattpocock/skills); `typescript-advanced` (pedronauck/skills); `show-me`
