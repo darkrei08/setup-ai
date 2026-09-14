@@ -1,0 +1,133 @@
+# Modules
+
+Run `--list` to see them. Core modules install by default; optional ones
+(GUI apps) only via `--all` or an explicit `--only`.
+
+The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
+`$ModuleOrder` in `setup-ai.ps1`, `MODULES` in the Node launcher — the three must
+stay identical):
+
+```
+base node bun pi dotenv pi-packages go ee skills pi-workflows herdr gentle-ai codex antigravity opencode [cockpit] [rotator]
+```
+
+## base
+
+System packages (build tools, `git`, `gh`, `python`, `neovim`, `jq`,
+`imagemagick`, `go`) through the platform package manager: `apt-get`, `dnf`,
+`pacman`, `zypper`, or `brew` on macOS.
+
+## node / bun / go / pi
+
+The runtimes the rest of the toolchain needs. Node.js v22 via `nvm` on
+Unix/macOS, `winget` on Windows; `bun`; the Go toolchain; the `pi` CLI through
+`pi.dev/install.sh` (or `install.ps1`).
+
+## dotenv
+
+Linux-only: clones and runs [darkrei08/dotenv](https://github.com/darkrei08/dotenv),
+whose `setup_env.sh` detects **Arch/Omarchy vs Debian/Ubuntu** and installs the
+dotfiles (neovim, herdr, tmux, wezterm) plus the Pi configuration. It runs
+**before** `pi-packages`, so the manifest lands in the symlinked dotenv config.
+
+Manual equivalent, without the installer:
+
+```bash
+git clone https://github.com/darkrei08/dotenv.git ~/git/personale/dotenv
+~/git/personale/dotenv/setup_env.sh
+```
+
+`setup_env.sh` links `~/.pi/agent` to the checkout's `pi/agent` and **backs up**
+an existing directory first (it is not destructive). Any other distro exits 1
+with an explicit message, and on Windows the module logs `skipped_non_linux`.
+
+## pi-packages
+
+Reads a declarative manifest, one source per line (`npm:<pkg>[@<version>]`,
+`git:<host>/<owner>/<repo>[@<ref>]`, or a local path), and verifies every package
+by reading `~/.pi/agent/settings.json` back instead of trusting the install
+command. Start from `pi-packages.example.txt`; see
+[pi-extensions.md](./pi-extensions.md).
+
+## ee
+
+Installs the Engineering Excellence skill for every detected agent
+(pi, claude, gemini, cursor, antigravity, codex, opencode) via `npx skills add`.
+
+## skills
+
+Installs darkrei08/dotenv's agent-skill stack on **every OS** via `npx skills add`
+(dotenv itself is Linux-only): `herdr` (herdrdev/herdr);
+`triage grill-me grilling wayfinder domain-modeling prototype research`
+(mattpocock/skills); `typescript-advanced` (pedronauck/skills); `show-me`
+(humanlayer/skills) — for every detected agent. `skills add --copy` is
+idempotent, so it is safe alongside the Linux `dotenv` run.
+
+## pi-workflows
+
+Installs `pi-extensible-workflows` (published release + optional patched local
+build) and enables npm 12 remote sources for pi installs. Full guide:
+[pi-workflows-guide.md](./pi-workflows-guide.md).
+
+## herdr
+
+The herdr terminal multiplexer, through its official installer.
+
+## gentle-ai
+
+Installs the gentle-ai / `gga` ecosystem configurator, then runs
+`gentle-ai install` — its own **interactive per-agent/per-IDE selector** (Pi,
+Claude Code, Cursor, Codex, ...) that also wires each selected agent's **MCP**
+servers, so the tools show up under `/mcp`. For pi it additionally installs the
+first-class `gentle-pi` harness and `pi-mcp-adapter`, so pi reads gentle-ai in
+its own MCP list. The interactive selector runs only with a real TTY;
+non-interactive/CI runs execute `gentle-ai install --scope global --agents
+<detected>` over the detected agents, so they never hang. Idempotent: safe to
+re-run.
+
+When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`),
+the read-only checks and the two continuations are in
+[rdd-review-troubleshooting.md](./rdd-review-troubleshooting.md).
+
+## codex / antigravity / opencode
+
+The other agent CLIs, each through its official installer.
+
+**opencode** installs the `opencode-ai` CLI and makes the `opencode-pi` Pi
+extension able to use it. That extension starts the CLI with
+`child_process.spawn` and no shell, so on Windows the npm `.cmd`/`.ps1` shims in
+`%APPDATA%\npm` are not executable for it and Node fails with
+`spawn opencode ENOENT` even when `opencode --version` works in a terminal. The
+module probes that same no-shell spawn, resolves the packaged
+`node_modules/opencode-ai/bin/opencode.exe` behind the shim, and persists
+`OPENCODE_PI_BIN` for the current user. On Linux/macOS the installer appends its
+bin dir to the shell rc only, so the module resolves `$HOME/.opencode/bin` for
+the run and verifies it.
+
+## cockpit *(opt-in)*
+
+The cockpit-tools desktop GUI app (CC BY-NC-SA).
+
+## rotator *(opt-in)*
+
+Installs the multi-account `tuxevil-rotator` Gemini/Antigravity gateway,
+registers it to start at boot (a `systemd --user` unit on Linux, a logon
+scheduled task on Windows), starts it in the background when nothing answers on
+port 51200, and installs the `pi-cockpit-tools-sync` Pi extension (source
+`git:github.com/darkrei08/pi-cockpit-tools-sync`). Login is never run and no
+tokens are read: add an account once with `tuxevil-rotator login`. Where the
+machine offers neither unit nor task, the gateway is still started as a detached
+process and the module logs `INFO rotator service_skipped`. On the dotenv side the `rotator-autostart`
+Pi extension does the same at session start when the port is dead, so the
+`gemini-*` aliases keep working; concurrent sessions coordinate through one start
+claim (one start, not one per session) and the detached process log is
+`~/.tuxevil-rotator/gateway.log`. Both registrations also bring back a gateway
+that dies, by different means: the Linux unit leaves it to systemd
+(`Restart=on-failure`, `RestartSec=5`), while the Windows task repeats every five
+minutes with `-MultipleInstances IgnoreNew`, so a tick is skipped while the
+gateway it started still runs, and each tick checks the port first so a gateway
+started by a session or by the detached fallback is never doubled.
+
+Back to the [README](../README.md) · Related:
+[install matrix](./install-matrix.md) · [logs](./logs.md) ·
+[troubleshooting](./troubleshooting.md).

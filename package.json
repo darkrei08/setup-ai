@@ -11,7 +11,8 @@
     "setup-ai.sh",
     "setup-ai.ps1",
     "pi-packages.example.txt",
-    "README.md"
+    "README.md",
+    "docs"
   ],
   "engines": {
     "node": ">=18"
