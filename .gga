@@ -23,8 +23,12 @@
 #   PROVIDER="minimax"
 #   PROVIDER="minimax:MiniMax-M3"
 # NOTE: claude/gemini are not installed on this machine (see `gentle-ai doctor`).
-# codex is present and clean; opencode has duplicate binaries in PATH.
-PROVIDER="codex"
+# Review runs through the OpenCode CLI on the OpenCode Go subscription, the same
+# model this repository is developed with; codex was the earlier choice.
+PROVIDER="opencode:opencode-go/deepseek-v4.1-flash"
+# The gate needs the verdict in its first lines, so the review runs on a dedicated
+# tool-less agent: the default agent calls its own tools first and buries the STATUS line.
+OPENCODE_AGENT="gga-review"
 
 # File patterns to include in review (comma-separated)
 # Default: * (all files)
