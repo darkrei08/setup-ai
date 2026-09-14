@@ -23,8 +23,25 @@ Pi rejects two extensions registering the same tool name. gentle-pi's
   `~/.pi/agent/settings.json`.
 
 Only the exact string `0` disables quiet-tools (`false`/`off`/unset keep it on).
-Since v3.4.1 the `gentle-ai` module logs `quiet_tools_conflict` with this
-remediation.
+Since **3.4.2** the `gentle-ai` module **persists** `GENTLE_PI_QUIET_TOOLS=0`
+itself (the shell rc files and `~/.config/environment.d/50-gentle-pi.conf`) and
+logs `quiet_tools_disabled`, so a shell that never sourced an rc still starts
+`pi`.
+
+## `Ctrl+V` does not attach a clipboard image
+
+`pi` reads the clipboard through a backend: `wl-clipboard` (`wl-paste`) on
+Wayland, `xclip`/`xsel` on X11. Without one, `Ctrl+V` (`Alt+V` on Windows/WSL)
+silently attaches nothing, and text paste does nothing either. The `base` module
+installs both on Linux; on a machine set up before that, install it yourself:
+
+```bash
+sudo pacman -S --needed wl-clipboard xclip     # Arch
+sudo apt-get install -y wl-clipboard xclip     # Debian/Ubuntu
+```
+
+Alternative without a clipboard backend: save the screenshot to a file and
+reference it in the prompt (`@/path/shot.png`).
 
 ## `Warning: Gentle AI: receipt-driven-development status is unavailable …`
 

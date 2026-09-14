@@ -524,7 +524,7 @@ MODULE_ORDER=(base node bun pi dotenv pi-packages go ee skills pi-workflows herd
 
 module_desc() {
     case "$1" in
-        base) printf '%s\n' "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go)" ;;
+        base) printf '%s\n' "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)" ;;
         node) printf '%s\n' "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" ;;
         bun) printf '%s\n' "Bun runtime" ;;
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
@@ -1306,23 +1306,23 @@ mod_base() {
     case "${PM}" in
         apt-get)
             local pkgs=(build-essential curl wget git unzip tar ca-certificates gnupg jq
-                       python3 python3-venv python3-pip neovim gh golang-go imagemagick)
+                       python3 python3-venv python3-pip neovim gh golang-go imagemagick wl-clipboard xclip)
             run_cmd "base" sudo apt-get update
             run_cmd "base" sudo apt-get install -y "${pkgs[@]}"
             ;;
         dnf)
             local pkgs=(gcc gcc-c++ make curl wget git unzip tar ca-certificates gnupg2 jq
-                       python3 python3-pip neovim gh golang ImageMagick)
+                       python3 python3-pip neovim gh golang ImageMagick wl-clipboard xclip)
             run_cmd "base" sudo dnf install -y "${pkgs[@]}"
             ;;
         pacman)
             local pkgs=(base-devel curl wget git unzip tar ca-certificates gnupg jq
-                       python python-pip neovim github-cli go imagemagick)
+                       python python-pip neovim github-cli go imagemagick wl-clipboard xclip)
             run_cmd "base" sudo pacman -Sy --needed --noconfirm "${pkgs[@]}"
             ;;
         zypper)
             local pkgs=(gcc gcc-c++ make curl wget git unzip tar ca-certificates gpg2 jq
-                       python3 python3-pip neovim gh go ImageMagick)
+                       python3 python3-pip neovim gh go ImageMagick wl-clipboard xclip)
             run_cmd "base" sudo zypper --non-interactive refresh
             run_cmd "base" sudo zypper --non-interactive install --no-recommends "${pkgs[@]}"
             ;;
@@ -1910,19 +1910,48 @@ mod_herdr() {
 }
 
 # --- gentle-ai --------------------------------------------------------------
+# Append `line` to `file` exactly once, creating the file when it is missing.
+persist_env_line() {
+    local file="$1" line="$2"
+    mkdir -p "$(dirname "${file}")" 2>/dev/null || return 1
+    if [[ -f "${file}" ]] && grep -Fqx -- "${line}" "${file}" 2>/dev/null; then
+        return 0
+    fi
+    printf '\n%s\n' "${line}" >> "${file}" || return 1
+}
+
 # gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools. A
 # second installed extension that registers one of the same names makes `pi`
-# abort at startup ("Tool <name> conflicts"), and the module would still report
-# success. Loading extensions without a model call is not possible, so detect
-# the known shadowing package statically and print the exact remediation.
-warn_on_quiet_tools_conflict() {
+# abort at startup ("Tool <name> conflicts"). Loading extensions without a model
+# call is not possible, so detect the known shadowing package statically and
+# persist the switch gentle-pi reads: a warning alone would leave pi unstartable
+# in every shell that never sourced the rc file.
+handle_quiet_tools_conflict() {
     local settings="${PI_AGENT_DIR}/settings.json"
     [[ -f "${settings}" ]] || return 0
     [[ "${GENTLE_PI_QUIET_TOOLS:-}" == "0" ]] && return 0
     grep -q 'pi-hashline-edit-pro' "${settings}" || return 0
-    log_event "WARN" "gentle-ai" "quiet_tools_conflict" \
-        "pi-hashline-edit-pro registers read/edit, which gentle-pi quiet-tools also owns; pi aborts at startup. Set GENTLE_PI_QUIET_TOOLS=0 or remove the package." 0 \
-        "settings=${settings}"
+
+    local written=() rc
+    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        [[ -f "${rc}" ]] || continue
+        if persist_env_line "${rc}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
+            written+=("${rc}")
+        fi
+    done
+    # systemd --user sessions and panes that never source an rc read this file.
+    local envd="${HOME}/.config/environment.d/50-gentle-pi.conf"
+    if persist_env_line "${envd}" 'GENTLE_PI_QUIET_TOOLS=0'; then
+        written+=("${envd}")
+    fi
+
+    local files_csv="none"
+    if (( ${#written[@]} > 0 )); then
+        files_csv="$(IFS=,; printf '%s' "${written[*]}")"
+    fi
+    log_event "WARN" "gentle-ai" "quiet_tools_disabled" \
+        "pi-hashline-edit-pro owns read/grep, so gentle-pi quiet-tools is disabled (GENTLE_PI_QUIET_TOOLS=0) to keep pi startable; pi-tool-display still renders tool output compactly" 0 \
+        "files=${files_csv}"
 }
 
 # Reinstates the Gentle AI ecosystem configurator. `gentle-ai install` is the
@@ -2011,7 +2040,7 @@ mod_gentle_ai() {
         fi
     fi
 
-    warn_on_quiet_tools_conflict
+    handle_quiet_tools_conflict
 
     log_event "INFO" "gentle-ai" "next_steps" "gentle-ai post-install hints" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
