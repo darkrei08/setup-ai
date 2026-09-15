@@ -7,15 +7,15 @@
 //   darwin / linux   -> setup-ai.sh   (via bash)
 //
 // With no selection flag on an interactive terminal it shows an arrow-key
-// arrow-key multi-select menu, then passes the chosen modules to the platform
-// script as --only. Zero runtime dependencies.
+// multi-select menu, then passes the chosen modules to the platform script as
+// --only. Zero runtime dependencies.
 //
 // Usage:
 //   npx @darkrei08/setup-ai                 # interactive menu (or core if no TTY)
 //   npx @darkrei08/setup-ai --all
 //   npx @darkrei08/setup-ai --only pi,codex,opencode
 //   npx @darkrei08/setup-ai --yes           # core set, no prompt
-//   npx @darkrei08/setup-ai --verbose       # spaced human-readable output
+//   npx @darkrei08/setup-ai --verbose       # core set, unattended, spaced output
 //   npx @darkrei08/setup-ai --list | --help
 // ============================================================================
 
@@ -213,6 +213,20 @@ async function main() {
 
   if (has("--help") || has("-h")) return runScript(toScriptArgs("help"));
   if (has("--list")) return runScript(toScriptArgs("list"));
+
+  // An unknown flag is a mistake, not a reason to open the module menu: `--verbose`
+  // used to be forwarded while the run still turned interactive.
+  const knownFlags = new Set(["--help", "-h", "--list", "--all", "--only", "--yes", "-y", "--verbose", "-v"]);
+  const unknown = argv.filter((arg, i) => {
+    if (arg === "--only" || arg.startsWith("--only=") || argv[i - 1] === "--only") return false;
+    return !knownFlags.has(arg);
+  });
+  if (unknown.length > 0) {
+    console.error(`Unknown argument(s): ${unknown.join(", ")}. Run with --help to see the supported flags.`);
+    process.exitCode = 2;
+    return;
+  }
+
   if (has("--all")) return runScript(toScriptArgs("all"));
 
   const hasOnly = argv.some((arg) => arg === "--only" || arg.startsWith("--only="));
@@ -226,7 +240,8 @@ async function main() {
     return runScript(toScriptArgs("only", only));
   }
 
-  if (has("--yes") || has("-y")) return runScript(toScriptArgs("yes"));
+  // --verbose asks for output, not for a menu: it runs the core set unattended.
+  if (has("--yes") || has("-y") || has("--verbose") || has("-v")) return runScript(toScriptArgs("yes"));
 
   // No selection flag: try the interactive menu; fall back cleanly if the
   // terminal/stdin can't drive it (common under some npx/CI shells).

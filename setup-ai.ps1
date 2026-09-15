@@ -16,6 +16,7 @@
    pwsh -File setup-ai.ps1                 # core module set
    pwsh -File setup-ai.ps1 -All            # every module (incl. GUI apps)
    pwsh -File setup-ai.ps1 -Only pi,codex,opencode
+   pwsh -File setup-ai.ps1 -Yes            # never prompt: no interactive selectors
    pwsh -File setup-ai.ps1 -List
    pwsh -File setup-ai.ps1 -Help
    pwsh -File setup-ai.ps1 -Verbose
@@ -459,6 +460,32 @@ function Invoke-RemoteScript {
     Invoke-Step -Phase $Phase -Action {
         $script = Invoke-RestMethod -Uri $Url -UseBasicParsing
         Invoke-Expression $script
+    }
+}
+
+# Vendor installers decide interactivity from the console, not from flags, so a
+# pi action menu would block an unattended run. An empty stdin pipe makes the
+# child's console non-interactive, so the vendor script takes its documented
+# default instead of waiting on a keypress.
+function Invoke-RemoteScriptNoPrompt {
+    param([string]$Url, [string]$Phase)
+    Invoke-Step -Phase $Phase -Action {
+        $script = Invoke-RestMethod -Uri $Url -UseBasicParsing
+        $tmp = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-remote-" + [guid]::NewGuid().ToString("N") + ".ps1")
+        Set-Content -LiteralPath $tmp -Value $script -Encoding utf8
+        try {
+            $pwshPath = (Get-Process -Id $PID).Path
+            "" | & $pwshPath -NoProfile -ExecutionPolicy Bypass -File $tmp
+            if ($LASTEXITCODE -ne 0) { throw "remote installer exited with code $LASTEXITCODE" }
+        } finally {
+            if (Test-Path -LiteralPath $tmp) {
+                try {
+                    Remove-Item -LiteralPath $tmp -Force -ErrorAction Stop
+                } catch {
+                    Write-Log WARN $Phase "cleanup_failed" "Could not remove temporary vendor installer: $($_.Exception.Message)"
+                }
+            }
+        }
     }
 }
 
@@ -1348,7 +1375,8 @@ function Mod-Pi {
     # configure it as soon as the root exists - independent of any workflow module.
     Enable-NpmRemoteSources -Dir $PiNpmDir
     if (Test-Cmd pi) { Write-Log INFO "pi" "already_present" "pi already installed"; return }
-    Invoke-RemoteScript -Url "https://pi.dev/install.ps1" -Phase "pi"
+    Invoke-RemoteScriptNoPrompt -Url "https://pi.dev/install.ps1" -Phase "pi"
+    Update-SessionPath
     if (Test-Cmd pi) {
         Write-Log INFO "pi" "installed" "pi available after remote installer"
     } else {
@@ -1596,7 +1624,7 @@ function Mod-GentleAi {
     # interactive selector (run directly - Invoke-Step pipes output and would
     # hide the prompts); otherwise we run it non-interactively over the detected
     # agents so CI/pipes never hang. A failure fails the module.
-    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
+    if (-not $Yes -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
         Write-Log INFO "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)"
         & gentle-ai install --scope global
         if ($LASTEXITCODE -ne 0) {
@@ -1646,7 +1674,15 @@ function Mod-GentleAi {
 function Mod-Codex {
     Write-Log INFO "codex" "start" "Codex CLI"
     if (Test-Cmd codex) { Write-Log INFO "codex" "already_present" "codex already installed"; return }
-    Invoke-RemoteScript -Url "https://chatgpt.com/codex/install.ps1" -Phase "codex"
+    # The vendor installer reads CODEX_NON_INTERACTIVE and skips its "Start Codex
+    # now?" prompt; without it an unattended run waits on stdin.
+    $previousCodexNonInteractive = $env:CODEX_NON_INTERACTIVE
+    $env:CODEX_NON_INTERACTIVE = "1"
+    try {
+        Invoke-RemoteScript -Url "https://chatgpt.com/codex/install.ps1" -Phase "codex"
+    } finally {
+        $env:CODEX_NON_INTERACTIVE = $previousCodexNonInteractive
+    }
     if (Test-Cmd codex) {
         Write-Log INFO "codex" "installed" "codex available after remote installer"
     } else {
@@ -2022,7 +2058,14 @@ function Show-List {
 }
 
 function Show-Help {
-    Get-Content $ScriptPath | Select-Object -First 30 | ForEach-Object { $_ }
+    # Print the comment header between <# and #>, not a fixed line count: a growing
+    # usage block must never leak the param() block into -Help.
+    $lines = @(Get-Content -LiteralPath $ScriptPath)
+    $first = [array]::IndexOf($lines, '<#')
+    $last = [array]::IndexOf($lines, '#>')
+    if ($first -ge 0 -and $last -gt $first) {
+        $lines[($first + 1)..($last - 1)] | ForEach-Object { $_ }
+    }
     Show-List
 }
 

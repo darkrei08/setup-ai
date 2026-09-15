@@ -19,6 +19,7 @@
 #   ./setup-ai.sh                 # install the core module set
 #   ./setup-ai.sh --all           # every module (incl. optional GUI apps)
 #   ./setup-ai.sh --only pi,codex,opencode
+#   ./setup-ai.sh --yes           # never prompt: no interactive selectors
 #   ./setup-ai.sh --list          # print modules and exit
 #   ./setup-ai.sh --help
 #   ./setup-ai.sh --verbose
@@ -48,6 +49,9 @@ export RUN_ID
 
 DEBUG="${DEBUG:-0}"
 VERBOSE="${VERBOSE:-0}"
+# --yes: never wait on a human. Vendor installers keep their own menus on a TTY,
+# so the non-interactive value also changes which vendor path runs.
+NONINTERACTIVE="${NONINTERACTIVE:-0}"
 PI_WORKFLOW_VERSION="${PI_WORKFLOW_VERSION:-}"
 
 DOTENV_REPO="${DOTENV_REPO:-https://github.com/darkrei08/dotenv.git}"
@@ -459,6 +463,30 @@ run_optional() {
     return 0
 }
 
+# Run a vendor installer that decides interactivity from the controlling
+# terminal, not from flags (pi.dev writes state via raw keypress menus).
+# setsid detaches /dev/tty, so the installer takes its documented no-TTY
+# defaults instead of blocking an unattended run. macOS has no setsid; python3
+# (installed by the base module) calls setsid before exec there.
+run_vendor_installer() {
+    local phase="$1" interpreter="$2" script="$3"
+    if command -v setsid >/dev/null 2>&1; then
+        run_cmd "${phase}" setsid --wait "${interpreter}" "${script}"
+    elif command -v python3 >/dev/null 2>&1; then
+        run_cmd "${phase}" python3 -c '
+import os, sys
+if hasattr(os, "setsid"):
+    try:
+        os.setsid()
+    except OSError:
+        pass
+os.execvp(sys.argv[1], sys.argv[1:])
+' "${interpreter}" "${script}"
+    else
+        run_cmd "${phase}" "${interpreter}" "${script}"
+    fi
+}
+
 capture_cmd() {
     local output_var="$1" phase="$2"; shift 2
     # --optional marks a readback the caller tolerates: its failure is the `skipped`
@@ -605,6 +633,44 @@ OS_FAMILY=""
 PM=""
 DISTRO_ID=""
 DISTRO_LIKE=""
+
+# WSL2 appends the Windows PATH (/mnt/c/...) to the Linux one, so `node`, `npm` and
+# `pi` can silently resolve to the Windows binaries and write to the Windows
+# profile. setup-ai is a Linux-native run: drop every interop entry before a
+# module resolves a command, so the two environments cannot overlap. Windows
+# keeps its own installer (setup-ai.ps1); this guard never changes /etc/wsl.conf.
+is_wsl() {
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] && return 0
+    [[ -r /proc/version ]] || return 1
+    grep -qi microsoft /proc/version
+}
+
+strip_windows_interop_path() {
+    local -a parts kept=()
+    local entry
+    IFS=':' read -r -a parts <<< "${PATH}"
+    for entry in "${parts[@]}"; do
+        [[ "${entry}" == /mnt/* ]] && continue
+        kept+=("${entry}")
+    done
+    local IFS=':'
+    PATH="${kept[*]}"
+    export PATH
+
+    # Verify the loaded value, not the write we intended: a survivor would mean the
+    # Windows binaries are still reachable after the strip claimed otherwise.
+    local remaining=""
+    IFS=':' read -r -a parts <<< "${PATH}"
+    for entry in "${parts[@]}"; do
+        [[ "${entry}" == /mnt/* ]] && remaining="${remaining}${remaining:+,}${entry}"
+    done
+    if [[ -n "${remaining}" ]]; then
+        log_event "ERROR" "preflight" "wsl_interop_path_unstripped" \
+            "Windows interop entries survived the PATH rewrite" 1 "entries=${remaining}"
+        return 1
+    fi
+    return 0
+}
 
 detect_os() {
     local uname_s
@@ -1468,7 +1534,11 @@ mod_pi() {
     if ! command -v pi >/dev/null 2>&1; then
         local installer="${TMP_DIR}/install-pi.sh"
         run_cmd "pi" curl -fsSL https://pi.dev/install.sh -o "${installer}"
-        run_cmd "pi" sh "${installer}"
+        [[ -s "${installer}" ]] || {
+            log_event "ERROR" "pi" "installer_missing" "pi installer is empty" 1 "path=${installer}"
+            return 1
+        }
+        run_vendor_installer "pi" sh "${installer}"
     fi
     export PATH="${HOME}/.pi/bin:${HOME}/.local/bin:${PATH}"
     require_command pi
@@ -2081,7 +2151,7 @@ mod_gentle_ai() {
     # selector (run directly - run_cmd would redirect stdout and hide prompts);
     # otherwise we run it non-interactively over the detected agents so CI/pipes
     # never hang. A failure fails the module (no silent downgrade).
-    if [[ -t 0 && -t 1 ]]; then
+    if [[ -t 0 && -t 1 && "${NONINTERACTIVE}" -eq 0 ]]; then
         log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
         if ! gentle-ai install --scope global; then
             log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
@@ -2145,7 +2215,8 @@ mod_codex() {
             log_event "ERROR" "codex" "installer_missing" "codex installer is empty" 1 "path=${installer}"
             return 1
         }
-        run_cmd "codex" sh "${installer}"
+        # The vendor installer skips its "Start Codex now?" prompt when this is set.
+        run_cmd "codex" env CODEX_NON_INTERACTIVE=1 sh "${installer}"
     fi
     require_command codex
 }
@@ -2638,7 +2709,7 @@ print_list() {
 }
 
 print_help() {
-    # Print the header comment (lines 3-25) without external commands: a missing or
+    # Print the header comment (lines 3-26) without external commands: a missing or
     # failing `sed` would be an unchecked external call inside `--help`, and the
     # ERR trap would then abort the script with a confusing error.
     # A read loop instead of `mapfile`: macOS ships bash 3.2, which has no mapfile,
@@ -2647,7 +2718,7 @@ print_help() {
     while IFS= read -r line; do
         lineno=$(( lineno + 1 ))
         if (( lineno < 3 )); then continue; fi
-        if (( lineno > 25 )); then break; fi
+        if (( lineno > 26 )); then break; fi
         line="${line#'# '}"
         line="${line#\#}"
         printf '%s\n' "${line}"
@@ -2666,7 +2737,7 @@ parse_args() {
                 mode="only"; only_csv="$2"; shift 2
                 ;;
             --only=*)     mode="only"; only_csv="${1#*=}"; shift ;;
-            --yes|-y)     shift ;;                 # accepted for launcher parity
+            --yes|-y)     NONINTERACTIVE=1; shift ;;
             --verbose|-v)  VERBOSE=1; DEBUG=1; shift ;;
             --list)       print_list; exit 0 ;;
             -h|--help)    print_help; exit 0 ;;
@@ -2765,6 +2836,22 @@ CURRENT_MODULE="preflight"
 section "Preflight"
 require_command bash
 detect_os
+
+# WSL: the Windows PATH is removed before anything is resolved, and a HOME on the
+# Windows filesystem is refused - running from /mnt would write the Linux config
+# into the Windows profile, which is exactly the overlap this guard prevents.
+if [[ "${OS_FAMILY}" == "linux" ]] && is_wsl; then
+    if [[ "${HOME}" == /mnt/* ]]; then
+        log_event "ERROR" "preflight" "wsl_home_on_windows_fs" \
+            "HOME points into the Windows filesystem; run setup-ai from a Linux home so the two environments stay separate" 1 \
+            "home=${HOME}"
+        exit 1
+    fi
+    strip_windows_interop_path || exit 1
+    log_event "INFO" "preflight" "wsl_interop_path_stripped" \
+        "Windows interop entries removed from PATH (Linux-native run)" 0 \
+        "distro=${WSL_DISTRO_NAME:-unknown}"
+fi
 
 # The base module owns bootstrap tools on a clean machine. For explicit
 # selections that skip base, fail early because later installers need them.
