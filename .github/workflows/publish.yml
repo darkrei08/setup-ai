@@ -1,0 +1,58 @@
+name: publish
+
+# Trusted publishing: npm accepts the OIDC identity of this workflow, so no
+# long-lived registry token lives in the repository. One-time setup on
+# npmjs.com -> @darkrei08/setup-ai -> Settings -> Trusted Publisher:
+#   Organization or user: darkrei08
+#   Repository:           setup-ai
+#   Workflow filename:    publish.yml
+# Then dispatch this workflow from protected main with the exact tag:
+#   gh workflow run publish.yml -f tag=vX.Y.Z
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Annotated version tag to publish (vX.Y.Z)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate the tag shape
+        run: |
+          if [[ ! "${{ inputs.tag }}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "tag must look like vX.Y.Z" >&2
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - name: Verify the tag is on main and matches package.json
+        run: |
+          git fetch origin main --tags
+          git merge-base --is-ancestor "$(git rev-parse 'HEAD^{commit}')" origin/main
+          version="$(node -p "require('./package.json').version")"
+          test "v${version}" = "${{ inputs.tag }}"
+
+      - name: Verify the package
+        run: |
+          bash -n setup-ai.sh
+          node --check bin/setup-ai.mjs
+          npm pack --dry-run
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance

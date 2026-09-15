@@ -5,6 +5,31 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.0] - 2026-09-15
+
+### Added
+
+- **npm publishing through GitHub Actions.** `.github/workflows/publish.yml` publishes a
+  version tag to npm with trusted publishing (OIDC) and provenance, so a release never
+  depends on a local npm login.
+
+### Fixed
+
+- **`--yes` / `-Yes` is now truly unattended**
+  ([#54](https://github.com/darkrei08/setup-ai/issues/54)). It selects the non-interactive
+  vendor path in both scripts: gentle-ai installs over its detected agents instead of the
+  TTY selector, the pi installer runs detached from the controlling terminal (`setsid`,
+  with a `python3` fallback where `setsid` is absent; a child PowerShell with an empty
+  stdin pipe on Windows) so its keypress menu takes the no-TTY default, and codex runs
+  with `CODEX_NON_INTERACTIVE=1`.
+- **The launcher refuses unknown flags** instead of silently opening the module menu, and
+  `--verbose` / `-v` runs the core set unattended.
+- **WSL runs stay Linux-native**
+  ([#55](https://github.com/darkrei08/setup-ai/issues/55)). When `setup-ai.sh` runs under
+  WSL, the preflight removes every `/mnt/*` PATH entry (verified by readback) and refuses
+  a `HOME` on the Windows filesystem, so a WSL install can no longer resolve the Windows
+  `node`/`npm`/`pi` or write to the Windows profile.
+
 ## 3.4.4
 
 - Stream command output live so package installs and sudo prompts are visible.
