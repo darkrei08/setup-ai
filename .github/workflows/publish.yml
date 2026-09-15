@@ -59,5 +59,8 @@ jobs:
           node --check bin/setup-ai.mjs
           npm pack --dry-run
 
+      # Provenance is disabled: npm rejects a sigstore bundle whose source
+      # repository is private (422). Trusted publishing (OIDC) still authenticates
+      # the job. Flip this to --provenance once the repository is public.
       - name: Publish to npm
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance=false
