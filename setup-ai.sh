@@ -634,6 +634,44 @@ PM=""
 DISTRO_ID=""
 DISTRO_LIKE=""
 
+# WSL2 appends the Windows PATH (/mnt/c/...) to the Linux one, so `node`, `npm` and
+# `pi` can silently resolve to the Windows binaries and write to the Windows
+# profile. setup-ai is a Linux-native run: drop every interop entry before a
+# module resolves a command, so the two environments cannot overlap. Windows
+# keeps its own installer (setup-ai.ps1); this guard never changes /etc/wsl.conf.
+is_wsl() {
+    [[ -n "${WSL_DISTRO_NAME:-}" ]] && return 0
+    [[ -r /proc/version ]] || return 1
+    grep -qi microsoft /proc/version
+}
+
+strip_windows_interop_path() {
+    local -a parts kept=()
+    local entry
+    IFS=':' read -r -a parts <<< "${PATH}"
+    for entry in "${parts[@]}"; do
+        [[ "${entry}" == /mnt/* ]] && continue
+        kept+=("${entry}")
+    done
+    local IFS=':'
+    PATH="${kept[*]}"
+    export PATH
+
+    # Verify the loaded value, not the write we intended: a survivor would mean the
+    # Windows binaries are still reachable after the strip claimed otherwise.
+    local remaining=""
+    IFS=':' read -r -a parts <<< "${PATH}"
+    for entry in "${parts[@]}"; do
+        [[ "${entry}" == /mnt/* ]] && remaining="${remaining}${remaining:+,}${entry}"
+    done
+    if [[ -n "${remaining}" ]]; then
+        log_event "ERROR" "preflight" "wsl_interop_path_unstripped" \
+            "Windows interop entries survived the PATH rewrite" 1 "entries=${remaining}"
+        return 1
+    fi
+    return 0
+}
+
 detect_os() {
     local uname_s
     uname_s="$(uname -s)"
@@ -2798,6 +2836,22 @@ CURRENT_MODULE="preflight"
 section "Preflight"
 require_command bash
 detect_os
+
+# WSL: the Windows PATH is removed before anything is resolved, and a HOME on the
+# Windows filesystem is refused - running from /mnt would write the Linux config
+# into the Windows profile, which is exactly the overlap this guard prevents.
+if [[ "${OS_FAMILY}" == "linux" ]] && is_wsl; then
+    if [[ "${HOME}" == /mnt/* ]]; then
+        log_event "ERROR" "preflight" "wsl_home_on_windows_fs" \
+            "HOME points into the Windows filesystem; run setup-ai from a Linux home so the two environments stay separate" 1 \
+            "home=${HOME}"
+        exit 1
+    fi
+    strip_windows_interop_path || exit 1
+    log_event "INFO" "preflight" "wsl_interop_path_stripped" \
+        "Windows interop entries removed from PATH (Linux-native run)" 0 \
+        "distro=${WSL_DISTRO_NAME:-unknown}"
+fi
 
 # The base module owns bootstrap tools on a clean machine. For explicit
 # selections that skip base, fail early because later installers need them.
