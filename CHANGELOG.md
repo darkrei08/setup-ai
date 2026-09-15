@@ -5,6 +5,23 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] - 2026-09-15
+
+### Fixed
+
+- **An interrupted run no longer reports success**
+  ([#58](https://github.com/darkrei08/setup-ai/issues/58)). `setup-ai.sh` traps
+  `HUP`/`INT`/`TERM`, reports `outcome=interrupted` with
+  `interrupted=true;signal=<name>`, marks the in-flight module failed and exits
+  `128+signal`. `setup-ai.ps1` records Ctrl+C through a .NET SIGINT handler and
+  produces the same summary with exit code 130.
+- **`-Only <single module>` runs again on Windows.** `$selected.Count` threw under
+  `Set-StrictMode` when the selection resolved to one module; it is
+  `@($selected).Count` now.
+- **The npm publish workflow works with trusted publishing.** It installs the npm
+  that supports the OIDC exchange (>= 11.5.1) and skips provenance while the
+  repository is private, which npm rejects with 422.
+
 ## [3.5.0] - 2026-09-15
 
 ### Added
