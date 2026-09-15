@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 3.4.3
+ Version: 3.4.4
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, the vendor install.ps1 scripts
@@ -53,7 +53,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "3.4.3"
+$ScriptVersion = "3.4.4"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
@@ -197,6 +197,16 @@ function Write-Log {
             default { Write-Host $line }
         }
     }
+}
+
+function Write-ModuleBanner {
+    param([int]$Index, [int]$Total, [string]$Name)
+    Write-Host ""
+    Write-Host ("=" * 70) -ForegroundColor DarkCyan
+    Write-Host ("  [{0}/{1}] {2}" -f $Index, $Total, $Name) -ForegroundColor White
+    Write-Host ("  {0}" -f $ModuleDesc[$Name]) -ForegroundColor Gray
+    Write-Host ("=" * 70) -ForegroundColor DarkCyan
+    Write-Host ""
 }
 
 # ------------------------------------------------------------------------------
@@ -355,14 +365,13 @@ function Invoke-Step {
     # one, otherwise the action source with whitespace collapsed.
     $step = if ($Step) { $Step } else { ($Action.ToString() -replace '\s+', ' ').Trim() }
     $kind = if ($Verify) { 'verified' } else { 'installed' }
-    Write-Log INFO $Phase "step_start" "Running step"
+    Write-Log INFO $Phase "step_start" "Running step" 0 "step=$step"
+    Write-Host "  Step: $step" -ForegroundColor Gray
+    Write-Host "  Live output follows. Prompts, including sudo, appear here." -ForegroundColor DarkMagenta
+    Write-Host ""
     try {
         $global:LASTEXITCODE = 0
-        if ($script:VerboseOutput) {
-            & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | ForEach-Object { "    $_" | Out-Host }
-        } else {
-            & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Out-Host
-        }
+        & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Out-Host
         $nativeExitCode = $global:LASTEXITCODE
         if ($nativeExitCode -ne 0) {
             if ($ExpectedExitCodes -contains $nativeExitCode) {
@@ -2123,9 +2132,16 @@ Write-Log INFO "bootstrap" "modules_selected" "Modules queued" 0 ("modules=" + (
 
 $script:FailedModules = @()
 $script:SucceededModules = @()
+$moduleTotal = $selected.Count
+$moduleIndex = 0
+Write-Host ""
+Write-Host ("Installation plan: {0} module(s)" -f $moduleTotal) -ForegroundColor White
+Write-Host ("  {0}" -f ($selected -join '  ')) -ForegroundColor Gray
 foreach ($m in $selected) {
+    $moduleIndex++
     $script:CurrentModule = $m
-    try { & $ModuleFn[$m]; $script:SucceededModules += $m }
+    Write-ModuleBanner -Index $moduleIndex -Total $moduleTotal -Name $m
+    try { & $ModuleFn[$m]; $script:SucceededModules += $m; Write-Host ("  OK  {0} completed" -f $m) -ForegroundColor Green }
     catch {
         $script:FailedModules += $m
         Write-Log ERROR "modules" "module_failed" "Module $m failed: $($_.Exception.Message)" 1

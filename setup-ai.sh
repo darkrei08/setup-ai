@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.4.3
+# Version: 3.4.4
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -13,7 +13,7 @@
 #   - modular: every tool is its own mod_* function, driven by an ordered
 #     registry; run a subset with --only, list them with --list.
 #   - official, non-deprecated install method per OS for every tool.
-#   - deterministic logging (human + JSONL), fail-fast with ERR diagnostics.
+#   - deterministic logging (human + JSONL), live command output, fail-fast with ERR diagnostics.
 #
 # Usage:
 #   ./setup-ai.sh                 # install the core module set
@@ -27,7 +27,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.4.3"
+SCRIPT_VERSION="3.4.4"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -205,6 +205,8 @@ SELECTED_DISPLAY=""
 CURRENT_MODULE=""
 RUN_ACTIVE=0
 MODULES_OK=""
+MODULE_INDEX=0
+MODULE_TOTAL=0
 STEP_INSTALLED=0
 STEP_VERIFIED=0
 STEP_SKIPPED=0
@@ -366,7 +368,13 @@ trap 'on_error' ERR
 # Command helpers
 # ------------------------------------------------------------------------------
 
-section() { log_event "INFO" "section" "start" "$1"; }
+section() {
+    local title="$1"
+    log_event "INFO" "section" "start" "${title}"
+    printf '\n\033[1;36m======================================================================\033[0m\n'
+    printf '\033[1;36m  %s\033[0m\n' "${title}"
+    printf '\033[1;36m======================================================================\033[0m\n\n'
+}
 
 require_command() {
     local command="$1"
@@ -405,17 +413,33 @@ run_cmd() {
         fail_message="Optional command failed; continuing"; level="WARN"; status="skipped"
     fi
     log_event "INFO" "${phase}" "${start_event}" "${start_message}" 0 "${display}"
+    printf '  Command: %s\n' "${display}"
+    printf '  \033[1;35mLive output follows. Prompts, including sudo, appear here.\033[0m\n\n'
 
-    local output="${TMP_DIR}/command_${RANDOM}.log" rc=0 line
-    "$@" >"${output}" 2>&1 || rc=$?
-    cat "${output}" >> "${HUMAN_LOG}"
-    if (( VERBOSE == 1 )); then
-        while IFS= read -r line || [[ -n "${line}" ]]; do
-            printf '    %s\n' "${line}"
-        done < "${output}"
-    else
-        cat "${output}"
+    local stream="${TMP_DIR}/command_${RANDOM}.fifo" rc=0 tee_rc=0 tee_pid
+    # Keep the command in the current shell so functions such as `nvm use` can
+    # update PATH. A FIFO lets tee stream output without putting the command in
+    # a pipeline subshell, and wait makes logging deterministic before returning.
+    if ! mkfifo "${stream}"; then
+        log_event "ERROR" "${phase}" "output_stream_failed" "Could not create the command output stream" 1 "path=${stream}"
+        record_step "${phase}" "failed" 1 "${display}"
+        return 1
     fi
+    tee -a "${HUMAN_LOG}" < "${stream}" &
+    tee_pid=$!
+    if "$@" >"${stream}" 2>&1; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if wait "${tee_pid}"; then
+        tee_rc=0
+    else
+        tee_rc=$?
+    fi
+    rm -f -- "${stream}" || log_event "WARN" "${phase}" "output_stream_cleanup_failed" "Could not remove the command output stream" 0 "path=${stream}"
+    if (( rc == 0 && tee_rc != 0 )); then rc="${tee_rc}"; fi
+    printf '\n'
 
     if (( rc == 0 )); then
         log_event "INFO" "${phase}" "${finish_event}" "${finish_message}" 0 "${display}"
@@ -2708,8 +2732,12 @@ run_module() {
         return 0
     fi
     CURRENT_MODULE="${name}"
+    MODULE_INDEX=$(( MODULE_INDEX + 1 ))
+    printf '\n\033[1;37m[%d/%d] %s\033[0m\n' "${MODULE_INDEX}" "${MODULE_TOTAL}" "${name}"
+    printf '  %s\n\n' "$(module_desc "${name}")"
     "${fn}"
     MODULES_OK="${MODULES_OK} ${name}"
+    printf '\033[1;32m  OK\033[0m  %s completed\n\n' "${name}"
 }
 
 # ==============================================================================
@@ -2750,6 +2778,9 @@ if [[ "${OS_FAMILY}" == "linux" ]]; then
 fi
 
 log_event "INFO" "bootstrap" "modules_selected" "Modules queued" 0 "modules=${SELECTED_DISPLAY}"
+MODULE_TOTAL="${#SELECTED_MODULES[@]}"
+printf '\n\033[1;37mInstallation plan: %d module(s)\033[0m\n' "${MODULE_TOTAL}"
+printf '  %s\n\n' "${SELECTED_DISPLAY}"
 
 PI_VERSION=""
 for _mod in "${SELECTED_MODULES[@]}"; do

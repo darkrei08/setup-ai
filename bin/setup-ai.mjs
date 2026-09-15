@@ -127,17 +127,22 @@ function interactiveMenu() {
     let cursor = 0;
     const out = process.stdout;
 
-    const render = (first) => {
-      if (!first) out.write(`\x1b[${items.length + 3}A`); // move up to redraw
-      out.write("\x1b[0J"); // clear below
-      out.write("\x1b[1mAI Dev Suite — select modules\x1b[0m  (↑/↓ move · Space toggle · a all · Enter confirm · q quit)\n\n");
+    const render = () => {
+      const selected = items.filter((it) => it.checked).length;
+      out.write("\x1b[2J\x1b[H");
+      out.write("\x1b[1;36m+----------------------------------------------------------------------+\x1b[0m\n");
+      out.write("\x1b[1;36m|\x1b[0m                    \x1b[1mAI Dev Suite setup\x1b[0m                         \x1b[1;36m|\x1b[0m\n");
+      out.write("\x1b[1;36m+----------------------------------------------------------------------+\x1b[0m\n");
+      out.write(`  Select modules to install: \x1b[1m${selected}/${items.length}\x1b[0m selected\n`);
+      out.write("  Arrow keys/j-k move   Space toggle   a all   Enter confirm   q quit\n\n");
       items.forEach((it, i) => {
-        const pointer = i === cursor ? "\x1b[36m>\x1b[0m " : "  ";
+        const pointer = i === cursor ? "\x1b[36m>\x1b[0m" : " ";
         const box = it.checked ? "\x1b[32m[x]\x1b[0m" : "[ ]";
         const tag = it.core ? "" : " \x1b[33m(optional)\x1b[0m";
-        out.write(`${pointer}${box} ${it.name.padEnd(14)} ${it.desc}${tag}\n`);
+        out.write(`${pointer} ${box} ${String(i + 1).padStart(2, " ")} ${it.name.padEnd(16)}${tag}\n`);
+        out.write(`       ${it.desc}\n\n`);
       });
-      out.write("\n");
+      out.write("  Selected modules run in dependency order.\n");
     };
 
     const stdin = process.stdin;
@@ -151,7 +156,7 @@ function interactiveMenu() {
     }
     stdin.resume();
     stdin.setEncoding("utf8");
-    render(true);
+    render();
 
     const cleanup = () => {
       let cleanupError = null;

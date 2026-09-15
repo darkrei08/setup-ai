@@ -22,14 +22,14 @@ Non-interactive:
 ```bash
 npx @darkrei08/setup-ai --only pi,codex,opencode   # just these
 npx @darkrei08/setup-ai --all                       # everything
-npx @darkrei08/setup-ai --verbose                   # spaced, human-readable output
+npx @darkrei08/setup-ai --verbose                   # spaced output with live command logs
 ```
 
 Three details worth knowing:
 
 - **Use the npm package above.** `npx github:darkrei08/setup-ai` also works, but many npm setups block git fetches (`EALLOWGIT`); the published package avoids that. Run it from any folder except the repo's own source dir.
 - **Windows PowerShell 7.3+**: one command per line (no bash `\`). If node or git was just installed, open a **new terminal** so PATH refreshes.
-- **What it does**: detects your OS and runs `setup-ai.sh` (macOS/Linux) or `setup-ai.ps1` (Windows). `--list` shows modules; menu keys: ↑/↓ move · Space toggle · `a` all · Enter.
+- **What it does**: detects your OS and runs `setup-ai.sh` (macOS/Linux) or `setup-ai.ps1` (Windows). Each module and command is shown with live output, so prompts such as `sudo` remain visible; `--list` shows modules; menu keys: arrows/`j`/`k` move · Space toggle · `a` all · Enter.
 
 ### npm vs npx
 

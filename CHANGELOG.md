@@ -5,6 +5,11 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## 3.4.4
+
+- Stream command output live so package installs and sudo prompts are visible.
+- Add clearer module progress banners and a spaced module-selection menu.
+
 Issue and PR tracking (open vs. closed) lives in the GitHub
 [issues](https://github.com/darkrei08/setup-ai/issues) and
 [pull requests](https://github.com/darkrei08/setup-ai/pulls).
