@@ -41,6 +41,11 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
 
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; the npm bundled with
+      # Node 22 is older and publishes unauthenticated, which npm answers with 404.
+      - name: Use an npm that supports trusted publishing
+        run: npm install -g npm@latest
+
       - name: Verify the tag is on main and matches package.json
         run: |
           git fetch origin main --tags
