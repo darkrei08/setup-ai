@@ -113,6 +113,32 @@ PI_WORKFLOWS_REMOTE="${PI_WORKFLOWS_REMOTE:-https://github.com/darkrei08/pi-exte
 cleanup() {
     rm -rf -- "${TMP_DIR}"
 }
+
+# A run killed mid-module must not be written as a success: remember the signal so
+# the exit trap can report `interrupted`, name the in-flight module as failed, and
+# leave a non-zero exit code behind.
+signal_exit_code() {
+    case "$1" in
+        HUP)  printf '1' ;;
+        INT)  printf '2' ;;
+        TERM) printf '15' ;;
+        *)    printf '15' ;;
+    esac
+}
+
+on_signal() {
+    local signal="$1"
+    RUN_INTERRUPTED=1
+    INTERRUPT_SIGNAL="${signal}"
+    INTERRUPT_RC=$(( 128 + $(signal_exit_code "${signal}") ))
+    log_event "ERROR" "bootstrap" "run_interrupted" \
+        "Run interrupted by ${signal}" "${INTERRUPT_RC}" \
+        "signal=${signal};module=${CURRENT_MODULE:-none}"
+    exit "${INTERRUPT_RC}"
+}
+trap 'on_signal HUP' HUP
+trap 'on_signal INT' INT
+trap 'on_signal TERM' TERM
 # The run summary is written from the exit trap rather than from write_report: several
 # failure paths end in a direct `exit` and never reach the ERR trap.
 trap 'on_exit $?' EXIT
@@ -219,6 +245,9 @@ STEP_FAIL_STEP=""
 STEP_FAIL_RC=0
 LAST_ERROR_STEP=""
 LAST_ERROR_RC=0
+RUN_INTERRUPTED=0
+INTERRUPT_SIGNAL=""
+INTERRUPT_RC=0
 SUMMARY_WRITTEN=0
 
 # Space-delimited on purpose: a plain string keeps the empty case safe under
@@ -260,6 +289,10 @@ write_run_summary() {
         outcome="failed"
         level="ERROR"
     fi
+    if (( RUN_INTERRUPTED == 1 )); then
+        outcome="interrupted"
+        level="ERROR"
+    fi
 
     # A summary with a missing timestamp is worse than one that repeats the start time,
     # and the duration comes from the shell's own clock, so neither needs a helper.
@@ -274,13 +307,17 @@ write_run_summary() {
         failed_step="${LAST_ERROR_STEP}"
         failed_rc="${LAST_ERROR_RC}"
     fi
+    if (( RUN_INTERRUPTED == 1 )); then
+        [[ -n "${failed_step}" ]] || failed_step="run_interrupted:${INTERRUPT_SIGNAL}"
+        (( INTERRUPT_RC > 0 )) && failed_rc="${INTERRUPT_RC}"
+    fi
     (( failed_rc > 0 )) || failed_rc=1
 
     local -a module_names=()
     if (( ${#SELECTED_MODULES[@]} > 0 )); then
         module_names=("${SELECTED_MODULES[@]}")
     fi
-    if [[ "${outcome}" == "failed" && -n "${CURRENT_MODULE}" ]] && ! is_selected "${CURRENT_MODULE}"; then
+    if [[ "${outcome}" != "success" && -n "${CURRENT_MODULE}" ]] && ! is_selected "${CURRENT_MODULE}"; then
         # A gate or the shell environment can fail outside any selected module.
         module_names+=("${CURRENT_MODULE}")
     fi
@@ -292,7 +329,7 @@ write_run_summary() {
     for m in "${module_names[@]}"; do
         if module_succeeded "${m}"; then
             status="success"; m_success=$(( m_success + 1 ))
-        elif [[ "${outcome}" == "failed" && "${m}" == "${CURRENT_MODULE}" ]]; then
+        elif [[ "${outcome}" != "success" && "${m}" == "${CURRENT_MODULE}" ]]; then
             status="failed"; m_failed=$(( m_failed + 1 ))
         else
             status="skipped"; m_skipped=$(( m_skipped + 1 ))
@@ -315,6 +352,10 @@ write_run_summary() {
     message="${message};steps_skipped=${STEP_SKIPPED};steps_failed=${STEP_FAILED}"
     if [[ "${outcome}" == "failed" ]]; then
         message="${message};failed_step=${failed_step};return_code=${failed_rc}"
+    fi
+    if (( RUN_INTERRUPTED == 1 )); then
+        message="${message};interrupted=true;signal=${INTERRUPT_SIGNAL}"
+        report_lines+=("- Interrupted by: ${INTERRUPT_SIGNAL}")
     fi
 
     # A run that failed before write_report still ends with a report, as it does in

@@ -223,6 +223,13 @@ $script:SelectedModules = @()
 $script:SucceededModules = @()
 $script:FailedModules = @()
 $script:RunActive = $false
+# Ctrl+C: Windows has no HUP/TERM, so the console event is cancelled and the run
+# finishes with the same `interrupted` summary setup-ai.sh writes on a signal.
+$script:Interrupted = $false
+$script:InterruptSignal = ""
+# The module that was running when the signal arrived, kept separate from
+# $script:CurrentModule because the later phases overwrite that one.
+$script:InterruptModule = ""
 $script:StepsInstalled = 0
 $script:StepsVerified = 0
 $script:StepsSkipped = 0
@@ -258,6 +265,11 @@ function Write-RunSummary {
 
     $outcome = if ($ExitCode -eq 0) { 'success' } else { 'failed' }
     $level = if ($ExitCode -eq 0) { 'INFO' } else { 'ERROR' }
+    if ($script:Interrupted) {
+        # The same terminal outcome setup-ai.sh writes when a signal ends the run.
+        $outcome = 'interrupted'
+        $level = 'ERROR'
+    }
     $endedAt = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
     $duration = [int]((Get-Date) - $RunStartTime).TotalSeconds
     if ($duration -lt 0) { $duration = 0 }
@@ -307,6 +319,10 @@ function Write-RunSummary {
     if ($outcome -eq 'failed') {
         $message += ";failed_step=$failedStep;return_code=$failedReturnCode"
     }
+    if ($script:Interrupted) {
+        $message += ";interrupted=true;signal=$($script:InterruptSignal)"
+        $reportLines += "- Interrupted by: $($script:InterruptSignal)"
+    }
 
     Add-Content -Path $ReportFile -Value $reportLines
     Write-Log $level "bootstrap" "run_summary" $message $ExitCode -Summary ([ordered]@{
@@ -339,6 +355,23 @@ trap {
         Write-RunSummary -Selected $script:SelectedModules -Succeeded $script:SucceededModules -FailedModules $failedModules -ExitCode 1
     }
     exit 1
+}
+
+# Ctrl+C is the Windows counterpart of the signals setup-ai.sh traps. .NET delivers
+# it as SIGINT, and the handler must be pure .NET because a PowerShell scriptblock
+# cannot run on the signal thread. Cancelling the default termination lets the run
+# reach its `interrupted` summary instead of dying without one; the module loop and
+# the gates stop at the next boundary. The handler is registered in the main flow,
+# after the -List/-Help exits, so queries never pay for Add-Type.
+function Test-Interrupted {
+    if (-not $script:Interrupted -and [SetupAiInterrupt]::Interrupted) {
+        $script:Interrupted = $true
+        $script:InterruptSignal = 'INT'
+        # Snapshot the first place that observed the signal; the later phase
+        # reassignments overwrite $script:CurrentModule.
+        if (-not $script:InterruptModule) { $script:InterruptModule = $script:CurrentModule }
+    }
+    return $script:Interrupted
 }
 
 function Test-Cmd { param([string]$Name) [bool](Get-Command $Name -ErrorAction SilentlyContinue) }
@@ -2175,12 +2208,31 @@ Write-Log INFO "bootstrap" "modules_selected" "Modules queued" 0 ("modules=" + (
 
 $script:FailedModules = @()
 $script:SucceededModules = @()
-$moduleTotal = $selected.Count
+$moduleTotal = @($selected).Count
 $moduleIndex = 0
 Write-Host ""
 Write-Host ("Installation plan: {0} module(s)" -f $moduleTotal) -ForegroundColor White
 Write-Host ("  {0}" -f ($selected -join '  ')) -ForegroundColor Gray
+
+if (-not ('SetupAiInterrupt' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public static class SetupAiInterrupt {
+    public static volatile bool Interrupted;
+    public static void OnSignal(PosixSignalContext ctx) { ctx.Cancel = true; Interrupted = true; }
+}
+'@
+}
+try {
+    [System.Runtime.InteropServices.PosixSignalRegistration]::Create(
+        [System.Runtime.InteropServices.PosixSignal]::SIGINT,
+        [System.Delegate]::CreateDelegate([System.Action[System.Runtime.InteropServices.PosixSignalContext]], [SetupAiInterrupt].GetMethod('OnSignal'))) | Out-Null
+} catch {
+    # A host without a console cannot deliver the signal; the run keeps its normal
+    # termination behavior.
+}
 foreach ($m in $selected) {
+    if (Test-Interrupted) { break }
     $moduleIndex++
     $script:CurrentModule = $m
     Write-ModuleBanner -Index $moduleIndex -Total $moduleTotal -Name $m
@@ -2194,10 +2246,14 @@ foreach ($m in $selected) {
     }
 }
 
+# The in-flight module is the one that was running when the signal arrived; the
+# phase reassignments below must not rewrite it in the summary.
+if (Test-Interrupted -and -not $script:InterruptModule) { $script:InterruptModule = $script:CurrentModule }
+
 # npm 12 install-script approval can only name an installed package, so converge
 # after the modules that install pi packages and before the gates that use them.
 $script:CurrentModule = 'pi-npm'
-if (-not $script:FailedModules -and ($selected -contains 'pi' -or $selected -contains 'pi-packages' -or $selected -contains 'gentle-ai' -or $selected -contains 'pi-workflows')) {
+if (-not (Test-Interrupted) -and -not $script:FailedModules -and ($selected -contains 'pi' -or $selected -contains 'pi-packages' -or $selected -contains 'gentle-ai' -or $selected -contains 'pi-workflows')) {
     try {
         Approve-NpmInstallScripts -Dir $PiNpmDir
     } catch {
@@ -2207,7 +2263,7 @@ if (-not $script:FailedModules -and ($selected -contains 'pi' -or $selected -con
 }
 
 # Skip quality gates when a module already failed (Bash aborts before them).
-if (-not $script:FailedModules) {
+if (-not (Test-Interrupted) -and -not $script:FailedModules) {
     try {
         Invoke-QualityGates -Selected $selected
     } catch {
@@ -2242,8 +2298,13 @@ Write-Host "`n============================================================" -For
 Write-Host " AI Dev Suite (Windows) setup finished" -ForegroundColor Green
 Write-Host "============================================================" -ForegroundColor Green
 Write-Host "Modules : $($selected -join ' ')"
+$interruptedTarget = if ($script:InterruptModule) { $script:InterruptModule } else { $script:CurrentModule }
 $exitCode = 0
-if ($script:FailedModules) {
+if (Test-Interrupted) {
+    Write-Host "Interrupted: $($script:InterruptSignal)" -ForegroundColor Yellow
+    Write-Log ERROR "bootstrap" "run_interrupted" "Run interrupted by Ctrl+C" 130 "signal=$($script:InterruptSignal);module=$($interruptedTarget)"
+    $exitCode = 130
+} elseif ($script:FailedModules) {
     Write-Host "Failed  : $($script:FailedModules -join ' ')" -ForegroundColor Yellow
     Write-Log ERROR "bootstrap" "completed_with_failures" "Setup finished with failed modules or quality gates" 1 "failed=$($script:FailedModules -join ',')"
     $exitCode = 1
@@ -2251,7 +2312,11 @@ if ($script:FailedModules) {
     Write-Log INFO "bootstrap" "completed" "Setup completed successfully" 0
 }
 # The summary is the terminal record of the run, as it is in setup-ai.sh.
-Write-RunSummary -Selected $script:SelectedModules -Succeeded $script:SucceededModules -FailedModules $script:FailedModules -ExitCode $exitCode
+$failedForSummary = @($script:FailedModules)
+if ($script:Interrupted -and $interruptedTarget -and ($failedForSummary -notcontains $interruptedTarget)) {
+    $failedForSummary += $interruptedTarget
+}
+Write-RunSummary -Selected $script:SelectedModules -Succeeded $script:SucceededModules -FailedModules $failedForSummary -ExitCode $exitCode
 Write-Host "Report  : $ReportFile"
 if ($exitCode -eq 0) {
     Write-Host "`nNext: open a new terminal so PATH updates apply."

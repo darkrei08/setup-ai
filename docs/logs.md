@@ -42,7 +42,10 @@ ends with the same summary.
 - `summary.outcome` is `success` only when the whole run exited 0, so a failed
   run still says which module and step failed and with which return code. A
   failure outside the selected modules (a quality gate, the npm install-script
-  approval) is listed with its phase name.
+  approval) is listed with its phase name. A run killed by a signal (`HUP`,
+  `INT`, `TERM`) is `interrupted`: the in-flight module is reported `failed`
+  with `failed_step: run_interrupted: ...`, and the summary carries
+  `interrupted=true;signal=<name>` with a non-zero exit code.
 
 ## Reading a run without paging the log
 
