@@ -5,6 +5,15 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.2] - 2026-09-15
+
+### Fixed
+
+- Fixed stdout/stderr capture so command warnings remain visible without corrupting captured values.
+- Approved and rebuilt `gentle-pi` immediately after installation for npm 12.
+- Removed redundant npm-root marker setup where the existing remote-source helper already creates it.
+- Forwarded unattended flags for `--all`, tightened cross-OS Pi registration checks, and hardened Windows task/path verification.
+
 ## [3.5.1] - 2026-09-15
 
 ### Fixed

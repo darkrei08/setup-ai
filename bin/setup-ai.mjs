@@ -99,7 +99,7 @@ function runScript(passArgs) {
 }
 
 // Translate a chosen module list into the platform script's flag.
-function toScriptArgs(mode, csv) {
+function toScriptArgs(mode, csv, unattended = false) {
   let args;
   if (isWin) {
     if (mode === "all") args = ["-All"];
@@ -116,6 +116,7 @@ function toScriptArgs(mode, csv) {
     else if (mode === "help") args = ["--help"];
     else args = [];
   }
+  if (unattended) args.push(isWin ? "-Yes" : "--yes");
   if (has("--verbose") || has("-v")) args.push(isWin ? "-Verbose" : "--verbose");
   return args;
 }
@@ -227,7 +228,8 @@ async function main() {
     return;
   }
 
-  if (has("--all")) return runScript(toScriptArgs("all"));
+  const unattended = has("--yes") || has("-y") || has("--verbose") || has("-v");
+  if (has("--all")) return runScript(toScriptArgs("all", undefined, unattended));
 
   const hasOnly = argv.some((arg) => arg === "--only" || arg.startsWith("--only="));
   if (hasOnly) {
@@ -237,7 +239,7 @@ async function main() {
       process.exitCode = 2;
       return;
     }
-    return runScript(toScriptArgs("only", only));
+    return runScript(toScriptArgs("only", only, unattended));
   }
 
   // --verbose asks for output, not for a menu: it runs the core set unattended.
@@ -269,7 +271,7 @@ async function main() {
     console.log("Nothing selected — exiting.");
     process.exit(0);
   }
-  return runScript(toScriptArgs("only", chosen.join(",")));
+  return runScript(toScriptArgs("only", chosen.join(","), unattended));
 }
 
 main().catch((err) => {

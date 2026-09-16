@@ -20,10 +20,11 @@ npx @darkrei08/setup-ai
 Non-interactive:
 
 ```bash
+npx @darkrei08/setup-ai --all --verbose --yes       # recommended: everything, unattended
 npx @darkrei08/setup-ai --only pi,codex,opencode   # just these
 npx @darkrei08/setup-ai --yes                       # core set, no prompts
 npx @darkrei08/setup-ai --all                       # everything
-npx @darkrei08/setup-ai --verbose                   # spaced output with live command logs
+npx @darkrei08/setup-ai --verbose                   # core set, no prompts, with live command logs
 ```
 
 Three details worth knowing:
@@ -57,6 +58,7 @@ that matches your question.
 | [docs/logs.md](docs/logs.md) | `setup_<runid>.log` / `.jsonl` / engineering report, the `run_summary` record, the event stream |
 | [docs/opencode-go.md](docs/opencode-go.md) | Reuse an OpenCode Go subscription inside pi |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | Real field errors and their fixes (`read` conflict, missing RDD binary, opencode PATH, distro detection, `Shift+Enter`, …) |
+| [docs/releasing.md](docs/releasing.md) | Safe GitHub Release and npm publishing checklist |
 
 `pi-packages.example.txt` in the package root is the starting point for the
 declarative Pi package manifest.

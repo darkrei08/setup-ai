@@ -1,4 +1,6 @@
 logs/
+*.log
+*.jsonl
 *.tgz
 node_modules/
 # Local Pi runtime state

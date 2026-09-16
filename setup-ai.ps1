@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 3.5.1
+ Version: 3.5.2
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, the vendor install.ps1 scripts
@@ -54,7 +54,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "3.5.1"
+$ScriptVersion = "3.5.2"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
@@ -827,8 +827,9 @@ function Assert-TransientRenameRetry {
     return $true
 }
 
-# Derive the stable id of a Pi package source (`npm:`/`git:`/local path) so a
-# readback check can match pi's own record regardless of version or ref noise.
+# Derive the last path segment of a Pi package source, so a manifest line can be
+# recognised as the workflow package the pi-workflows module owns. Identity
+# comparisons for the readback check live in the Node/PowerShell helper.
 function Get-PiPackageId {
     param([string]$Spec)
     $spec = ([string]$Spec).Trim()
@@ -1326,9 +1327,13 @@ function Mod-Base {
     # Build tools (parity with build-essential): VS Build Tools + C++ workload.
     if (-not (Test-Cmd winget)) { throw "winget not available; cannot install build tools" }
     $vsId = "Microsoft.VisualStudio.2022.BuildTools"
-    $vsWhere = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    $vsWhere = if (${env:ProgramFiles(x86)}) {
+        Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio\Installer\vswhere.exe"
+    } else {
+        $null
+    }
     $workloadPresent = $false
-    if (Test-Path $vsWhere) {
+    if ($vsWhere -and (Test-Path $vsWhere)) {
         $script:SetupAiVsInstallPath = ""
         $probeOk = Invoke-Step -Phase "base" -Optional -Verify -Action {
             $script:SetupAiVsInstallPath = (& $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
@@ -1343,7 +1348,7 @@ function Mod-Base {
     } else {
         Write-Log INFO "base" "already_present" "Visual Studio C++ workload already installed"
     }
-    if (-not (Test-Path $vsWhere)) {
+    if (-not $vsWhere -or -not (Test-Path $vsWhere)) {
         throw "Visual Studio Installer vswhere.exe not found; cannot verify C++ workload"
     }
     Invoke-Step -Phase "base" -Verify -Action {
@@ -1439,20 +1444,19 @@ function Mod-Dotenv {
 }
 
 function Mod-Ee {
-    Write-Log INFO "ee" "start" "Engineering Excellence"
-    if (-not (Test-Cmd npx)) { throw "npx not found; ee cannot be installed (install the node module first)" }
+    Write-Log INFO "engineering-excellence" "start" "Engineering Excellence"
+    if (-not (Test-Cmd npx)) { throw "npx not found; engineering-excellence cannot be installed (install the node module first)" }
     $agents = Get-TargetSkillAgents
     foreach ($a in $agents) {
-        Invoke-Step -Phase "ee" -Action {
+        Invoke-Step -Phase "engineering-excellence" -Action {
             npx --yes skills@latest add $EE_Slug --skill $EE_Skill --global --agent $a --copy --yes
         }
     }
-    Assert-SkillInstalledForAgents -Phase "ee" -Skill $EE_Skill -Agents $agents
+    Assert-SkillInstalledForAgents -Phase "engineering-excellence" -Skill $EE_Skill -Agents $agents
 }
 
-# Installs darkrei08/dotenv's skill stack on every OS via `npx skills add`.
-# On Linux the dotenv module may already install these; skills add --copy is
-# idempotent, so a re-run is safe.
+# Installs the shared skill stack via `npx skills add`; the upstream dotenv
+# setup also installs its own copy on Linux, and both paths are idempotent.
 function Mod-Skills {
     Write-Log INFO "skills" "start" "Agent skills (upstream stack)"
     if (-not (Test-Cmd npx)) { throw "npx not found; skills cannot be installed (install the node module first)" }
@@ -1507,12 +1511,6 @@ function Mod-PiWorkflows {
     New-Item -ItemType Directory -Force -Path $PiExtDir | Out-Null
     # Append-only, so the npm 12 remote-source opt-in written above survives.
     Add-LineIfMissing -Path (Join-Path $PiExtDir ".npmrc") -Line "ignore-scripts=false"
-    # Mark this dir as an npm project root so `npm install` lands HERE and cannot
-    # walk up into an ancestor project (mirrors setup-ai.sh).
-    $pkgJson = Join-Path $PiExtDir "package.json"
-    if (-not (Test-Path $pkgJson)) {
-        Set-Content -Path $pkgJson -Value '{"name":"pi-extensions","private":true}'
-    }
     Push-Location $PiExtDir
     try {
         Invoke-Step -Phase "pi-workflows" -Action {
@@ -1675,10 +1673,17 @@ function Mod-GentleAi {
     # gentle-pi harness + pi-mcp-adapter, then verify the exact target file.
     if (Test-Cmd pi) {
         Invoke-Step -Phase "gentle-ai" -Action { pi install npm:gentle-pi }
+        # Ensure the project marker exists even for -Only gentle-ai before the
+        # npm 12 approval/rebuild check (issue #49).
+        Enable-NpmRemoteSources -Dir $PiNpmDir
+        # Approve/rebuild gentle-pi's blocked npm 12 install scripts now, in the
+        # managed Pi root, so its package-local RDD review binary exists even if a
+        # later module fails before the final convergence pass runs.
+        Approve-NpmInstallScripts -Dir $PiNpmDir -Phase "gentle-ai"
         Invoke-Step -Phase "gentle-ai" -Action { pi install npm:pi-mcp-adapter }
         $piSettings = Join-Path $HOME ".pi\agent\settings.json"
         $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
-        if (($piSettingsRaw -match 'npm:gentle-pi') -and ($piSettingsRaw -match 'npm:pi-mcp-adapter')) {
+        if (($piSettingsRaw -match '"npm:gentle-pi"') -and ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
             Write-Log INFO "gentle-ai" "pi_enabled" "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)"
         } else {
             Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
@@ -1906,11 +1911,18 @@ function Register-RotatorTask {
         $logonOk = @($registered.Triggers | Where-Object {
             $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" -and $_.Enabled -and ($_.UserId -split '\\')[-1] -eq $env:USERNAME
         }).Count -gt 0
-        # Both sides are read as ISO durations, because the scheduler hands the interval back as
-        # the string "PT5M" while the trigger built here holds it as a TimeSpan.
-        $interval = [System.Xml.XmlConvert]::ToTimeSpan($watchdog.Repetition.Interval)
+        # Scheduled-task APIs return durations as either TimeSpan values or ISO/XSD strings;
+        # normalize both forms before comparing the trigger we built with its readback.
+        $toDuration = {
+            param($value)
+            if ($value -is [TimeSpan]) { return [TimeSpan]$value }
+            $text = ([string]$value).Trim()
+            if ($text -like "P*") { return [System.Xml.XmlConvert]::ToTimeSpan($text) }
+            return [TimeSpan]::Parse($text, [Globalization.CultureInfo]::InvariantCulture)
+        }
+        $interval = & $toDuration $watchdog.Repetition.Interval
         $watchdogOk = @($registered.Triggers | Where-Object {
-            $_.Enabled -and $_.Repetition -and $_.Repetition.Interval -and [System.Xml.XmlConvert]::ToTimeSpan($_.Repetition.Interval) -eq $interval
+            $_.Enabled -and $_.Repetition -and $_.Repetition.Interval -and (& $toDuration $_.Repetition.Interval) -eq $interval
         }).Count -gt 0
         # A disabled task or trigger is registered and inert, so both are part of the check.
         $enabledOk = [bool]$registered.Settings.Enabled
@@ -1924,7 +1936,7 @@ function Register-RotatorTask {
         Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes by a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m"
         return $true
     } catch {
-        Write-Log WARN "rotator" "task_failed" "Scheduled task not registered; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"
+        Write-Log WARN "rotator" "task_failed" "Scheduled task registration or verification failed; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"
         return $false
     }
 }
@@ -2176,7 +2188,7 @@ function Invoke-QualityGates {
         if (Test-Cmd pi) {
             $piSettings = Join-Path $HOME ".pi\agent\settings.json"
             $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
-            if (-not ($piSettingsRaw -match 'npm:gentle-pi') -or -not ($piSettingsRaw -match 'npm:pi-mcp-adapter')) {
+            if (-not ($piSettingsRaw -match '"npm:gentle-pi"') -or -not ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
                 throw "gentle-pi and/or pi-mcp-adapter not registered in pi settings ($piSettings)"
             }
             Write-Log INFO "quality" "gentle_ai_gate_passed" "gentle-ai verified (CLI present; gentle-pi + pi-mcp-adapter registered in pi)"
@@ -2228,8 +2240,11 @@ try {
         [System.Runtime.InteropServices.PosixSignal]::SIGINT,
         [System.Delegate]::CreateDelegate([System.Action[System.Runtime.InteropServices.PosixSignalContext]], [SetupAiInterrupt].GetMethod('OnSignal'))) | Out-Null
 } catch {
-    # A host without a console cannot deliver the signal; the run keeps its normal
-    # termination behavior.
+    # A host without a console cannot deliver the signal; record the degraded
+    # interruption handling instead of swallowing the registration failure.
+    Write-Log WARN "bootstrap" "interrupt_handler_unavailable" `
+        "Ctrl+C cannot be intercepted on this host; the run will end without an interrupted summary" 0 `
+        "error=$($_.Exception.Message)"
 }
 foreach ($m in $selected) {
     if (Test-Interrupted) { break }
@@ -2277,6 +2292,7 @@ $script:CurrentModule = 'report'
 $reportNode = if (Test-Cmd node) { Get-ReportCommandValue -Command "node" -Arguments @("--version") } else { "n/a" }
 $reportNpm = if (Test-Cmd npm) { Get-ReportCommandValue -Command "npm" -Arguments @("--version") } else { "n/a" }
 $reportGo = if (Test-Cmd go) { Get-ReportCommandValue -Command "go" -Arguments @("version") } else { "n/a" }
+$reportBun = if (Test-Cmd bun) { Get-ReportCommandValue -Command "bun" -Arguments @("--version") } else { "n/a" }
 @"
 # AI Dev Suite - Engineering Report (Windows)
 
@@ -2289,6 +2305,7 @@ $reportGo = if (Test-Cmd go) { Get-ReportCommandValue -Command "go" -Arguments @
 - Node: $reportNode
 - npm:  $reportNpm
 - Go:   $reportGo
+- Bun:  $reportBun
 - pi:   $(if (Test-Cmd pi) { 'installed' } else { 'n/a' })
 
 Logs: $HumanLog ; $JsonlLog

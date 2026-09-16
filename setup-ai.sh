@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.5.1
+# Version: 3.5.2
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -28,7 +28,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.5.1"
+SCRIPT_VERSION="3.5.2"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 LOG_DIR="${SCRIPT_DIR}/logs"
@@ -79,7 +79,10 @@ PI_AGENT_DIR="${HOME}/.pi/agent"
 PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
 PI_NPM_DIR="${PI_AGENT_DIR}/npm"
 
-DOTENV_DIR="${HOME}/git/personale/dotenv"
+# Where setup-ai clones/reads the dotenv checkout. Overridable so a machine that
+# keeps its repos outside $HOME (e.g. on a data volume) can point at the existing
+# checkout instead of cloning a duplicate. `git clone` is skipped when it exists.
+DOTENV_DIR="${DOTENV_DIR:-${HOME}/git/personale/dotenv}"
 DOTENV_EXT_DIR="${DOTENV_DIR}/pi/agent/extensions/pi-ext-workflows"
 
 COCKPIT_REPO="jlcodes99/cockpit-tools"
@@ -538,16 +541,20 @@ capture_cmd() {
         shift
     fi
     local display; printf -v display '%q ' "$@"
-    local output="${TMP_DIR}/capture_${RANDOM}.log" rc=0 line
+    # Keep stdout as the captured scalar; stderr stays visible and logged but must
+    # not contaminate the value (e.g. `npm view ... version` prints warnings on
+    # stderr that would otherwise corrupt a version readback on Debian's npm 12).
+    local capture_id="${RANDOM}"
+    local out_file="${TMP_DIR}/capture_${capture_id}.out" err_file="${TMP_DIR}/capture_${capture_id}.err" rc=0 line
     log_event "INFO" "${phase}" "capture_start" "Collecting command output" 0 "${display}"
-    "$@" >"${output}" 2>&1 || rc=$?
-    cat "${output}" >> "${HUMAN_LOG}"
+    "$@" >"${out_file}" 2>"${err_file}" || rc=$?
+    cat "${out_file}" "${err_file}" >> "${HUMAN_LOG}"
     if (( VERBOSE == 1 )); then
         while IFS= read -r line || [[ -n "${line}" ]]; do
             printf '    %s\n' "${line}"
-        done < "${output}"
+        done < <(cat "${out_file}" "${err_file}")
     else
-        cat "${output}"
+        cat "${out_file}" "${err_file}"
     fi
     if (( rc != 0 )); then
         if (( optional == 1 )); then
@@ -562,7 +569,7 @@ capture_cmd() {
         fi
         return "${rc}"
     fi
-    printf -v "${output_var}" '%s' "$(cat "${output}")"
+    printf -v "${output_var}" '%s' "$(cat "${out_file}")"
     log_event "INFO" "${phase}" "capture_success" "Output captured" 0 "${display}"
     record_step "${phase}" "verified" 0 "${display}"
 }
@@ -1630,7 +1637,7 @@ mod_dotenv() {
         return
     fi
 
-    mkdir -p "${HOME}/git/personale"
+    mkdir -p "$(dirname -- "${DOTENV_DIR}")"
     if [[ ! -d "${DOTENV_DIR}/.git" ]]; then
         run_cmd "dotenv" git clone -- "${DOTENV_REPO}" "${DOTENV_DIR}"
     else
@@ -1721,6 +1728,8 @@ PYPATCH
     fi
 
     if [[ -x "${DOTENV_DIR}/setup_env.sh" ]]; then
+        # The upstream script also installs shared skills; both paths are
+        # idempotent, so keep the upstream integration intact.
         run_cmd "dotenv" bash "${DOTENV_DIR}/setup_env.sh"
     else
         log_event "ERROR" "dotenv" "setup_script_missing" \
@@ -1845,9 +1854,8 @@ mod_ee() {
 }
 
 # --- upstream agent skills --------------------------------------------------
-# Installs darkrei08/dotenv's skill stack on every OS via `npx skills add`.
-# On Linux the dotenv module may already install these; skills add --copy is
-# idempotent, so a re-run is safe.
+# Installs the shared skill stack via `npx skills add`; the upstream dotenv
+# setup also installs its own copy, and both paths are idempotent.
 mod_skills() {
     section "Agent skills (upstream stack)"
     require_command npx
@@ -1928,14 +1936,6 @@ mod_pi_workflows() {
     if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
         printf '%s\n' 'ignore-scripts=false' >> .npmrc
     fi
-    # Mark this directory as an npm project root so `npm install` lands HERE and
-    # cannot walk up the tree into an ancestor project. This matters when
-    # ~/.pi/agent is symlinked into another repo (e.g. the dotenv dotfiles):
-    # without a local package.json, npm would install into that repo's
-    # node_modules and verification would then pick up a stale, shadowing copy.
-    if [[ ! -f package.json ]]; then
-        printf '%s\n' '{"name":"pi-extensions","private":true}' > package.json
-    fi
     run_cmd "pi-workflows-node" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
         "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
     popd >/dev/null
@@ -1963,10 +1963,7 @@ mod_pi_workflows() {
 
     if [[ -d "${DOTENV_EXT_DIR}" ]]; then
         pushd "${DOTENV_EXT_DIR}" >/dev/null
-        if [[ ! -f package.json ]]; then
-            printf '%s\n' '{"name":"pi-ext-workflows","private":true}' > package.json
-        fi
-        # Same npm 12 opt-in for this install root.
+        # Same npm 12 opt-in for this install root; this also creates the package marker.
         ensure_npm_remote_sources "${DOTENV_EXT_DIR}"
         if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
             printf '%s\n' 'ignore-scripts=false' >> .npmrc
@@ -2211,6 +2208,13 @@ mod_gentle_ai() {
     # target (pi's own settings file), not a walked resolution.
     if command -v pi >/dev/null 2>&1; then
         run_cmd "gentle-ai" pi install npm:gentle-pi
+        # Ensure the project marker exists even for --only gentle-ai before the
+        # npm 12 approval/rebuild check (issue #49).
+        ensure_npm_remote_sources "${PI_NPM_DIR}"
+        # Approve/rebuild gentle-pi's blocked npm 12 install scripts now, in the
+        # managed Pi root, so its package-local RDD review binary exists even if a
+        # later module fails before the final convergence pass runs.
+        approve_npm_install_scripts "${PI_NPM_DIR}" "gentle-ai"
         run_cmd "gentle-ai" pi install npm:pi-mcp-adapter
         local pi_settings="${PI_AGENT_DIR}/settings.json"
         if [[ -f "${pi_settings}" ]] \
@@ -2392,17 +2396,17 @@ mod_cockpit() {
         *) asset_pat='\.AppImage' ;;
     esac
 
-    local url
-    if ! url="$(grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' "${release_json}" \
-        | cut -d '"' -f4 | grep -iE "${asset_pat}" | sed -n '1p')"; then
+    local asset_candidates url
+    if ! asset_candidates="$(grep -oE '"browser_download_url":[[:space:]]*"[^"]+"' "${release_json}")"; then
         log_event "WARN" "cockpit" "asset_parse_failed" "Could not parse cockpit-tools release assets"
         return 0
     fi
 
-    if [[ -z "${url}" ]]; then
+    if ! url="$(printf '%s\n' "${asset_candidates}" \
+        | cut -d '"' -f4 | grep -iE "${asset_pat}" | sed -n '1p')"; then
         log_event "WARN" "cockpit" "no_matching_asset" \
             "No matching cockpit-tools asset for ${PM}; download manually from GitHub Releases"
-        return
+        return 0
     fi
 
     local installer="${TMP_DIR}/cockpit-asset"
