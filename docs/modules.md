@@ -129,6 +129,17 @@ minutes with `-MultipleInstances IgnoreNew`, so a tick is skipped while the
 gateway it started still runs, and each tick checks the port first so a gateway
 started by a session or by the detached fallback is never doubled.
 
+## Uninstall
+
+Use `--uninstall` to print the owned-item inventory; removal requires `--yes`.
+Use `--only` to restrict modules, and `--purge` to remove destructive items such as
+`~/.nvm`, `~/.bun`, and the dotenv checkout. `--uninstall --dry-run` reports removals
+without deleting anything. The catalog never touches
+`~/.pi/agent/auth.json` or `~/.pi/agent/sessions/`.
+
+On Windows, `setup-ai.ps1` refuses `-DryRun` and `-Uninstall` with exit 2 and points
+users to `setup-ai.sh`; Windows lifecycle operations are not implemented yet.
+
 Back to the [README](../README.md) · Related:
 [install matrix](./install-matrix.md) · [logs](./logs.md) ·
 [troubleshooting](./troubleshooting.md).

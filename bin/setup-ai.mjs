@@ -16,6 +16,8 @@
 //   npx @darkrei08/setup-ai --only pi,codex,opencode
 //   npx @darkrei08/setup-ai --yes           # core set, no prompt
 //   npx @darkrei08/setup-ai --verbose       # core set, unattended, spaced output
+//   npx @darkrei08/setup-ai --dry-run       # report the install plan without writing
+//   npx @darkrei08/setup-ai --uninstall [--yes] [--only ...] [--purge]
 //   npx @darkrei08/setup-ai --list | --help
 // ============================================================================
 
@@ -118,6 +120,7 @@ function toScriptArgs(mode, csv, unattended = false) {
   }
   if (unattended) args.push(isWin ? "-Yes" : "--yes");
   if (has("--verbose") || has("-v")) args.push(isWin ? "-Verbose" : "--verbose");
+  if (has("--dry-run")) args.push(isWin ? "-DryRun" : "--dry-run");
   return args;
 }
 
@@ -217,7 +220,7 @@ async function main() {
 
   // An unknown flag is a mistake, not a reason to open the module menu: `--verbose`
   // used to be forwarded while the run still turned interactive.
-  const knownFlags = new Set(["--help", "-h", "--list", "--all", "--only", "--yes", "-y", "--verbose", "-v"]);
+  const knownFlags = new Set(["--help", "-h", "--list", "--all", "--only", "--yes", "-y", "--verbose", "-v", "--dry-run", "--uninstall", "--purge"]);
   const unknown = argv.filter((arg, i) => {
     if (arg === "--only" || arg.startsWith("--only=") || argv[i - 1] === "--only") return false;
     return !knownFlags.has(arg);
@@ -228,7 +231,29 @@ async function main() {
     return;
   }
 
+  if (has("--purge") && !has("--uninstall")) {
+    console.error("--purge is only valid with --uninstall.");
+    process.exitCode = 2;
+    return;
+  }
+
   const unattended = has("--yes") || has("-y") || has("--verbose") || has("-v");
+  if (has("--uninstall")) {
+    const uninstallArgs = [isWin ? "-Uninstall" : "--uninstall"];
+    const hasOnly = argv.some((arg) => arg === "--only" || arg.startsWith("--only="));
+    const only = getVal("--only");
+    if (hasOnly && (!only || !only.trim())) {
+      console.error("--only requires a non-empty comma-separated module list.");
+      process.exitCode = 2;
+      return;
+    }
+    if (only) uninstallArgs.push(isWin ? "-Only" : "--only", only);
+    if (has("--yes") || has("-y")) uninstallArgs.push(isWin ? "-Yes" : "--yes");
+    if (has("--purge") && !isWin) uninstallArgs.push("--purge");
+    if (has("--dry-run")) uninstallArgs.push(isWin ? "-DryRun" : "--dry-run");
+    if (has("--verbose") || has("-v")) uninstallArgs.push(isWin ? "-Verbose" : "--verbose");
+    return runScript(uninstallArgs);
+  }
   if (has("--all")) return runScript(toScriptArgs("all", undefined, unattended));
 
   const hasOnly = argv.some((arg) => arg === "--only" || arg.startsWith("--only="));
