@@ -1631,6 +1631,143 @@ function Mod-Herdr {
     }
 }
 
+# An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
+# pi-hashline-edit-pro to keep pi startable. That value is exactly the one that
+# makes gentle-pi's bundled pi-pretty register the built-in tool names itself, so it
+# now causes the startup abort it was meant to avoid. Remove the User-scope value
+# this installer wrote, unconditionally: a machine can carry it with no shadowing
+# package left. Any other value belongs to the user and is left alone.
+function Remove-StaleQuietToolsSwitch {
+    $changed = @()
+    if ([Environment]::GetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', 'User') -eq '0') {
+        [Environment]::SetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', $null, 'User')
+        $changed += 'User:GENTLE_PI_QUIET_TOOLS'
+    }
+    if ($env:GENTLE_PI_QUIET_TOOLS -eq '0') {
+        # The current session inherited the value when it started; clear it there too.
+        $env:GENTLE_PI_QUIET_TOOLS = $null
+        if ($changed.Count -eq 0) { $changed += 'Process:GENTLE_PI_QUIET_TOOLS' }
+    }
+    if ($changed.Count -eq 0) { return }
+    Write-Log INFO "gentle-ai" "stale_quiet_tools_switch_removed" "Removed the GENTLE_PI_QUIET_TOOLS=0 switch an earlier setup-ai persisted: it disables gentle-pi quiet tools, which is what makes pi-pretty register the built-in tool names itself and abort startup" 0 ("removed=" + ($changed -join ','))
+}
+
+# gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools, and pi
+# aborts at startup ("Tool <name> conflicts") when a second installed extension
+# registers one of the same names. pi-tool-display does exactly that, and so does the
+# dropped pi-hashline-edit-pro still registered on machines upgraded from an older
+# install. gentle-pi has no per-registrant switch, so the repair is its object entry
+# in settings.json with both of its own registrants excluded. Loading extensions
+# without a model call is impossible, so the collision is detected statically and the
+# entry rewritten as raw text, which leaves the rest of the file's formatting
+# untouched.
+function Repair-QuietToolsConflict {
+    Remove-StaleQuietToolsSwitch
+
+    $settings = Join-Path $PiAgentDir "settings.json"
+    if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
+    # Read the bytes explicitly, so the text can be written back with the same
+    # encoding: UTF-8, with a byte-order mark only when the file already has one.
+    $bytes = [System.IO.File]::ReadAllBytes($settings)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $utf8 = New-Object System.Text.UTF8Encoding($hasBom)
+    $offset = 0
+    if ($hasBom) { $offset = 3 }
+    $raw = $utf8.GetString($bytes, $offset, $bytes.Length - $offset)
+
+    # One alternation, both identities: pi-tool-display registers read/bash/find/
+    # grep/ls, pi-hashline-edit-pro was that name's owner before it was dropped.
+    $shadow = ''
+    if ($raw -cmatch '"npm:(pi-tool-display|pi-hashline-edit-pro)(@[^"]*)?"') { $shadow = $Matches[1] }
+    if (-not $shadow) { return }
+
+    $remediation = '{"source":"npm:gentle-pi","extensions":["-extensions/quiet-tools.ts","-extensions/pi-pretty.ts"]}'
+
+    # Which edit is safe is a structural question, so parse the JSON for it; the edit
+    # itself stays textual to preserve formatting.
+    $state = 'invalid'
+    try {
+        $parsed = ConvertFrom-Json -InputObject $raw
+        $gentle = @()
+        if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['packages']) {
+            foreach ($entry in @($parsed.packages)) {
+                if ($null -eq $entry) { continue }
+                $isString = $entry -is [string]
+                $source = if ($isString) { $entry } elseif ($null -ne $entry.PSObject.Properties['source']) { [string]$entry.source } else { '' }
+                if (-not $source) { continue }
+                if ((Get-PiPackageIdentity -Spec $source -BaseDir $PiAgentDir) -ine 'npm:gentle-pi') { continue }
+                $extensions = if (-not $isString -and $null -ne $entry.PSObject.Properties['extensions']) { @($entry.extensions) } else { @() }
+                $gentle += @{ Kind = $(if ($isString) { 'string' } else { 'object' }); Extensions = $extensions }
+            }
+        }
+        $exclusions = @('-extensions/quiet-tools.ts', '-extensions/pi-pretty.ts')
+        if ($gentle.Count -eq 0) { $state = 'absent' }
+        elseif ($gentle.Count -gt 1) { $state = 'ambiguous' }
+        elseif ($gentle[0].Kind -eq 'string') { $state = 'string' }
+        elseif (@($exclusions | Where-Object { $gentle[0].Extensions -notcontains $_ }).Count -eq 0) { $state = 'guarded' }
+        else { $state = 'ambiguous' }
+    } catch {
+        $state = 'invalid'
+    }
+    if ($state -eq 'absent' -or $state -eq 'guarded') { return }
+    if ($state -ne 'string') {
+        # Never claim a repair we did not make: an entry that cannot be rewritten
+        # safely (duplicate, unparseable or compact JSON) is reported with the exact
+        # JSON the user has to put in its place.
+        Write-Log WARN "gentle-ai" "quiet_tools_conflict_unrepaired" "$shadow re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; replace the gentle-pi entry in $settings with the JSON below" 0 "expected=$remediation;settings=$settings"
+        return
+    }
+
+    # The single plain entry is the only text that changes; indentation, trailing
+    # comma and line ending follow the original line. The replacement is staged as a
+    # sibling of its target, so the final Replace is atomic and a failed write can
+    # never leave an unusable settings.json behind.
+    $entryMatch = [regex]::Matches($raw, '(?m)^([ \t]*)"npm:gentle-pi"([ \t]*)(,?)[ \t]*(\r?)$')
+    if ($entryMatch.Count -ne 1) {
+        Write-Log WARN "gentle-ai" "quiet_tools_conflict_unrepaired" "$shadow re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; $settings is unchanged, replace the gentle-pi entry with the JSON below" 0 "expected=$remediation;settings=$settings"
+        return
+    }
+    $indent = $entryMatch[0].Groups[1].Value
+    $comma = $entryMatch[0].Groups[3].Value
+    $lineEnding = if ($raw.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $block = @(
+        "$indent{"
+        "$indent  `"source`": `"npm:gentle-pi`","
+        "$indent  `"extensions`": ["
+        "$indent    `"-extensions/quiet-tools.ts`","
+        "$indent    `"-extensions/pi-pretty.ts`""
+        "$indent  ]"
+        "$indent}$comma"
+    ) -join $lineEnding
+    $block += $entryMatch[0].Groups[4].Value
+    $updated = $raw.Remove($entryMatch[0].Index, $entryMatch[0].Length).Insert($entryMatch[0].Index, $block)
+
+    $tmp = "$settings.setup-ai.tmp"
+    $backup = "$settings.setup-ai.bak"
+    try {
+        [System.IO.File]::WriteAllText($tmp, $updated, $utf8)
+        # Verify the staged file before it replaces anything.
+        $null = [System.IO.File]::ReadAllText($tmp, $utf8) | ConvertFrom-Json
+        # The atomic swap on Windows, which also keeps the destination's attributes;
+        # the backup it writes is removed below.
+        [System.IO.File]::Replace($tmp, $settings, $backup)
+    } catch {
+        Write-Log ERROR "gentle-ai" "quiet_tools_conflict_unrepaired" "Could not replace $settings with the repaired copy: $($_.Exception.Message); pi keeps aborting at startup until gentle-pi excludes -extensions/quiet-tools.ts and -extensions/pi-pretty.ts" 1 "settings=$settings"
+        throw "Could not repair the gentle-pi entry in $settings"
+    } finally {
+        foreach ($stale in @($tmp, $backup)) {
+            if (Test-Path -LiteralPath $stale) {
+                try {
+                    Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
+                } catch {
+                    Write-Log WARN "gentle-ai" "quiet_tools_temp_left" "Could not remove a temporary file next to settings.json" 0 "path=$stale"
+                }
+            }
+        }
+    }
+    Write-Log INFO "gentle-ai" "quiet_tools_conflict_repaired" "$shadow re-registers one of the built-in tool names gentle-pi's quiet tools own; gentle-pi now loads with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded, so pi starts" 0 "settings=$settings"
+}
+
 # Reinstates the Gentle AI ecosystem configurator (sibling of mod_gentle_ai in
 # setup-ai.sh). `gentle-ai install` is the per-agent/per-IDE selector that also
 # wires each selected agent's MCP servers, so tools appear under /mcp. The
@@ -1698,16 +1835,9 @@ function Mod-GentleAi {
             Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
             throw "gentle-pi and/or pi-mcp-adapter not present in pi settings after install"
         }
-        # gentle-pi quiet-tools re-registers the built-in read/edit/grep tools; a
-        # second extension that shadows one of them makes pi abort at startup.
-        # Warn with the exact remediation instead of ending on a green install.
-        if (($piSettingsRaw -match 'pi-hashline-edit-pro') -and ($env:GENTLE_PI_QUIET_TOOLS -ne '0')) {
-            # Persist the switch gentle-pi reads: a warning alone leaves pi unstartable.
-            [Environment]::SetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', '0', 'User')
-            $env:GENTLE_PI_QUIET_TOOLS = '0'
-            Write-Log WARN "gentle-ai" "quiet_tools_disabled" "pi-hashline-edit-pro owns read/grep, so gentle-pi quiet-tools is disabled (GENTLE_PI_QUIET_TOOLS=0) to keep pi startable; pi-tool-display still renders tool output compactly" 0 "scope=User"
-        }
     }
+
+    Repair-QuietToolsConflict
 
     @"
   gentle-ai next steps (run yourself, per project):

@@ -2117,48 +2117,161 @@ mod_herdr() {
 }
 
 # --- gentle-ai --------------------------------------------------------------
-# Append `line` to `file` exactly once, creating the file when it is missing.
-persist_env_line() {
+# Delete one exact line from an existing file, keeping every other byte. No
+# `sed -i` (BSD/macOS sed needs an -i '' argument); the rewrite goes through a
+# temp file and only replaces the original after grep succeeded, so a failure
+# leaves the file as it was. Only LF lines are considered: every line this
+# installer ever appended used LF.
+remove_line_from_file() {
     local file="$1" line="$2"
-    mkdir -p "$(dirname "${file}")" 2>/dev/null || return 1
-    if [[ -f "${file}" ]] && grep -Fqx -- "${line}" "${file}" 2>/dev/null; then
-        return 0
+    [[ -f "${file}" ]] && grep -Fqx -- "${line}" "${file}" 2>/dev/null || return 1
+    local tmp="${TMP_DIR}/remove-line.tmp" rc=0
+    grep -vxF -- "${line}" "${file}" > "${tmp}" || rc=$?
+    if (( rc > 1 )); then
+        rm -f -- "${tmp}"
+        return 1
     fi
-    printf '\n%s\n' "${line}" >> "${file}" || return 1
+    if ! mv -- "${tmp}" "${file}"; then
+        rm -f -- "${tmp}"
+        return 1
+    fi
 }
 
-# gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools. A
-# second installed extension that registers one of the same names makes `pi`
-# abort at startup ("Tool <name> conflicts"). Loading extensions without a model
-# call is not possible, so detect the known shadowing package statically and
-# persist the switch gentle-pi reads: a warning alone would leave pi unstartable
-# in every shell that never sourced the rc file.
-handle_quiet_tools_conflict() {
-    local settings="${PI_AGENT_DIR}/settings.json"
-    [[ -f "${settings}" ]] || return 0
-    [[ "${GENTLE_PI_QUIET_TOOLS:-}" == "0" ]] && return 0
-    grep -q 'pi-hashline-edit-pro' "${settings}" || return 0
-
-    local written=() rc
+# An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
+# pi-hashline-edit-pro to keep pi startable. That value is exactly the one that
+# makes gentle-pi's bundled pi-pretty register the built-in tool names itself, so
+# it now causes the startup abort it was meant to avoid. Remove the exact lines
+# this installer wrote, unconditionally: a machine can carry them with no
+# shadowing package left. Anything else in those files belongs to the user.
+remove_stale_quiet_tools_switch() {
+    local changed=() rc
     for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
-        [[ -f "${rc}" ]] || continue
-        if persist_env_line "${rc}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
-            written+=("${rc}")
+        if remove_line_from_file "${rc}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
+            changed+=("${rc}")
         fi
     done
     # systemd --user sessions and panes that never source an rc read this file.
     local envd="${HOME}/.config/environment.d/50-gentle-pi.conf"
-    if persist_env_line "${envd}" 'GENTLE_PI_QUIET_TOOLS=0'; then
-        written+=("${envd}")
+    if remove_line_from_file "${envd}" 'GENTLE_PI_QUIET_TOOLS=0'; then
+        changed+=("${envd}")
     fi
+    (( ${#changed[@]} > 0 )) || return 0
+    log_event "INFO" "gentle-ai" "stale_quiet_tools_switch_removed" \
+        "Removed the GENTLE_PI_QUIET_TOOLS=0 switch an earlier setup-ai persisted: it disables gentle-pi quiet tools, which is what makes pi-pretty register the built-in tool names itself and abort startup" 0 \
+        "files=$(IFS=,; printf '%s' "${changed[*]}")"
+}
 
-    local files_csv="none"
-    if (( ${#written[@]} > 0 )); then
-        files_csv="$(IFS=,; printf '%s' "${written[*]}")"
+# gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools, and
+# pi aborts at startup ("Tool <name> conflicts") when a second installed extension
+# registers one of the same names. pi-tool-display does exactly that, and so does
+# the dropped pi-hashline-edit-pro still registered on machines upgraded from an
+# older install. gentle-pi has no per-registrant switch, so the repair is its
+# object entry in settings.json with both of its own registrants excluded. Loading
+# extensions without a model call is impossible, so the collision is detected
+# statically and the entry rewritten as raw text, which leaves the rest of the
+# file's formatting untouched.
+handle_quiet_tools_conflict() {
+    remove_stale_quiet_tools_switch
+
+    local settings="${PI_AGENT_DIR}/settings.json"
+    [[ -f "${settings}" ]] || return 0
+
+    local raw=""
+    raw="$(<"${settings}")"
+    # One alternation, both identities: pi-tool-display registers read/bash/find/
+    # grep/ls, pi-hashline-edit-pro was that name's owner before it was dropped.
+    local shadow=""
+    if [[ "${raw}" =~ \"npm:(pi-tool-display|pi-hashline-edit-pro)(@[^\"]*)?\" ]]; then
+        shadow="${BASH_REMATCH[1]}"
     fi
-    log_event "WARN" "gentle-ai" "quiet_tools_disabled" \
-        "pi-hashline-edit-pro owns read/grep, so gentle-pi quiet-tools is disabled (GENTLE_PI_QUIET_TOOLS=0) to keep pi startable; pi-tool-display still renders tool output compactly" 0 \
-        "files=${files_csv}"
+    [[ -n "${shadow}" ]] || return 0
+
+    local remediation='{"source":"npm:gentle-pi","extensions":["-extensions/quiet-tools.ts","-extensions/pi-pretty.ts"]}'
+
+    # Which edit is safe is a structural question, so parse the JSON for it; the
+    # edit itself stays textual to preserve formatting.
+    local state="invalid"
+    if ! state="$(node -e '
+        const fs = require("node:fs");
+        let settings;
+        try {
+            settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        } catch {
+            console.log("invalid");
+            process.exit(0);
+        }
+        const entries = (Array.isArray(settings.packages) ? settings.packages : []).filter((entry) => {
+            const source = typeof entry === "string" ? entry : (entry && entry.source) || "";
+            return /^npm:gentle-pi(@.*)?$/.test(source);
+        });
+        const wanted = ["-extensions/quiet-tools.ts", "-extensions/pi-pretty.ts"];
+        if (entries.length === 0) console.log("absent");
+        else if (entries.length > 1) console.log("ambiguous");
+        else if (typeof entries[0] === "string") console.log("string");
+        else if (wanted.every((name) => (entries[0].extensions || []).includes(name))) console.log("guarded");
+        else console.log("ambiguous");
+    ' "${settings}" 2>/dev/null)"; then
+        state="invalid"
+    fi
+    case "${state}" in
+        absent|guarded) return 0 ;;
+        string) ;;
+        *)
+            # Never claim a repair we did not make: an entry that cannot be
+            # rewritten safely (duplicate, unparseable or compact JSON) is reported
+            # with the exact JSON the user has to put in its place.
+            log_event "WARN" "gentle-ai" "quiet_tools_conflict_unrepaired" \
+                "${shadow} re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; replace the gentle-pi entry in ${settings} with the JSON below" 0 \
+                "expected=${remediation};settings=${settings}"
+            return 0
+            ;;
+    esac
+
+    # Stage the replacement as a sibling of its target: same filesystem (so the
+    # final mv is atomic) and `cp -p` carries the original mode over. Nothing is
+    # staged on the already-repaired paths above.
+    local tmp="${settings}.setup-ai.tmp" staged=0
+    if cp -p -- "${settings}" "${tmp}" \
+        && awk '
+            # The entry can be the last element of the array, so its own trailing
+            # comma has to survive, and the replacement follows its indentation.
+            /^[ \t]*"npm:gentle-pi"[ \t]*,?[ \t]*$/ {
+                hits++
+                indent = $0
+                sub(/[^ \t].*$/, "", indent)
+                comma = ($0 ~ /,[ \t]*$/) ? "," : ""
+                printf "%s{\n", indent
+                printf "%s  \"source\": \"npm:gentle-pi\",\n", indent
+                printf "%s  \"extensions\": [\n", indent
+                printf "%s    \"-extensions/quiet-tools.ts\",\n", indent
+                printf "%s    \"-extensions/pi-pretty.ts\"\n", indent
+                printf "%s  ]\n", indent
+                printf "%s}%s\n", indent, comma
+                next
+            }
+            { print }
+            END { exit (hits == 1 ? 0 : 1) }
+        ' "${settings}" > "${tmp}" \
+        && node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "${tmp}" 2>/dev/null; then
+        staged=1
+    fi
+    if (( staged == 0 )); then
+        rm -f -- "${tmp}"
+        log_event "WARN" "gentle-ai" "quiet_tools_conflict_unrepaired" \
+            "${shadow} re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; ${settings} is unchanged, replace the gentle-pi entry with the JSON below" 0 \
+            "expected=${remediation};settings=${settings}"
+        return 0
+    fi
+    if ! mv -- "${tmp}" "${settings}"; then
+        rm -f -- "${tmp}"
+        log_event "ERROR" "gentle-ai" "quiet_tools_conflict_unrepaired" \
+            "Could not replace ${settings} with the repaired copy; pi keeps aborting at startup until gentle-pi excludes -extensions/quiet-tools.ts and -extensions/pi-pretty.ts" 1 \
+            "settings=${settings}"
+        return 1
+    fi
+    log_event "INFO" "gentle-ai" "quiet_tools_conflict_repaired" \
+        "${shadow} re-registers one of the built-in tool names gentle-pi's quiet tools own; gentle-pi now loads with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded, so pi starts" 0 \
+        "settings=${settings}"
 }
 
 # Reinstates the Gentle AI ecosystem configurator. `gentle-ai install` is the
@@ -2254,7 +2367,7 @@ mod_gentle_ai() {
         fi
     fi
 
-    handle_quiet_tools_conflict
+    handle_quiet_tools_conflict || return 1
 
     log_event "INFO" "gentle-ai" "next_steps" "gentle-ai post-install hints" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
