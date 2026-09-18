@@ -102,6 +102,19 @@ pi install npm:@piewf/herdr    # estensione pi per l'integrazione con Herdr
 - **`@piewf/herdr`** è l'**estensione pi** (Pi extension) che collega i workflow a Herdr.
   Attenzione: è **diversa** dal binario Herdr del terminale (vedi §4).
 
+> **`setup-ai` non li installa.** Il modulo `pi-workflows` installa solo
+> `pi-extensible-workflows` (release pubblicata + eventuale build locale patchata):
+> i due `@piewf/*` non sono prerequisiti — `@piewf/cli` è solo diagnostica e
+> `@piewf/herdr` resta inerte fuori dai pane gestiti da Herdr — quindi restano
+> opt-in e non vengono aggiunti come pacchetti versionati extra. Lo stato atteso è
+> `pi-extensible-workflows` registrato in `~/.pi/agent/settings.json` senza i
+> `@piewf/*`; l'assenza dei due non è un errore di installazione.
+>
+> Per abilitarli, aggiungi `npm:@piewf/cli` e/o `npm:@piewf/herdr` al manifest
+> `pi-packages.txt` (vedi `pi-packages.example.txt`): il modulo `pi-packages` li
+> installa e li verifica rileggendo `~/.pi/agent/settings.json`. In alternativa,
+> usa i due comandi `pi install` qui sopra. Nessuno dei due serve per `/workflow`.
+
 **English**
 
 Two optional packages extend workflows. Both install as pi extensions:
@@ -115,6 +128,20 @@ pi install npm:@piewf/herdr    # pi extension for Herdr integration
   check) and `piewf inspect` (inspect workflows/runs). Handy for troubleshooting.
 - **`@piewf/herdr`** is the **pi extension** that wires workflows to Herdr. Note: it is
   **not** the same thing as the Herdr terminal binary (see §4).
+
+> **`setup-ai` does not install them.** The `pi-workflows` module installs only
+> `pi-extensible-workflows` (published release + optional patched local build): the two
+> `@piewf/*` packages are not prerequisites — `@piewf/cli` is diagnostics only and
+> `@piewf/herdr` stays inert outside Herdr-managed panes — so they remain opt-in and
+> are not added as extra versioned packages. The expected state is
+> `pi-extensible-workflows` registered in `~/.pi/agent/settings.json` without the
+> `@piewf/*` entries; their absence is not an install error.
+>
+> To enable them, add `npm:@piewf/cli` and/or `npm:@piewf/herdr` to your
+> `pi-packages.txt` manifest (see `pi-packages.example.txt`): the `pi-packages` module
+> installs them and verifies each by reading `~/.pi/agent/settings.json` back.
+> Alternatively, use the two `pi install` commands above. Neither is needed for
+> `/workflow`.
 
 ---
 
