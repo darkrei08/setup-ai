@@ -5,6 +5,37 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.0] - 2026-09-18
+
+### Added
+
+- `--dry-run`: reports the whole plan and installs nothing. Mutations routed through the command choke points plus every direct file writer report `would run` / `would do`, no sudo or secret prompt is reached, and the run ends with an explicit `nothing was installed, nothing was written` summary.
+- `--uninstall [--yes] [--purge] [--only <csv>]`: one declared catalog of what the suite owns, with one generic remover per item kind instead of a function per module. `--yes` is required, destructive entries additionally need `--purge`, and `~/.pi/agent` (including `auth.json` and `sessions/`) is refused by a guard that compares both the literal and the resolved path.
+- A Pi startup acceptance check: after the gentle-ai repair the installer runs `PI_OFFLINE=1 pi </dev/null` under a bounded timeout and fails the module with the first diagnostic when pi cannot load its extensions, instead of reporting success on a machine where `pi` aborts.
+- `tests/pi-startup-check.sh`, the acceptance harness for that check (11 checks, no model call, no network), and `bin/check-workflow-retry-marker.mjs`, which fails when the retry-marker assertion or its call site is dropped.
+
+### Fixed
+
+- The installer no longer persists `GENTLE_PI_QUIET_TOOLS=0`, and it repairs the `npm:gentle-pi` entry into the object form excluding `-extensions/quiet-tools.ts` and `-extensions/pi-pretty.ts`. Both registrants collide with `npm:pi-tool-display` on the built-in tool names, and pi aborts with `Tool "read" conflicts`.
+- The effective Pi config directory is resolved from `PI_CODING_AGENT_DIR` in every consumer instead of being rebuilt from `$HOME`: two PowerShell sites verified a directory the installer never created, and `$SkillAgentRoots`/`$piSettings` now follow the same resolution as the Bash siblings.
+- The rotator module refuses to install `tuxevil-rotator` below Node 20 in **both** shells, instead of installing a gateway that crashes at startup with `ReferenceError: File is not defined` and reporting success.
+- `base` no longer requests `github-cli` when another package already provides `gh`.
+- `skills` and `ee` report the shared skills root at INFO for codex, instead of one `skill_not_copied_to_agent_root` WARN per agent and skill.
+- Documented how to read the install log and the real live Pi config path, `~/.pi/agent/settings.json`, including the leftover symlink claim the README still carried.
+
+### Changed
+
+- The local patched workflow build is gone. The published `pi-extensible-workflows` already ships the transient-rename retry, so the module installs the published release and asserts the `renameWithRetry` marker against the loaded artifact, with a WARN plus remedy when it is missing. A local build from a checkout could not produce a better artifact than the published release.
+- `--list`, the Windows refusal for the lifecycle flags, and the launcher are documented and keep all four version locations and the module registries in step.
+
+### Removed
+
+- `PI_WORKFLOWS_SOURCE_DIR`, `PI_WORKFLOWS_FIX_REF` (its default ref existed on no remote), `PI_WORKFLOWS_REMOTE`, `install_patched_pi_workflows`/`Install-PatchedPiWorkflows`, their rollback helpers, the Git-Bash relay bridge and the now-callerless modes of `assert_pi_package_registered`/`Assert-PiPackageRegistered`.
+
+### Known
+
+- `-DryRun` and `-Uninstall` are refused on Windows with exit 2 rather than silently doing nothing; the Windows implementation is still to be written.
+
 ## [3.5.2] - 2026-09-15
 
 ### Fixed
