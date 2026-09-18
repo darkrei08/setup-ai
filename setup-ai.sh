@@ -44,6 +44,8 @@ JSONL_LOG="${LOG_DIR}/setup_${RUN_ID}.jsonl"
 REPORT_FILE="${LOG_DIR}/engineering-report_${RUN_ID}.md"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
+PI_STARTUP_PID=""
+PI_STARTUP_WATCHDOG_PID=""
 
 export RUN_ID
 
@@ -115,7 +117,29 @@ PI_WORKFLOWS_REMOTE="${PI_WORKFLOWS_REMOTE:-https://github.com/vekexasia/pi-exte
 # Cleanup
 # ------------------------------------------------------------------------------
 
+terminate_pi_startup_process_group() {
+    local pid="${PI_STARTUP_PID:-}"
+    [[ -n "${pid}" ]] || return 0
+    if kill -TERM -- "-${pid}" 2>/dev/null; then :; else
+        if kill -TERM "${pid}" 2>/dev/null; then :; fi
+    fi
+    sleep 1
+    if kill -KILL -- "-${pid}" 2>/dev/null; then :; else
+        if kill -KILL "${pid}" 2>/dev/null; then :; fi
+    fi
+}
+
 cleanup() {
+    if [[ -n "${PI_STARTUP_WATCHDOG_PID:-}" ]]; then
+        if kill -TERM "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+        if wait "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+        PI_STARTUP_WATCHDOG_PID=""
+    fi
+    if [[ -n "${PI_STARTUP_PID:-}" ]]; then
+        terminate_pi_startup_process_group
+        if wait "${PI_STARTUP_PID}" 2>/dev/null; then :; fi
+        PI_STARTUP_PID=""
+    fi
     rm -rf -- "${TMP_DIR}"
 }
 
@@ -2303,8 +2327,103 @@ handle_quiet_tools_conflict() {
         return 1
     fi
     log_event "INFO" "gentle-ai" "quiet_tools_conflict_repaired" \
-        "${shadow} re-registers one of the built-in tool names gentle-pi's quiet tools own; gentle-pi now loads with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded, so pi starts" 0 \
+        "${shadow} re-registers one of the built-in tool names gentle-pi's quiet tools own; repair applied with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded" 0 \
         "settings=${settings}"
+}
+
+# Verify the real pi startup path after the quiet-tools repair. PI_OFFLINE=1 and
+# stdin from /dev/null load extensions without a model call or network; measured
+# on pi 0.85.1 with pi-tool-display 0.5.0 and gentle-pi 3.2.1, the conflicting
+# settings exit 1 with a Tool "read" conflicts diagnostic and the repaired settings
+# exit 0 in about 12 seconds.
+verify_pi_startup() {
+    if ! command -v pi >/dev/null 2>&1; then
+        log_event "INFO" "gentle-ai" "pi_startup_skipped" \
+            "pi is not on PATH; startup verification skipped" 0
+        return 0
+    fi
+
+    local startup_timeout="${PI_STARTUP_TIMEOUT:-120}" output timeout_marker
+    if [[ ! "${startup_timeout}" =~ ^[1-9][0-9]*$ ]]; then
+        log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+            "PI_STARTUP_TIMEOUT must be a positive integer" 1 \
+            "timeout=${startup_timeout};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+    output="${TMP_DIR}/pi-startup-${RANDOM}.log"
+    timeout_marker="${output}.timeout"
+    if ! : > "${output}"; then
+        log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+            "Could not create the pi startup log" 1 \
+            "log=${output};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+
+    # A watchdog makes the wait bounded without requiring GNU timeout. The pi job
+    # gets its own process group, and the one-second grace period makes the measured
+    # upper bound PI_STARTUP_TIMEOUT + 1 second apart from command scheduling.
+    set -m
+    PI_OFFLINE=1 pi </dev/null >"${output}" 2>&1 &
+    PI_STARTUP_PID=$!
+    set +m
+    (
+        watchdog_sleep_pid=""
+        watchdog_cleanup() {
+            if [[ -n "${watchdog_sleep_pid}" ]]; then
+                if kill -TERM "${watchdog_sleep_pid}" 2>/dev/null; then :; fi
+                if wait "${watchdog_sleep_pid}" 2>/dev/null; then :; fi
+            fi
+            exit 0
+        }
+        trap 'watchdog_cleanup' HUP INT TERM
+        sleep "${startup_timeout}" &
+        watchdog_sleep_pid=$!
+        if wait "${watchdog_sleep_pid}"; then :; else exit 0; fi
+        if kill -0 "${PI_STARTUP_PID}" 2>/dev/null; then
+            if printf '%s\n' 'timed_out' > "${timeout_marker}"; then :; fi
+            terminate_pi_startup_process_group
+        fi
+    ) &
+    PI_STARTUP_WATCHDOG_PID=$!
+
+    local rc=0 timed_out=0 first_error=""
+    if wait "${PI_STARTUP_PID}"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [[ -f "${timeout_marker}" ]]; then timed_out=1; fi
+    if (( timed_out == 1 )); then
+        if wait "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+    else
+        if kill -TERM "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+        if wait "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+    fi
+    PI_STARTUP_WATCHDOG_PID=""
+    PI_STARTUP_PID=""
+
+    if ! cat "${output}" >> "${HUMAN_LOG}"; then
+        log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+            "Could not append the pi startup output to the human log" 1 \
+            "log=${output};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+    if first_error="$(grep -m 1 -E 'Error:|conflicts' "${output}" 2>/dev/null)"; then :; else
+        first_error="none"
+    fi
+    local result_rc="${rc}"
+    if (( timed_out == 1 )); then result_rc=124; fi
+    if (( result_rc == 0 )); then
+        log_event "INFO" "gentle-ai" "pi_startup_verified" \
+            "pi startup verified after the gentle-pi repair" 0 \
+            "log=${output};settings=${PI_AGENT_DIR}/settings.json"
+        return 0
+    fi
+    log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+        "pi startup verification failed" "${result_rc}" \
+        "diagnostic=${first_error};log=${HUMAN_LOG};settings=${PI_AGENT_DIR}/settings.json"
+    if (( result_rc == 124 )); then return 124; fi
+    return 1
 }
 
 # Reinstates the Gentle AI ecosystem configurator. `gentle-ai install` is the
@@ -2401,6 +2520,7 @@ mod_gentle_ai() {
     fi
 
     handle_quiet_tools_conflict || return 1
+    verify_pi_startup || return 1
 
     log_event "INFO" "gentle-ai" "next_steps" "gentle-ai post-install hints" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"

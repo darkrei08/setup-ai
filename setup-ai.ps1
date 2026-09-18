@@ -1790,7 +1790,91 @@ function Repair-QuietToolsConflict {
             }
         }
     }
-    Write-Log INFO "gentle-ai" "quiet_tools_conflict_repaired" "$shadow re-registers one of the built-in tool names gentle-pi's quiet tools own; gentle-pi now loads with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded, so pi starts" 0 "settings=$settings"
+    Write-Log INFO "gentle-ai" "quiet_tools_conflict_repaired" "$shadow re-registers one of the built-in tool names gentle-pi's quiet tools own; repair applied with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded" 0 "settings=$settings"
+}
+
+# Verify the real pi startup path after the quiet-tools repair. PI_OFFLINE=1 and
+# the job's non-interactive stdin load extensions without a model call or network;
+# measured on pi 0.85.1 with pi-tool-display 0.5.0 and gentle-pi 3.2.1, the
+# conflicting settings exit 1 and the repaired settings exit 0 in about 12 seconds.
+function Test-PiStartup {
+    $piCommand = @(Get-Command -Name pi -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($piCommand.Count -eq 0) {
+        Write-Log INFO "gentle-ai" "pi_startup_skipped" "pi is not on PATH; startup verification skipped"
+        return
+    }
+    $piPath = [string]$piCommand[0].Path
+
+    $timeoutText = if ($env:PI_STARTUP_TIMEOUT) { $env:PI_STARTUP_TIMEOUT } else { '120' }
+    [int]$timeoutSeconds = 0
+    if (-not [int]::TryParse($timeoutText, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$timeoutSeconds) -or $timeoutSeconds -le 0) {
+        Write-Log ERROR "gentle-ai" "pi_startup_failed" "PI_STARTUP_TIMEOUT must be a positive integer" 1 "timeout=$timeoutText;settings=$(Join-Path $PiAgentDir 'settings.json')"
+        throw "PI_STARTUP_TIMEOUT must be a positive integer"
+    }
+
+    $settings = Join-Path $PiAgentDir "settings.json"
+    $logPath = Join-Path ([System.IO.Path]::GetTempPath()) "setup-ai-pi-startup-$PID-$([guid]::NewGuid().ToString('N')).log"
+    $job = $null
+    $lines = @()
+    $returnCode = 1
+    try {
+        # Start-Job gives pi a non-interactive worker, but Windows cannot guarantee
+        # that Stop-Job kills native children pi spawned after the timeout.
+        $job = Start-Job -ArgumentList $piPath -ScriptBlock {
+            param([string]$PiPath)
+            $ErrorActionPreference = 'Continue'
+            $PSNativeCommandUseErrorActionPreference = $false
+            $env:PI_OFFLINE = '1'
+            try {
+                $captured = @(& $PiPath 2>&1 | ForEach-Object { [string]$_ })
+            } catch {
+                return [pscustomobject]@{
+                    Kind = 'pi-startup-result'
+                    ExitCode = 127
+                    Lines = @("pi startup launch failed: $($_.Exception.Message)")
+                }
+            }
+            $nativeExitCode = $LASTEXITCODE
+            if ($null -eq $nativeExitCode -or $nativeExitCode -isnot [int]) {
+                $captured += 'pi startup returned no known exit status'
+                $code = 127
+            } else {
+                $code = [int]$nativeExitCode
+            }
+            [pscustomobject]@{ Kind = 'pi-startup-result'; ExitCode = $code; Lines = $captured }
+        }
+        $completed = Wait-Job -Job $job -Timeout $timeoutSeconds
+        if ($null -eq $completed) {
+            $null = Stop-Job -Job $job -ErrorAction SilentlyContinue
+            $returnCode = 124
+            $lines = @("pi startup verification timed out after $timeoutSeconds seconds")
+        } else {
+            $received = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            $result = @($received | Where-Object { $_.Kind -eq 'pi-startup-result' } | Select-Object -First 1)
+            if ($result.Count -eq 0) {
+                $lines = @('pi startup job returned no result')
+                $returnCode = 1
+            } else {
+                $lines = @($result[0].Lines | ForEach-Object { [string]$_ })
+                $returnCode = [int]$result[0].ExitCode
+            }
+        }
+    } finally {
+        if ($null -ne $job) {
+            if ($job.State -eq 'Running') { $null = Stop-Job -Job $job -ErrorAction SilentlyContinue }
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    [System.IO.File]::WriteAllLines($logPath, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
+    $firstError = @($lines | Where-Object { $_ -match 'Error:|conflicts' } | Select-Object -First 1)
+    $diagnostic = if ($firstError.Count -gt 0) { [string]$firstError[0] } else { 'none' }
+    if ($returnCode -eq 0) {
+        Write-Log INFO "gentle-ai" "pi_startup_verified" "pi startup verified after the gentle-pi repair" 0 "log=$logPath;settings=$settings"
+        return
+    }
+    Write-Log ERROR "gentle-ai" "pi_startup_failed" "pi startup verification failed" $returnCode "diagnostic=$diagnostic;log=$logPath;settings=$settings"
+    throw "pi startup verification failed (return code $returnCode; first error line: $diagnostic; log: $logPath)"
 }
 
 # Reinstates the Gentle AI ecosystem configurator (sibling of mod_gentle_ai in
@@ -1863,6 +1947,7 @@ function Mod-GentleAi {
     }
 
     Repair-QuietToolsConflict
+    Test-PiStartup
 
     @"
   gentle-ai next steps (run yourself, per project):

@@ -27,6 +27,8 @@ npx @darkrei08/setup-ai --all                       # everything
 npx @darkrei08/setup-ai --verbose                   # core set, no prompts, with live command logs
 ```
 
+Startup acceptance check: `bash tests/pi-startup-check.sh`.
+
 Three details worth knowing:
 
 - **Use the npm package above.** `npx github:darkrei08/setup-ai` also works, but many npm setups block git fetches (`EALLOWGIT`); the published package avoids that. Run it from any folder except the repo's own source dir.
