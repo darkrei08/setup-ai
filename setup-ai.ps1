@@ -137,6 +137,10 @@ $SkillAgentRoots = @{
     codex = Join-Path $HOME ".codex\skills"
     opencode = Join-Path $HOME ".config\opencode\skills"
 }
+# Agents the skills CLI classifies as universal (`agents[type].skillsDir ==
+# ".agents/skills"`, skills 1.5.26): their --global install target IS the shared root
+# and they read it at user scope, so no copy under their own config dir is expected.
+$SkillSharedRootAgents = @('codex')
 # Candidate skill roots per agent: verification passes if SKILL.md exists in any
 # of them. The agent's own config dir comes first, and the shared ~/.agents/skills
 # root is accepted for every agent because upstream `skills add --global` installs
@@ -583,10 +587,15 @@ function Assert-SkillInstalledForAgents {
             throw "$Skill SKILL.md missing for targeted agent '$agent' (checked: $($checked -join ', '))"
         }
         # A skill found only under the shared root means upstream skipped the copy into
-        # this agent's own config dir: reported, never hidden, and never a failure.
+        # this agent's own config dir: reported, never hidden, and never a failure. An
+        # agent whose own install target is that shared root is reported at INFO.
         $ownRoot = if ($SkillAgentRoots.ContainsKey($agent)) { $SkillAgentRoots[$agent] } else { $null }
         if ($ownRoot -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $ownRoot $Skill) "SKILL.md"))) {
-            Write-Log WARN $Phase "skill_not_copied_to_agent_root" "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 "agent=$agent;skill=$Skill;shared=$(Join-Path $HOME '.agents\skills')"
+            if ($SkillSharedRootAgents -contains $agent) {
+                Write-Log INFO $Phase "skill_shared_root_only" "Skill is installed under the shared skills root, which is this agent's own install target" 0 "agent=$agent;skill=$Skill;shared=$(Join-Path $HOME '.agents\skills')"
+            } else {
+                Write-Log WARN $Phase "skill_not_copied_to_agent_root" "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 "agent=$agent;skill=$Skill;shared=$(Join-Path $HOME '.agents\skills')"
+            }
         }
     }
     Write-Log INFO $Phase "skill_verified" "$Skill verified for every targeted agent" 0 "agents=$($Agents -join ',')"

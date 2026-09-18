@@ -1782,15 +1782,23 @@ agent_skill_root() {
 # ${HOME}/.agents/skills root is accepted for every agent: upstream `skills add
 # --global` installs there and names it as the install target in its own summary,
 # copying into an agent's config dir only when it supports that agent. A shared root
-# must never hide a skipped copy, so verify_skill_for_agents warns per agent.
+# must never hide a skipped copy, so verify_skill_for_agents reports per agent.
 agent_skill_roots() {
     agent_skill_root "$1" || return 1
     printf '%s\n' "${HOME}/.agents/skills"
 }
 
+# Agents the skills CLI classifies as universal (`agents[type].skillsDir ==
+# ".agents/skills"`, skills 1.5.26): their --global install target IS the shared root
+# and they read it at user scope, so no copy under their own config dir is expected.
+agent_uses_shared_skill_root() {
+    [[ "$1" == "codex" ]]
+}
+
 # Prove a skill reached every targeted agent. Nothing under any candidate root fails;
 # a skill found only under the shared root passes with a WARN naming the agent whose
-# own config dir the CLI skipped.
+# own config dir the CLI skipped, or with an INFO when that shared root is the agent's
+# own install target.
 verify_skill_for_agents() {
     local phase="$1" skill="$2"; shift 2
     local agent root own_root found own checked
@@ -1821,9 +1829,15 @@ verify_skill_for_agents() {
             return 1
         fi
         if (( own == 0 )); then
-            log_event "WARN" "${phase}" "skill_not_copied_to_agent_root" \
-                "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 \
-                "agent=${agent};skill=${skill};shared=${HOME}/.agents/skills;expected=${own_root}/${skill}/SKILL.md"
+            if agent_uses_shared_skill_root "${agent}"; then
+                log_event "INFO" "${phase}" "skill_shared_root_only" \
+                    "Skill is installed under the shared skills root, which is this agent's own install target" 0 \
+                    "agent=${agent};skill=${skill};shared=${HOME}/.agents/skills"
+            else
+                log_event "WARN" "${phase}" "skill_not_copied_to_agent_root" \
+                    "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 \
+                    "agent=${agent};skill=${skill};shared=${HOME}/.agents/skills;expected=${own_root}/${skill}/SKILL.md"
+            fi
         fi
     done
     return 0
