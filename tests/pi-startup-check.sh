@@ -43,6 +43,9 @@ PI_AGENT_DIR="${TEST_DIR}/agent"
 PI_CODING_AGENT_DIR="${PI_AGENT_DIR}"
 export PI_CODING_AGENT_DIR
 PI_STARTUP_PID=""
+# The product functions read these process-wide globals; the harness owns them here
+# because it sources the functions in isolation instead of the whole installer.
+DRY_RUN=0
 PI_STARTUP_WATCHDOG_PID=""
 mkdir -p "${TMP_DIR}" "${PI_AGENT_DIR}" "${TEST_DIR}/home/.config/environment.d"
 : > "${HUMAN_LOG}"

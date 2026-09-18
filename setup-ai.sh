@@ -20,9 +20,11 @@
 #   ./setup-ai.sh --all           # every module (incl. optional GUI apps)
 #   ./setup-ai.sh --only pi,codex,opencode
 #   ./setup-ai.sh --yes           # never prompt: no interactive selectors
+#   ./setup-ai.sh --dry-run       # report the plan without writing or installing
 #   ./setup-ai.sh --list          # print modules and exit
 #   ./setup-ai.sh --help
 #   ./setup-ai.sh --verbose
+#   ./setup-ai.sh --uninstall [--yes] [--purge] [--only <csv>]
 # ==============================================================================
 
 set -Eeuo pipefail
@@ -31,7 +33,22 @@ IFS=$'\n\t'
 SCRIPT_VERSION="3.5.2"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
+DRY_RUN="${DRY_RUN:-0}"
+UNINSTALL=0
+UNINSTALL_YES=0
+UNINSTALL_PURGE=0
+UNINSTALL_INCLUDE_SHELL=0
+for arg in "$@"; do
+    case "${arg}" in
+        --dry-run) DRY_RUN=1 ;;
+    esac
+done
 LOG_DIR="${SCRIPT_DIR}/logs"
+if (( DRY_RUN == 1 )); then
+    LOG_DIR="${TMP_DIR}/logs"
+    export npm_config_cache="${TMP_DIR}/npm-cache"
+fi
 mkdir -p "${LOG_DIR}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -256,11 +273,13 @@ SELECTED_DISPLAY=""
 CURRENT_MODULE=""
 RUN_ACTIVE=0
 MODULES_OK=""
+DRY_RUN_PARTIAL=""
 MODULE_INDEX=0
 MODULE_TOTAL=0
 STEP_INSTALLED=0
 STEP_VERIFIED=0
 STEP_SKIPPED=0
+STEP_PLANNED=0
 STEP_FAILED=0
 STEP_FAIL_STEP=""
 STEP_FAIL_RC=0
@@ -285,6 +304,13 @@ record_step() {
         installed) STEP_INSTALLED=$(( STEP_INSTALLED + 1 )) ;;
         verified)  STEP_VERIFIED=$(( STEP_VERIFIED + 1 )) ;;
         skipped)   STEP_SKIPPED=$(( STEP_SKIPPED + 1 )); level="WARN" ;;
+        planned)
+            # Counted from a file, not a variable: most planned steps are recorded inside
+            # the per-module subshell of the dry-run walk, where a counter would be lost.
+            if (( DRY_RUN == 1 )); then
+                printf '1\n' >> "${TMP_DIR}/planned_steps"
+            fi
+            ;;
         failed)
             STEP_FAILED=$(( STEP_FAILED + 1 ))
             level="ERROR"
@@ -300,6 +326,13 @@ record_step() {
 # reports why it failed regardless of the path it left through.
 write_run_summary() {
     local rc="${1:-0}"
+    if (( DRY_RUN == 1 )) && [[ -f "${TMP_DIR}/planned_steps" ]]; then
+        local planned_steps=0 planned_entry
+        while IFS= read -r planned_entry; do
+            planned_steps=$(( planned_steps + 1 ))
+        done < "${TMP_DIR}/planned_steps"
+        STEP_PLANNED="${planned_steps}"
+    fi
     # `--list` and `--help` exit inside parse_args: they are queries, not runs.
     (( RUN_ACTIVE == 1 )) || return 0
     (( SUMMARY_WRITTEN == 1 )) && return 0
@@ -313,6 +346,8 @@ write_run_summary() {
     if (( RUN_INTERRUPTED == 1 )); then
         outcome="interrupted"
         level="ERROR"
+    elif (( DRY_RUN == 1 && rc == 0 )); then
+        outcome="dry-run"
     fi
 
     # A summary with a missing timestamp is worse than one that repeats the start time,
@@ -338,7 +373,8 @@ write_run_summary() {
     if (( ${#SELECTED_MODULES[@]} > 0 )); then
         module_names=("${SELECTED_MODULES[@]}")
     fi
-    if [[ "${outcome}" != "success" && -n "${CURRENT_MODULE}" ]] && ! is_selected "${CURRENT_MODULE}"; then
+    if [[ ( "${outcome}" == "failed" || "${outcome}" == "interrupted" ) && -n "${CURRENT_MODULE}" ]] \
+        && ! is_selected "${CURRENT_MODULE}"; then
         # A gate or the shell environment can fail outside any selected module.
         module_names+=("${CURRENT_MODULE}")
     fi
@@ -365,12 +401,12 @@ write_run_summary() {
         fi
         modules_json="${modules_json}${modules_json:+,}${entry}"
     done
-    report_lines+=("- Steps: ${STEP_INSTALLED} installed, ${STEP_VERIFIED} verified, ${STEP_SKIPPED} skipped, ${STEP_FAILED} failed")
+    report_lines+=("- Steps: ${STEP_INSTALLED} installed, ${STEP_VERIFIED} verified, ${STEP_SKIPPED} skipped, ${STEP_PLANNED} planned, ${STEP_FAILED} failed")
 
     local message="Run summary: outcome=${outcome};duration_seconds=${duration}"
     message="${message};modules_success=${m_success};modules_failed=${m_failed};modules_skipped=${m_skipped}"
     message="${message};steps_installed=${STEP_INSTALLED};steps_verified=${STEP_VERIFIED}"
-    message="${message};steps_skipped=${STEP_SKIPPED};steps_failed=${STEP_FAILED}"
+    message="${message};steps_skipped=${STEP_SKIPPED};steps_planned=${STEP_PLANNED};steps_failed=${STEP_FAILED}"
     if [[ "${outcome}" == "failed" ]]; then
         message="${message};failed_step=${failed_step};return_code=${failed_rc}"
     fi
@@ -388,16 +424,16 @@ write_run_summary() {
     printf '%s\n' "${report_lines[@]}" >> "${REPORT_FILE}"
 
     log_event "${level}" "bootstrap" "run_summary" "${message}" "${rc}" "" \
-        "$(printf '{"run_id":"%s","outcome":"%s","started_at":"%s","ended_at":"%s","duration_seconds":%s,"modules":[%s],"steps":{"installed":%s,"verified":%s,"skipped":%s,"failed":%s}}' \
+        "$(printf '{"run_id":"%s","outcome":"%s","started_at":"%s","ended_at":"%s","duration_seconds":%s,"modules":[%s],"steps":{"installed":%s,"verified":%s,"skipped":%s,"planned":%s,"failed":%s}}' \
             "$(json_escape "${RUN_ID}")" "${outcome}" "${RUN_STARTED_AT}" "${ended_at}" \
             "${duration}" "${modules_json}" "${STEP_INSTALLED}" "${STEP_VERIFIED}" \
-            "${STEP_SKIPPED}" "${STEP_FAILED}")"
+            "${STEP_SKIPPED}" "${STEP_PLANNED}" "${STEP_FAILED}")"
 }
 
 on_exit() {
     local rc="${1:-0}"
-    cleanup
     write_run_summary "${rc}"
+    cleanup
 }
 
 # ------------------------------------------------------------------------------
@@ -445,6 +481,15 @@ section() {
 require_command() {
     local command="$1"
     if ! command -v "${command}" >/dev/null 2>&1; then
+        # A dry run plans a run that has not happened yet, so a command an earlier
+        # step would install is not a failure: report it and let the module reach the
+        # commands that make up the plan. Nothing runs, so this cannot hide a break.
+        if (( DRY_RUN == 1 )); then
+            log_event "INFO" "preflight" "dry_run_command_missing" \
+                "Command not installed yet; the plan assumes an earlier step provides it (dry run)" 0 \
+                "command=${command}"
+            return 0
+        fi
         log_event "ERROR" "preflight" "missing_command" "Required command not found: ${command}" 127
         return 127
     fi
@@ -469,6 +514,12 @@ run_cmd() {
     local start_event="command_start" finish_event="command_success" fail_event="command_failed"
     local start_message="Executing command" finish_message="Command completed"
     local fail_message="Command returned non-zero status" level="ERROR" status="failed" ok_status="installed"
+    if (( DRY_RUN == 1 )); then
+        log_event "INFO" "${phase}" "dry_run_command" "Command not run (dry run)" 0 "${display}"
+        printf '  \033[1;35m[dry-run] would run: %s\033[0m\n' "${display}"
+        record_step "${phase}" "planned" 0 "${display}"
+        return 0
+    fi
     if (( verify == 1 )); then
         ok_status="verified"
     fi
@@ -515,6 +566,15 @@ run_cmd() {
     log_event "${level}" "${phase}" "${fail_event}" "${fail_message}" "${rc}" "${display}"
     record_step "${phase}" "${status}" "${rc}" "${display}"
     return "${rc}"
+}
+
+# An effect the command choke points cannot see: a file a module creates or edits
+# directly, or an action it takes on its own. In --dry-run it is reported, never
+# performed: a dry run that writes is a lie, so every direct effect goes through
+# this one guard.
+dry_run_note() {
+    log_event "INFO" "${1:-bootstrap}" "dry_run_note" "Not performed (dry run)" 0 "${2:-}"
+    printf '  \033[1;35m[dry-run] would do: %s\033[0m\n' "${2:-}"
 }
 
 # Run a command whose failure the run ignores: the status is deliberately dropped (this
@@ -817,6 +877,10 @@ ensure_npm_remote_sources() {
     local dir="$1" phase="pi-npm"
     local npmrc="${dir}/.npmrc"
 
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "${phase}" "${dir}/.npmrc + ${dir}/package.json"
+        return 0
+    fi
     mkdir -p "${dir}"
     # Mark the directory as an npm project root, so this helper can never make npm
     # walk up into an ancestor project.
@@ -926,6 +990,10 @@ approve_npm_install_scripts() {
     local dir="$1" phase="${2:-pi-npm}"
     local pkg_json="${dir}/package.json"
 
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "${phase}" "${dir}/node_modules (npm install-scripts approval)"
+        return 0
+    fi
     # No project here means no pi package was ever installed into this root.
     if [[ ! -f "${pkg_json}" ]]; then
         return 0
@@ -1067,6 +1135,15 @@ pi_package_id() {
 assert_pi_package_registered() {
     local phase="$1" spec="$2"
     local settings="${PI_AGENT_DIR}/settings.json"
+
+    # A read-back that proves `pi install` recorded the package. In a dry run that
+    # install never ran, so the check is reported instead of ending the module's plan.
+    if (( DRY_RUN == 1 )); then
+        log_event "INFO" "${phase}" "dry_run_skipped" \
+            "pi package read-back needs an installed state; a dry run does not verify it" 0 \
+            "spec=${spec};expectation=${expectation}"
+        return 0
+    fi
 
     if [[ ! -f "${settings}" ]]; then
         log_event "ERROR" "${phase}" "settings_missing" \
@@ -1219,6 +1296,9 @@ mod_node() {
     # It is only needed by nvm's own shims, so drop it for this process.
     unset npm_config_prefix NPM_CONFIG_PREFIX 2>/dev/null || log_event "WARN" "node" "unset_prefix_failed" "Could not unset npm prefix vars" 0
 
+    # The one deliberate dry-run exception: sourcing nvm's bootstrap is not a mutation
+    # and keeps the runtime on PATH for version probes; no nvm command runs because they
+    # all go through guarded run_cmd.
     # shellcheck disable=SC1090
     source "${NVM_DIR}/nvm.sh"
 
@@ -1302,6 +1382,10 @@ mod_pi() {
         log_event "WARN" "pi" "version_unavailable" "Could not read pi --version" 0
     fi
     log_event "INFO" "pi" "cli_ready" "Pi CLI detected" 0 "version=${PI_VERSION}"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "pi" "${PI_AGENT_DIR} + ${PI_EXTENSIONS_DIR} + ${PI_NPM_DIR} + ${PI_AGENT_DIR}/skills"
+        return 0
+    fi
     mkdir -p "${PI_AGENT_DIR}" "${PI_EXTENSIONS_DIR}" "${PI_NPM_DIR}" "${PI_AGENT_DIR}/skills"
 
     # pi's managed npm root is where `pi install` and `pi update --extensions` land.
@@ -1344,6 +1428,11 @@ mod_dotenv() {
         return
     fi
 
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "dotenv" \
+            "$(dirname -- "${DOTENV_DIR}") + git clone ${DOTENV_REPO} ${DOTENV_DIR} + bash ${DOTENV_DIR}/setup_env.sh (plus its in-place reference patches)"
+        return 0
+    fi
     mkdir -p "$(dirname -- "${DOTENV_DIR}")"
     if [[ ! -d "${DOTENV_DIR}/.git" ]]; then
         run_cmd "dotenv" git clone -- "${DOTENV_REPO}" "${DOTENV_DIR}"
@@ -1497,6 +1586,15 @@ agent_uses_shared_skill_root() {
 # own install target.
 verify_skill_for_agents() {
     local phase="$1" skill="$2"; shift 2
+    # This proves an installed state, which a dry run does not have. Report it and let
+    # the module reach the rest of its plan instead of claiming a verification it did
+    # not perform.
+    if (( DRY_RUN == 1 )); then
+        log_event "INFO" "${phase}" "dry_run_skipped" \
+            "Skill verification needs an installed state; a dry run does not verify it" 0 \
+            "skill=${skill};agents=$*"
+        return 0
+    fi
     local agent root own_root found own checked
     for agent in "$@"; do
         found=0
@@ -1650,15 +1748,20 @@ mod_pi_workflows() {
         return 1
     fi
 
-    mkdir -p "${PI_EXTENSIONS_DIR}"
-    pushd "${PI_EXTENSIONS_DIR}" >/dev/null
-    # Append-only, so the npm 12 remote-source opt-in written above survives.
-    if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
-        printf '%s\n' 'ignore-scripts=false' >> .npmrc
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "pi-workflows" "${PI_EXTENSIONS_DIR}"
+        dry_run_note "pi-workflows" "${PI_EXTENSIONS_DIR}/.npmrc: ignore-scripts=false"
+    else
+        mkdir -p "${PI_EXTENSIONS_DIR}"
+        pushd "${PI_EXTENSIONS_DIR}" >/dev/null
+        # Append-only, so the npm 12 remote-source opt-in written above survives.
+        if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
+            printf '%s\n' 'ignore-scripts=false' >> .npmrc
+        fi
     fi
     run_cmd "pi-workflows-node" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
         "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
-    popd >/dev/null
+    (( DRY_RUN == 1 )) || popd >/dev/null
 
     # Verify the version that actually landed in THIS directory by reading its
     # local package.json directly. Do NOT use require.resolve here: it ascends
@@ -1682,15 +1785,19 @@ mod_pi_workflows() {
     fi
 
     if [[ -d "${DOTENV_EXT_DIR}" ]]; then
-        pushd "${DOTENV_EXT_DIR}" >/dev/null
-        # Same npm 12 opt-in for this install root; this also creates the package marker.
-        ensure_npm_remote_sources "${DOTENV_EXT_DIR}"
-        if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
-            printf '%s\n' 'ignore-scripts=false' >> .npmrc
+        if (( DRY_RUN == 1 )); then
+            dry_run_note "dotenv-workflows" "${DOTENV_EXT_DIR} + ${DOTENV_EXT_DIR}/.npmrc: ignore-scripts=false"
+        else
+            pushd "${DOTENV_EXT_DIR}" >/dev/null
+            # Same npm 12 opt-in for this install root; this also creates the package marker.
+            ensure_npm_remote_sources "${DOTENV_EXT_DIR}"
+            if [[ ! -f .npmrc ]] || ! grep -qxF 'ignore-scripts=false' .npmrc; then
+                printf '%s\n' 'ignore-scripts=false' >> .npmrc
+            fi
         fi
         run_cmd "dotenv-workflows" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
             "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
-        popd >/dev/null
+        (( DRY_RUN == 1 )) || popd >/dev/null
 
         local dotenv_workflow_pkg="${DOTENV_EXT_DIR}/node_modules/pi-extensible-workflows/package.json"
         if [[ ! -f "${dotenv_workflow_pkg}" ]]; then
@@ -1847,6 +1954,10 @@ remove_line_from_file() {
 # this installer wrote, unconditionally: a machine can carry them with no
 # shadowing package left. Anything else in those files belongs to the user.
 remove_stale_quiet_tools_switch() {
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "gentle-ai" "remove each stale GENTLE_PI_QUIET_TOOLS=0 line from ~/.bashrc, ~/.zshrc, ~/.profile and ~/.config/environment.d/50-gentle-pi.conf"
+        return 0
+    fi
     local changed=() failed=() candidate remove_rc
     for candidate in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
         if remove_line_from_file "${candidate}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
@@ -2119,10 +2230,14 @@ mod_gentle_ai() {
 
     # Verify the CLI is present (a binary, not an npm tree - command -v + --version
     # is the correct check). Required for both the selector and the pi harness.
-    command -v gentle-ai >/dev/null 2>&1 || {
+    if ! command -v gentle-ai >/dev/null 2>&1; then
+        if (( DRY_RUN == 1 )); then
+            dry_run_note "gentle-ai" "gentle-ai install (the CLI is not installed yet)"
+            return 0
+        fi
         log_event "ERROR" "gentle-ai" "binary_missing" "gentle-ai CLI not found on PATH after install" 1
         return 1
-    }
+    fi
     run_cmd "gentle-ai" --verify gentle-ai --version
 
     # Detect the agents/IDEs present on this machine (same mapping as mod_ee).
@@ -2139,10 +2254,14 @@ mod_gentle_ai() {
     # otherwise we run it non-interactively over the detected agents so CI/pipes
     # never hang. A failure fails the module (no silent downgrade).
     if [[ -t 0 && -t 1 && "${NONINTERACTIVE}" -eq 0 ]]; then
-        log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
-        if ! gentle-ai install --scope global; then
-            log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
-            return 1
+        if (( DRY_RUN == 1 )); then
+            dry_run_note "gentle-ai" "gentle-ai install --scope global"
+        else
+            log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
+            if ! gentle-ai install --scope global; then
+                log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
+                return 1
+            fi
         fi
     else
         local agents_csv; agents_csv="$(IFS=,; printf '%s' "${detected_agents[*]}")"
@@ -2239,12 +2358,20 @@ mod_antigravity() {
 # instead of assuming, and name OPENCODE_PI_BIN when it does not resolve.
 opencode_spawn_ok() {
     local bin="$1"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "opencode" "spawn ${bin} --version"
+        return 0
+    fi
     OPENCODE_PI_SPAWN_PROBE="${bin}" node -e \
         'const {spawnSync}=require("node:child_process");const r=spawnSync(process.env.OPENCODE_PI_SPAWN_PROBE||"opencode",["--version"],{stdio:"ignore"});process.exit(!r.error&&r.status===0?0:1)' \
         >/dev/null 2>&1
 }
 
 verify_opencode_spawn() {
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "opencode" "node spawnSync ${OPENCODE_PI_BIN:-opencode} --version"
+        return 0
+    fi
     if ! command -v node >/dev/null 2>&1; then
         log_event "WARN" "opencode" "spawn_unverified" "node not found; cannot verify the opencode-pi spawn path" 0
         return 0
@@ -2372,7 +2499,11 @@ mod_cockpit() {
         zypper)  run_optional "cockpit" sudo zypper --non-interactive install "${installer}" ;;
         *)
             local dest="${HOME}/.local/bin/cockpit-tools.AppImage"
-            mkdir -p "${HOME}/.local/bin"
+            if (( DRY_RUN == 1 )); then
+                dry_run_note "cockpit" "${HOME}/.local/bin"
+            else
+                mkdir -p "${HOME}/.local/bin"
+            fi
             run_optional "cockpit" install -Dm755 "${installer}" "${dest}"
             log_event "INFO" "cockpit" "appimage_installed" "AppImage placed" 0 "path=${dest}"
             ;;
@@ -2406,6 +2537,10 @@ ensure_rotator_unit() {
         return 0
     fi
     bin_path="$(command -v tuxevil-rotator)"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "rotator" "${unit_dir} + ${unit}"
+        return 0
+    fi
     mkdir -p "${unit_dir}"
     # Rewritten on every run so a moved binary or a stale unit converges here.
     cat >"${unit}" <<UNIT
@@ -2438,6 +2573,10 @@ UNIT
 # from this installer instead.
 start_rotator_gateway() {
     local log_file="$1"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "rotator" "start tuxevil-rotator gateway"
+        return 0
+    fi
 
     # A unit that exhausted its start limit stays failed and refuses every later start
     # until that rate-limit state is cleared, so clear it before asking again. A machine
@@ -2534,19 +2673,23 @@ mod_rotator() {
     if (( gw_up == 0 )); then
         local gw_log="${LOG_DIR}/rotator-gateway.log" attempt
         start_rotator_gateway "${gw_log}"
-        for (( attempt = 1; attempt <= 20; attempt++ )); do
-            if body="$(curl -fsS -m 2 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then
-                count="$(printf '%s' "${body}" | awk '{c+=gsub(/"id"/,"&")} END{print c+0}')"
-                gw_up=1
-                log_event "INFO" "rotator" "gateway_started" \
-                    "tuxevil-rotator answered after the background start" 0 "url=${gw};models=${count}"
-                break
+        if (( DRY_RUN == 1 )); then
+            log_event "INFO" "rotator" "dry_run_skipped" "Skipped gateway wait; the gateway was not started" 0
+        else
+            for (( attempt = 1; attempt <= 20; attempt++ )); do
+                if body="$(curl -fsS -m 2 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then
+                    count="$(printf '%s' "${body}" | awk '{c+=gsub(/"id"/,"&")} END{print c+0}')"
+                    gw_up=1
+                    log_event "INFO" "rotator" "gateway_started" \
+                        "tuxevil-rotator answered after the background start" 0 "url=${gw};models=${count}"
+                    break
+                fi
+                sleep 0.5
+            done
+            if (( gw_up == 0 )); then
+                log_event "WARN" "rotator" "gateway_start_failed" \
+                    "tuxevil-rotator did not answer within 10s; run 'tuxevil-rotator login', then check 'systemctl --user status tuxevil-rotator' or ${gw_log}" 0 "url=${gw}"
             fi
-            sleep 0.5
-        done
-        if (( gw_up == 0 )); then
-            log_event "WARN" "rotator" "gateway_start_failed" \
-                "tuxevil-rotator did not answer within 10s; run 'tuxevil-rotator login', then check 'systemctl --user status tuxevil-rotator' or ${gw_log}" 0 "url=${gw}"
         fi
     fi
     if command -v pi >/dev/null 2>&1; then
@@ -2584,6 +2727,17 @@ HINT
 # Shell environment
 # ==============================================================================
 
+SHELL_ENV_BLOCK='# ==========================================
+# AI Dev Toolsuite Environment
+# ==========================================
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
+export BUN_INSTALL="$HOME/.bun"
+export GOPATH="$HOME/go"
+
+export PATH="$BUN_INSTALL/bin:$HOME/.pi/bin:$HOME/.local/bin:$GOPATH/bin:$HOME/.cargo/bin:$PATH"'
+
 configure_shell_env() {
     CURRENT_MODULE="shell"
     section "Shell environment"
@@ -2593,19 +2747,11 @@ configure_shell_env() {
 
     local marker="# AI Dev Toolsuite Environment"
     if ! grep -Fq "${marker}" "${shell_config}" 2>/dev/null; then
-        cat >> "${shell_config}" <<'EOF'
-
-# ==========================================
-# AI Dev Toolsuite Environment
-# ==========================================
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-
-export BUN_INSTALL="$HOME/.bun"
-export GOPATH="$HOME/go"
-
-export PATH="$BUN_INSTALL/bin:$HOME/.pi/bin:$HOME/.local/bin:$GOPATH/bin:$HOME/.cargo/bin:$PATH"
-EOF
+        if (( DRY_RUN == 1 )); then
+            dry_run_note "shell" "${shell_config}"
+        else
+            printf '\n%s\n' "${SHELL_ENV_BLOCK}" >> "${shell_config}"
+        fi
         log_event "INFO" "shell" "environment_added" "Shell env added" 0 "file=${shell_config}"
     else
         log_event "INFO" "shell" "environment_exists" "Shell env already present" 0 "file=${shell_config}"
@@ -2617,6 +2763,10 @@ EOF
 # ==============================================================================
 
 quality_gates() {
+    if (( DRY_RUN == 1 )); then
+        log_event "INFO" "quality" "dry_run_skipped" "Quality gates verify an installed state; a dry run installs nothing" 0
+        return 0
+    fi
     CURRENT_MODULE="quality"
     section "Quality gates"
     run_cmd "quality" --verify bash -n "${BASH_SOURCE[0]}"
@@ -2697,6 +2847,431 @@ quality_gates() {
 }
 
 # ==============================================================================
+# Uninstall catalog and removers
+# ==============================================================================
+
+uninstall_path_in_home() {
+    local path="$1"
+    if [[ "${HOME}" == "/" ]]; then
+        [[ "${path}" == /* ]]
+    else
+        [[ "${path}" == "${HOME}" || "${path}" == "${HOME}/"* ]]
+    fi
+}
+
+uninstall_protected() {
+    local target="$1" candidate dir resolved
+    # Both the literal and the resolved form on both sides: ~/.pi/agent can itself be a
+    # symlink (an older dotenv made it one), and a comparison that only resolves would
+    # miss the literal target this guard exists to refuse, while one that only compares
+    # literally would miss a catalog entry that reaches the same directory through a link.
+    local -a targets=("${target}")
+    local -a dirs=("${PI_AGENT_DIR}")
+    if resolved="$(uninstall_resolve_link "${target}" 2>/dev/null)"; then
+        targets+=("${resolved}")
+    fi
+    if resolved="$(uninstall_resolve_link "${PI_AGENT_DIR}" 2>/dev/null)"; then
+        dirs+=("${resolved}")
+    fi
+    for dir in "${dirs[@]}"; do
+        for candidate in "${dir}" "${dir}/auth.json" "${dir}/sessions"; do
+            for target in "${targets[@]}"; do
+                if [[ "${target}" == "${candidate}" || "${candidate}" == "${target}/"* ]]; then
+                    log_event "ERROR" "uninstall" "protected_target" \
+                        "Refusing to remove a protected pi path" 1 "target=${target};protected=${candidate}"
+                    printf 'ERROR: refusing protected uninstall target: %s\n' "${target}" >&2
+                    return 1
+                fi
+            done
+        done
+    done
+}
+
+uninstall_resolve_link() {
+    local target="$1" resolved
+    if resolved="$(readlink -f -- "${target}" 2>/dev/null)"; then
+        printf '%s\n' "${resolved}"
+        return 0
+    fi
+    if resolved="$(realpath "${target}" 2>/dev/null)"; then
+        printf '%s\n' "${resolved}"
+        return 0
+    fi
+    if command -v python3 >/dev/null 2>&1 \
+        && resolved="$(python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "${target}" 2>/dev/null)"; then
+        printf '%s\n' "${resolved}"
+        return 0
+    fi
+    return 1
+}
+
+# The uninstall's generic removers reuse remove_line_from_file above: one
+# implementation, one contract (0 removed, 1 nothing to remove, 2 could not
+# rewrite), and its symlink guard and same-filesystem swap apply here too.
+
+# One catalog only: every line has kind|module|target|flags|detail.
+uninstall_catalog() {
+    printf 'path|node|%s|d|\n' "${HOME}/.nvm"
+    printf 'path|node|/usr/local/bin/node|-|\n'
+    printf 'path|node|/usr/local/bin/npm|-|\n'
+    printf 'path|bun|%s|d|\n' "${HOME}/.bun"
+    printf 'path|pi|%s|-|\n' "${HOME}/.pi/bin/pi"
+    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/npm"
+    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/node_modules"
+    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/package.json"
+    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/.npmrc"
+    printf 'pi-package|pi-workflows|npm:pi-extensible-workflows|-|\n'
+    printf 'pi-package|gentle-ai|npm:gentle-pi|-|\n'
+    printf 'pi-package|gentle-ai|npm:pi-mcp-adapter|-|\n'
+    printf 'shell-rc-line|gentle-ai|export GENTLE_PI_QUIET_TOOLS=0|-|\n'
+    printf 'env-file-line|gentle-ai|%s|-|GENTLE_PI_QUIET_TOOLS=0\n' \
+        "${HOME}/.config/environment.d/50-gentle-pi.conf"
+    printf 'pi-package|rotator|git:github.com/darkrei08/pi-cockpit-tools-sync|-|\n'
+    printf 'npm-global|rotator|tuxevil-rotator|-|\n'
+    printf 'systemd-unit|rotator|tuxevil-rotator.service|-|\n'
+    printf 'path|rotator|%s|d|\n' "${HOME}/.tuxevil-rotator"
+    printf 'appimage|cockpit|%s|-|\n' "${HOME}/.local/bin/cockpit-tools.AppImage"
+    printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
+
+    local agent root skill
+    for skill in "${UPSTREAM_SKILL_NAMES[@]}"; do
+        for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+            root="$(agent_skill_root "${agent}")"
+            printf 'path|skills|%s/%s|-|\n' "${root}" "${skill}"
+        done
+        printf 'path|skills|%s/%s|-|\n' "${HOME}/.agents/skills" "${skill}"
+    done
+    skill="${ENGINEERING_EXCELLENCE_SKILL}"
+    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+        root="$(agent_skill_root "${agent}")"
+        printf 'path|ee|%s/%s|-|\n' "${root}" "${skill}"
+    done
+    printf 'path|ee|%s/%s|-|\n' "${HOME}/.agents/skills" "${skill}"
+
+    local manifest line
+    if manifest="$(pi_packages_manifest)"; then
+        while IFS= read -r line || [[ -n "${line}" ]]; do
+            line="${line%%#*}"
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            [[ -z "${line}" ]] && continue
+            [[ "$(pi_package_id "${line}")" == "$(pi_package_id 'npm:pi-extensible-workflows')" ]] && continue
+            printf 'pi-package|pi-packages|%s|-|\n' "${line}"
+        done < "${manifest}"
+    fi
+
+    local shell_line
+    while IFS= read -r shell_line || [[ -n "${shell_line}" ]]; do
+        [[ -n "${shell_line}" ]] || continue
+        printf 'shell-rc-line|shell|%s|-|\n' "${shell_line}"
+    done <<< "${SHELL_ENV_BLOCK}"
+}
+
+uninstall_remove_path() {
+    local target="$1" flags="$2" resolved
+    uninstall_protected "${target}" || return 1
+    if [[ ! -e "${target}" && ! -L "${target}" ]]; then
+        printf 'skipped (not present): %s\n' "${target}"
+        return 0
+    fi
+    if [[ "${flags}" == "d" && "${UNINSTALL_PURGE}" != 1 ]]; then
+        printf 'skipped (destructive, needs --purge): %s\n' "${target}"
+        return 0
+    fi
+    if ! uninstall_path_in_home "${target}"; then
+        if [[ ! -L "${target}" ]] \
+            || ! resolved="$(uninstall_resolve_link "${target}")" \
+            || ! uninstall_path_in_home "${resolved}"; then
+            printf 'skipped (not owned by this suite): %s\n' "${target}"
+            return 0
+        fi
+    fi
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove: %s\n' "${target}"
+        return 0
+    fi
+    if rm -rf -- "${target}"; then
+        printf 'removed: %s\n' "${target}"
+    else
+        log_event "ERROR" "uninstall" "path_remove_failed" \
+            "Could not remove catalogued path" 1 "target=${target}"
+        return 1
+    fi
+}
+
+uninstall_remove_appimage() {
+    local target="$1"
+    uninstall_protected "${target}" || return 1
+    if [[ ! -e "${target}" && ! -L "${target}" ]]; then
+        printf 'skipped (not present): %s\n' "${target}"
+        return 0
+    fi
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove: %s\n' "${target}"
+        return 0
+    fi
+    if rm -f -- "${target}"; then
+        printf 'removed: %s\n' "${target}"
+    else
+        log_event "ERROR" "uninstall" "appimage_remove_failed" \
+            "Could not remove catalogued AppImage" 1 "target=${target}"
+        return 1
+    fi
+}
+
+uninstall_remove_npm_global() {
+    local target="$1" npm_root
+    if ! command -v npm >/dev/null 2>&1; then
+        log_event "WARN" "uninstall" "npm_missing" \
+            "npm is unavailable; global package left behind" 0 "package=${target}"
+        printf 'skipped (npm unavailable): %s\n' "${target}"
+        return 0
+    fi
+    if ! npm_root="$(npm root -g 2>/dev/null)"; then
+        log_event "WARN" "uninstall" "npm_root_unavailable" \
+            "Could not locate the global npm root; package left behind" 0 "package=${target}"
+        printf 'skipped (npm root unavailable): %s\n' "${target}"
+        return 0
+    fi
+    if [[ ! -e "${npm_root}/${target}" && ! -L "${npm_root}/${target}" ]]; then
+        printf 'skipped (not present): %s\n' "${target}"
+        return 0
+    fi
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove: %s\n' "${target}"
+        return 0
+    fi
+    run_cmd "uninstall" npm uninstall -g "${target}" || return 1
+    printf 'removed: %s\n' "${target}"
+}
+
+uninstall_remove_pi_package() {
+    local target="$1" settings="${PI_AGENT_DIR}/settings.json"
+    if ! command -v pi >/dev/null 2>&1; then
+        log_event "WARN" "uninstall" "pi_missing" \
+            "pi is unavailable; settings.json package entry left behind" 0 "package=${target};settings=${settings}"
+        printf 'skipped (pi unavailable): %s\n' "${target}"
+        return 0
+    fi
+    # One presence check for the whole catalog: never re-implement the settings.json
+    # lookup here, or the two answers drift.
+    if ! uninstall_entry_present "pi-package" "${target}" ""; then
+        printf 'skipped (not present): %s\n' "${target}"
+        return 0
+    fi
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove: %s\n' "${target}"
+        return 0
+    fi
+    run_cmd "uninstall" pi remove "${target}" || return 1
+    printf 'removed: %s\n' "${target}"
+}
+
+uninstall_remove_systemd_unit() {
+    local target="$1" unit="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/$1"
+    if [[ ! -e "${unit}" && ! -L "${unit}" ]]; then
+        printf 'skipped (not present): %s\n' "${target}"
+        return 0
+    fi
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove: %s\n' "${target}"
+        return 0
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        run_optional "uninstall" systemctl --user disable --now "${target}"
+    fi
+    if rm -f -- "${unit}"; then
+        printf 'removed: %s\n' "${target}"
+    else
+        log_event "ERROR" "uninstall" "systemd_unit_remove_failed" \
+            "Could not remove catalogued systemd user unit" 1 "unit=${unit}"
+        return 1
+    fi
+}
+
+uninstall_remove_shell_rc_line() {
+    local target="$1" file rc removed=0 present=0
+    for file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        [[ -f "${file}" ]] || continue
+        if (( DRY_RUN == 1 )); then
+            grep -Fqx -- "${target}" "${file}" 2>/dev/null && present=1
+            continue
+        fi
+        rc=0
+        remove_line_from_file "${file}" "${target}" || rc=$?
+        if (( rc == 0 )); then
+            removed=1
+        elif (( rc > 1 )); then
+            log_event "ERROR" "uninstall" "shell_line_remove_failed" \
+                "Could not remove an exact shell rc line" "${rc}" "file=${file};line=${target}"
+            return "${rc}"
+        fi
+    done
+    if (( DRY_RUN == 1 )); then
+        if (( present == 1 )); then
+            printf 'would remove: %s\n' "${target}"
+        else
+            printf 'skipped (not present): %s\n' "${target}"
+        fi
+        return 0
+    fi
+    if (( removed == 1 )); then
+        printf 'removed: %s\n' "${target}"
+    else
+        printf 'skipped (not present): %s\n' "${target}"
+    fi
+}
+
+uninstall_remove_env_file_line() {
+    local file="$1" line="$2" rc=0 removed=0
+    if [[ ! -f "${file}" ]]; then
+        printf 'skipped (not present): %s\n' "${file}"
+        return 0
+    fi
+    if (( DRY_RUN == 1 )); then
+        if grep -Fqx -- "${line}" "${file}" 2>/dev/null; then
+            printf 'would remove: %s\n' "${file}"
+        else
+            printf 'skipped (not present): %s\n' "${file}"
+        fi
+        return 0
+    fi
+    remove_line_from_file "${file}" "${line}" || rc=$?
+    if (( rc == 0 )); then
+        removed=1
+    elif (( rc > 1 )); then
+        log_event "ERROR" "uninstall" "env_line_remove_failed" \
+            "Could not remove an exact environment file line" "${rc}" "file=${file};line=${line}"
+        return "${rc}"
+    fi
+    if [[ ! -s "${file}" ]]; then
+        if ! rm -f -- "${file}"; then
+            log_event "ERROR" "uninstall" "env_file_remove_failed" \
+                "Could not remove the empty environment file" 1 "file=${file}"
+            return 1
+        fi
+        removed=1
+    fi
+    if (( removed == 1 )); then
+        printf 'removed: %s\n' "${file}"
+    else
+        printf 'skipped (not present): %s\n' "${file}"
+    fi
+}
+
+uninstall_entry_selected() {
+    local module="$1"
+    if [[ "${module}" == "shell" ]]; then
+        (( UNINSTALL_INCLUDE_SHELL == 1 ))
+    else
+        is_selected "${module}"
+    fi
+}
+
+uninstall_entry_present() {
+    local kind="$1" target="$2" detail="$3" file npm_root
+    case "${kind}" in
+        path|appimage|systemd-unit)
+            [[ -e "${target}" || -L "${target}" ]] ;;
+        npm-global)
+            if ! command -v npm >/dev/null 2>&1; then
+                return 0
+            fi
+            npm_root="$(npm root -g 2>/dev/null)" || return 0
+            [[ -e "${npm_root}/${target}" || -L "${npm_root}/${target}" ]] ;;
+        pi-package)
+            if ! command -v pi >/dev/null 2>&1; then
+                return 0
+            fi
+            [[ -f "${PI_AGENT_DIR}/settings.json" ]] \
+                && grep -Fq "\"${target}\"" "${PI_AGENT_DIR}/settings.json" 2>/dev/null ;;
+        shell-rc-line)
+            for file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+                grep -Fqx -- "${target}" "${file}" 2>/dev/null && return 0
+            done
+            return 1
+            ;;
+        env-file-line)
+            [[ -f "${target}" ]] ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+uninstall_print_inventory() {
+    local kind module target flags detail destructive
+    printf '\nUninstall inventory:\n'
+    printf '%-18s %-18s %-48s %s\n' 'module' 'kind' 'item' 'destructive'
+    while IFS='|' read -r kind module target flags detail; do
+        uninstall_entry_selected "${module}" || continue
+        destructive="no"
+        [[ "${flags}" == "d" ]] && destructive="yes"
+        printf '%-18s %-18s %-48s %s\n' "${module}" "${kind}" "${target}" "${destructive}"
+    done < <(uninstall_catalog)
+}
+
+uninstall_print_not_covered() {
+    printf '\nDeclared NOT covered (left in place):\n'
+    printf '  - base installs distro packages through apt/dnf/pacman/zypper; the package manager owns them.\n'
+    printf '  - dotenv runs upstream setup_env.sh, which rsyncs configuration into %s and installs files elsewhere; that payload belongs to the dotenv repository. The catalog only removes the %s checkout, and only with --purge.\n' \
+        "${PI_AGENT_DIR}" "${DOTENV_DIR}"
+    printf '  - cockpit .deb/.rpm installs and macOS brew --cask installs belong to their package manager; only the AppImage is catalogued.\n'
+    printf '  - the opencode vendor installer shell-rc line belongs to the vendor, not this catalog.\n'
+    printf '  - %s/settings.json, %s/skills, %s/auth.json and %s/sessions are never removed.\n' \
+        "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}"
+}
+
+run_uninstall() {
+    if (( UNINSTALL_YES == 0 && DRY_RUN == 0 )); then
+        uninstall_print_inventory
+        uninstall_print_not_covered
+        printf '\nRemoval needs --yes. Destructive entries additionally need --purge.\n'
+        return 2
+    fi
+
+    local kind module target flags detail any_present=0 validation_failed=0 rc=0
+    while IFS='|' read -r kind module target flags detail; do
+        uninstall_entry_selected "${module}" || continue
+        if [[ "${kind}" == "path" || "${kind}" == "appimage" ]]; then
+            uninstall_protected "${target}" || validation_failed=1
+        fi
+        if uninstall_entry_present "${kind}" "${target}" "${detail}"; then
+            any_present=1
+        fi
+    done < <(uninstall_catalog)
+    if (( validation_failed != 0 )); then
+        uninstall_print_not_covered
+        return 1
+    fi
+    if (( any_present == 0 )); then
+        printf 'Nothing left to remove.\n'
+        uninstall_print_not_covered
+        return 0
+    fi
+
+    while IFS='|' read -r kind module target flags detail; do
+        uninstall_entry_selected "${module}" || continue
+        case "${kind}" in
+            path)          uninstall_remove_path "${target}" "${flags}" || rc=1 ;;
+            appimage)      uninstall_remove_appimage "${target}" || rc=1 ;;
+            npm-global)    uninstall_remove_npm_global "${target}" || rc=1 ;;
+            pi-package)    uninstall_remove_pi_package "${target}" || rc=1 ;;
+            systemd-unit)  uninstall_remove_systemd_unit "${target}" || rc=1 ;;
+            shell-rc-line) uninstall_remove_shell_rc_line "${target}" || rc=1 ;;
+            env-file-line) uninstall_remove_env_file_line "${target}" "${detail}" || rc=1 ;;
+            *)
+                log_event "ERROR" "uninstall" "catalog_kind_unknown" \
+                    "Unknown uninstall catalog kind" 1 "kind=${kind};target=${target}"
+                rc=1
+                ;;
+        esac
+    done < <(uninstall_catalog)
+    uninstall_print_not_covered
+    (( rc == 0 ))
+}
+
+# ==============================================================================
 # CLI parsing / module selection
 # ==============================================================================
 
@@ -2717,11 +3292,12 @@ print_list() {
         if module_is_optional "${m}"; then tag="optional"; else tag="core    "; fi
         printf '  [%s] %-14s %s\n' "${tag}" "${m}" "$(module_desc "${m}")"
     done
-    printf '\nUse: --only <csv> | --all | --verbose | (default = core)\n'
+    printf '\nUse: --only <csv> | --all | --dry-run | --verbose | (default = core)\n'
+    printf 'Lifecycle: --dry-run (plan only) | --uninstall [--yes] [--purge] [--only <csv>]\n'
 }
 
 print_help() {
-    # Print the header comment (lines 3-26) without external commands: a missing or
+    # Print the header comment (lines 3-27) without external commands: a missing or
     # failing `sed` would be an unchecked external call inside `--help`, and the
     # ERR trap would then abort the script with a confusing error.
     # A read loop instead of `mapfile`: macOS ships bash 3.2, which has no mapfile,
@@ -2730,7 +3306,7 @@ print_help() {
     while IFS= read -r line; do
         lineno=$(( lineno + 1 ))
         if (( lineno < 3 )); then continue; fi
-        if (( lineno > 26 )); then break; fi
+        if (( lineno > 27 )); then break; fi
         line="${line#'# '}"
         line="${line#\#}"
         printf '%s\n' "${line}"
@@ -2749,7 +3325,10 @@ parse_args() {
                 mode="only"; only_csv="$2"; shift 2
                 ;;
             --only=*)     mode="only"; only_csv="${1#*=}"; shift ;;
-            --yes|-y)     NONINTERACTIVE=1; shift ;;
+            --yes|-y)     NONINTERACTIVE=1; UNINSTALL_YES=1; shift ;;
+            --dry-run)    DRY_RUN=1; shift ;;
+            --uninstall)  UNINSTALL=1; shift ;;
+            --purge)      UNINSTALL_PURGE=1; shift ;;
             --verbose|-v)  VERBOSE=1; DEBUG=1; shift ;;
             --list)       print_list; exit 0 ;;
             -h|--help)    print_help; exit 0 ;;
@@ -2760,10 +3339,17 @@ parse_args() {
     # Match PowerShell: -All wins whenever it is present, regardless of
     # where it appears relative to --only.
     (( all_requested == 1 )) && mode="all"
+    if (( UNINSTALL_PURGE == 1 && UNINSTALL == 0 )); then
+        printf '%s\n' '--purge is only valid with --uninstall.' >&2
+        exit 2
+    fi
 
     local requested=()
     case "${mode}" in
-        all)  requested=("${MODULE_ORDER[@]}") ;;
+        all)
+            requested=("${MODULE_ORDER[@]}")
+            (( UNINSTALL == 1 )) && UNINSTALL_INCLUDE_SHELL=1
+            ;;
         only)
             # Split on commas without word-splitting or glob expansion.
             local raw=()
@@ -2776,20 +3362,29 @@ parse_args() {
                 r="${r#"${r%%[![:space:]]*}"}"
                 r="${r%"${r##*[![:space:]]}"}"
                 [[ -z "${r}" ]] && continue
+                if (( UNINSTALL == 1 )) && [[ "${r}" == "shell" ]]; then
+                    UNINSTALL_INCLUDE_SHELL=1
+                    continue
+                fi
                 module_desc "${r}" >/dev/null || { printf 'Unknown module: %s\n' "${r}" >&2; exit 2; }
                 requested+=("${r}")
             done
-            (( ${#requested[@]} > 0 )) || {
+            (( ${#requested[@]} > 0 || UNINSTALL_INCLUDE_SHELL == 1 )) || {
                 printf '%s\n' '--only requires a non-empty comma-separated module list.' >&2
                 exit 2
             }
             ;;
         default)
             local m
-            for m in "${MODULE_ORDER[@]}"; do
-                module_is_optional "${m}" && continue
-                requested+=("${m}")
-            done
+            if (( UNINSTALL == 1 )); then
+                requested=("${MODULE_ORDER[@]}")
+                UNINSTALL_INCLUDE_SHELL=1
+            else
+                for m in "${MODULE_ORDER[@]}"; do
+                    module_is_optional "${m}" && continue
+                    requested+=("${m}")
+                done
+            fi
             ;;
     esac
 
@@ -2804,7 +3399,13 @@ parse_args() {
         done
     done
 
-    SELECTED_DISPLAY="$(printf '%s ' "${SELECTED_MODULES[@]}")"
+    SELECTED_DISPLAY=""
+    if (( ${#SELECTED_MODULES[@]} > 0 )); then
+        SELECTED_DISPLAY="$(printf '%s ' "${SELECTED_MODULES[@]}")"
+    fi
+    if (( UNINSTALL == 1 && UNINSTALL_INCLUDE_SHELL == 1 )); then
+        SELECTED_DISPLAY="${SELECTED_DISPLAY}shell "
+    fi
 }
 
 run_module() {
@@ -2818,6 +3419,29 @@ run_module() {
     MODULE_INDEX=$(( MODULE_INDEX + 1 ))
     printf '\n\033[1;37m[%d/%d] %s\033[0m\n' "${MODULE_INDEX}" "${MODULE_TOTAL}" "${name}"
     printf '  %s\n\n' "$(module_desc "${name}")"
+    if (( DRY_RUN == 1 )); then
+        # A plan must survive a module whose read-backs need a machine that is not
+        # provisioned yet, but it must not let a module run past a failed check and
+        # then claim a success it did not achieve. So the module keeps errexit inside
+        # a subshell, while the ERR trap is dropped on both sides of it: a `||` or
+        # `if` context would silently disable errexit inside the subshell, and the
+        # parent's trap would abort the whole plan on the subshell's exit status.
+        local dry_rc=0
+        trap - ERR
+        set +e
+        ( trap - ERR; set -e; "${fn}" )
+        dry_rc=$?
+        set -e
+        trap 'on_error' ERR
+        if (( dry_rc != 0 )); then
+            DRY_RUN_PARTIAL="${DRY_RUN_PARTIAL} ${name}"
+            log_event "WARN" "modules" "dry_run_module_partial" \
+                "Dry run: this module stopped planning early (nothing was run)" "${dry_rc}" "module=${name}"
+        fi
+        MODULES_OK="${MODULES_OK} ${name}"
+        printf '\033[1;35m  PLAN\033[0m  %s planned\n\n' "${name}"
+        return 0
+    fi
     "${fn}"
     MODULES_OK="${MODULES_OK} ${name}"
     printf '\033[1;32m  OK\033[0m  %s completed\n\n' "${name}"
@@ -2840,6 +3464,13 @@ done
 log_event "INFO" "bootstrap" "start" "AI Dev Suite setup started" 0 "script_version=${SCRIPT_VERSION}"
 
 parse_args "$@"
+
+# Uninstall is self-contained: it must not require curl, git, sudo, or OS preflight.
+if (( UNINSTALL == 1 )); then
+    uninstall_rc=0
+    run_uninstall || uninstall_rc=$?
+    exit "${uninstall_rc}"
+fi
 
 # --list / --help exit inside parse_args: only a real run gets a summary.
 RUN_ACTIVE=1
@@ -2890,13 +3521,32 @@ done
 # after the modules that install pi packages and before the gates that use them.
 CURRENT_MODULE="pi-npm"
 if is_selected pi || is_selected pi-packages || is_selected gentle-ai || is_selected pi-workflows; then
-    approve_npm_install_scripts "${PI_NPM_DIR}"
+    if (( DRY_RUN == 1 )); then
+        log_event "INFO" "pi-npm" "dry_run_skipped" "Skipped npm install-script approval; nothing was installed" 0
+    else
+        approve_npm_install_scripts "${PI_NPM_DIR}"
+    fi
 fi
 
 configure_shell_env
 quality_gates
 
 CURRENT_MODULE="report"
+if (( DRY_RUN == 1 )); then
+    write_report "DRY RUN - nothing installed" 0 "n/a" "n/a" "n/a" "n/a"
+    log_event "INFO" "bootstrap" "dry_run_completed" "Dry run completed; nothing was installed or written" 0
+    printf '\n\033[1;35m============================================================\033[0m\n'
+    printf '\033[1;35m AI Dev Suite dry run completed\033[0m\n'
+    printf '\033[1;35m============================================================\033[0m\n'
+    printf 'OS family : %s\n' "${OS_FAMILY}"
+    printf 'Modules   : %s\n' "${SELECTED_DISPLAY}"
+    if [[ -n "${DRY_RUN_PARTIAL}" ]]; then
+        printf 'Partial plans :%s (each stopped at its first read-back because the machine is not provisioned yet)\n' "${DRY_RUN_PARTIAL}"
+    fi
+    printf 'Probes        : version and state reads still run; no command that writes is executed\n'
+    printf 'DRY RUN: nothing was installed, nothing was written; re-run without --dry-run to apply\n'
+    exit 0
+fi
 write_report "SUCCESS" 0 "n/a" "n/a" "n/a" "n/a"
 report_version REPORT_NODE_VERSION node --version
 report_version REPORT_NPM_VERSION npm --version

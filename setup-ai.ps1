@@ -20,6 +20,8 @@
    pwsh -File setup-ai.ps1 -List
    pwsh -File setup-ai.ps1 -Help
    pwsh -File setup-ai.ps1 -Verbose
+   pwsh -File setup-ai.ps1 -DryRun
+   pwsh -File setup-ai.ps1 -Uninstall
 ==============================================================================
 #>
 
@@ -29,10 +31,20 @@ param(
     [switch]$All,
     [switch]$List,
     [switch]$Yes,
-    [switch]$Help
+    [switch]$Help,
+    [switch]$DryRun,
+    [switch]$Uninstall
 )
 
 $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
+if ($DryRun -or $Uninstall) {
+    $flag = if ($DryRun) { '-DryRun' } else { '-Uninstall' }
+    Write-Host ""
+    Write-Host "$flag is not implemented on Windows." -ForegroundColor Red
+    Write-Host "setup-ai.ps1 cannot plan a run or remove the Windows install yet, and it will not pretend to: run setup-ai.sh for these flags, or remove the modules by hand (see docs/modules.md)." -ForegroundColor Red
+    Write-Host ""
+    exit 2
+}
 $script:VerboseOutput = ($VerbosePreference -eq 'Continue' -or $env:VERBOSE -eq '1')
 if ($script:VerboseOutput) { $env:DEBUG = '1' }
 
