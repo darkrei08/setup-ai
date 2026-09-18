@@ -102,13 +102,6 @@ COCKPIT_REPO="jlcodes99/cockpit-tools"
 # Nothing found is not an error: no extra packages are installed.
 PI_PACKAGES_FILE="${PI_PACKAGES_FILE:-}"
 
-# Local checkout that can carry a fix not yet published upstream. setup-ai only
-# reads/builds from it: it never pushes, publishes, or switches the branch of an
-# existing checkout. See `install_patched_pi_workflows`.
-PI_WORKFLOWS_SOURCE_DIR="${PI_WORKFLOWS_SOURCE_DIR:-${HOME}/git/personale/pi-extensible-workflows}"
-PI_WORKFLOWS_FIX_REF="${PI_WORKFLOWS_FIX_REF:-fix/windows-atomic-persistence}"
-PI_WORKFLOWS_REMOTE="${PI_WORKFLOWS_REMOTE:-https://github.com/darkrei08/pi-extensible-workflows.git}"
-
 # ------------------------------------------------------------------------------
 # Cleanup
 # ------------------------------------------------------------------------------
@@ -657,7 +650,7 @@ module_desc() {
         dotenv) printf '%s\n' "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" ;;
         ee) printf '%s\n' "Engineering Excellence skill (npx skills add, all detected agents)" ;;
         skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
-        pi-workflows) printf '%s\n' "pi-extensible-workflows (patched build + npm 12 remote sources for pi installs)" ;;
+        pi-workflows) printf '%s\n' "pi-extensible-workflows (published release + npm 12 remote sources for pi installs)" ;;
         herdr) printf '%s\n' "herdr terminal multiplexer" ;;
         gentle-ai) printf '%s\n' "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" ;;
         codex) printf '%s\n' "OpenAI Codex CLI" ;;
@@ -997,16 +990,14 @@ approve_npm_install_scripts() {
         "dir=${dir};packages=$(IFS=,; printf '%s' "${present[*]}")"
 }
 
-# Marker of the transient-rename retry in pi-extensible-workflows.
-# The published release writes state as a bare write(.tmp) + rename() without
-# retry, so a transient lock on the target (Defender, indexing, sync client, or a
-# concurrent pi process) fails the run with EPERM. The fix adds `renameWithRetry`
-# (EACCES/EBUSY/EPERM, bounded backoff); that symbol is the marker because the
-# package version does NOT change when the fix is applied locally - only the
-# artifact content proves which build is loaded.
+# Marker of the transient-rename retry in pi-extensible-workflows. State is written as
+# a bare write(.tmp) + rename(), so a transient lock on the target (Defender, indexing,
+# sync client, or a concurrent pi process) fails the write with EPERM unless the loaded
+# artifact retries it. The retry ships in the published release; the version string
+# cannot prove which build pi loads, so the symbol in the artifact is the proof.
 PI_WORKFLOWS_RETRY_MARKER="renameWithRetry"
 
-# Prove a built/installed atomic-write module carries the transient-rename retry.
+# Prove an installed atomic-write module carries the transient-rename retry.
 # Returns 1 with a WARN when it cannot be proven, so callers decide the fallback.
 assert_transient_rename_retry() {
     local io_js="$1" phase="$2" context="$3"
@@ -1020,7 +1011,7 @@ assert_transient_rename_retry() {
     if ! grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${io_js}"; then
         log_event "WARN" "${phase}" "retry_missing" \
             "Artifact has no transient-rename retry; EPERM-prone state writes stay unfixed" 0 \
-            "path=${io_js};context=${context}"
+            "path=${io_js};context=${context};remedy=reinstall the latest pi-extensible-workflows release"
         return 1
     fi
     log_event "INFO" "${phase}" "retry_verified" \
@@ -1047,11 +1038,9 @@ pi_package_id() {
 }
 
 # Prove pi recorded a package by reading back pi's own registry, not by trusting
-# the install command we just ran. With `expect_absent` set, the check is inverted:
-# it passes only when NO entry with that id is registered (used to prove that the
-# published workflow package was really replaced by the patched local source).
+# the install command we just ran.
 assert_pi_package_registered() {
-    local phase="$1" spec="$2" expectation="${3:-present}"
+    local phase="$1" spec="$2"
     local settings="${PI_AGENT_DIR}/settings.json"
 
     if [[ ! -f "${settings}" ]]; then
@@ -1066,7 +1055,7 @@ assert_pi_package_registered() {
         try {
             settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
         } catch {
-            // An unreadable or malformed registry cannot prove absence: fail closed.
+            // An unreadable or malformed registry cannot prove the registration: fail closed.
             process.exit(2);
         }
         const path = require("node:path");
@@ -1101,133 +1090,22 @@ assert_pi_package_registered() {
         // against the agent dir, where pi records them, never the caller cwd.
         const want = identity(process.argv[2], baseDir);
         const found = packages.some((entry) => identity(typeof entry === "string" ? entry : entry?.source, baseDir) === want);
-        process.exit(found === (process.argv[3] === "present") ? 0 : 1);
-    ' "${settings}" "${spec}" "${expectation}" || rc=$?
+        process.exit(found ? 0 : 1);
+    ' "${settings}" "${spec}" || rc=$?
     if (( rc == 2 )); then
         log_event "ERROR" "${phase}" "settings_unreadable" \
             "pi settings.json could not be parsed; cannot prove the package state" 1 "path=${settings}"
         return 1
     fi
     if (( rc == 0 )); then
-        if [[ "${expectation}" == "absent" ]]; then
-            log_event "INFO" "${phase}" "package_absent" \
-                "pi no longer registers the replaced package" 0 "spec=${spec}"
-        else
-            log_event "INFO" "${phase}" "package_registered" \
-                "pi registered the package" 0 "spec=${spec}"
-        fi
+        log_event "INFO" "${phase}" "package_registered" \
+            "pi registered the package" 0 "spec=${spec}"
         return 0
-    fi
-    if [[ "${expectation}" == "absent" ]]; then
-        log_event "ERROR" "${phase}" "package_still_registered" \
-            "The replaced package is still registered in settings.json" 1 \
-            "spec=${spec};settings=${settings}"
-        return 1
     fi
     log_event "ERROR" "${phase}" "package_not_registered" \
         "pi did not register the package in settings.json" 1 \
         "spec=${spec};settings=${settings}"
     return 1
-}
-
-# Restore the published workflow package after a failed swap. Once the npm source is
-# unregistered, a failure must not leave the workflow package missing from settings:
-# the environment has to look exactly like it did before the patch attempt.
-rollback_published_pi_workflows() {
-    local phase="pi-workflows-patch"
-    local pkg_dir="${PI_WORKFLOWS_SOURCE_DIR}/packages/core"
-    local root root_pkg root_version root_io restore_failed=0
-
-    log_event "WARN" "${phase}" "patch_rollback_start" \
-        "Restoring the published workflow package after a failed swap" 0 \
-        "version=${PI_WORKFLOW_VERSION}"
-
-    # Undo the swap in reverse order: drop the local source, register the published one
-    # again, then put the published build back into every npm root this module overwrote
-    # (the managed root included). Ending as we started is the point.
-    run_optional "${phase}" pi uninstall "${pkg_dir}"
-    run_optional "${phase}" pi install "npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
-
-    for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}" "${PI_NPM_DIR}"; do
-        [[ -f "${root}/package.json" ]] || continue
-        # This function also runs as an `if` condition, so errexit is suspended here too: an
-        # unchecked pushd would run npm in the previous directory. Leaving the root
-        # un-restored is a rollback failure, so the hard latch is raised with it.
-        if ! pushd "${root}" >/dev/null; then
-            log_event "WARN" "${phase}" "rollback_root_unavailable" \
-                "Could not enter a resolution root while restoring; skipping it instead of installing into an unrelated directory" 0 \
-                "root=${root}"
-            restore_failed=1
-            continue
-        fi
-        run_optional "${phase}" npm install --save-exact --no-audit --no-fund --legacy-peer-deps \
-            "pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
-        popd >/dev/null
-    done
-
-    # Prove the restore instead of trusting the commands: registration must be the
-    # published one, the local source must be gone, and every root must hold the published
-    # version without the patched marker.
-    if ! assert_pi_package_registered "${phase}" "npm:pi-extensible-workflows"; then
-        restore_failed=1
-    fi
-    if ! assert_pi_package_registered "${phase}" "${pkg_dir}" absent; then
-        restore_failed=1
-    fi
-    for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}" "${PI_NPM_DIR}"; do
-        [[ -f "${root}/package.json" ]] || continue
-        root_pkg="${root}/node_modules/pi-extensible-workflows/package.json"
-        if [[ ! -f "${root_pkg}" ]]; then
-            log_event "WARN" "${phase}" "rollback_artifact_missing" \
-                "Published workflow package did not come back in this root" 0 "root=${root}"
-            restore_failed=1
-            continue
-        fi
-        root_version="$(grep -m1 '"version"' "${root_pkg}" | cut -d'"' -f4)"
-        if [[ "${root_version}" != "${PI_WORKFLOW_VERSION}" ]]; then
-            log_event "WARN" "${phase}" "rollback_artifact_version_mismatch" \
-                "Root holds a different workflow version after rollback" 0 \
-                "root=${root};expected=${PI_WORKFLOW_VERSION};actual=${root_version}"
-            restore_failed=1
-            continue
-        fi
-        root_io="${root}/node_modules/pi-extensible-workflows/dist/src/io.js"
-        if [[ ! -f "${root_io}" ]]; then
-            log_event "WARN" "${phase}" "rollback_entry_point_missing" \
-                "Published workflow package came back without its entry point; the restored build cannot be used" 0 \
-                "root=${root}"
-            restore_failed=1
-            continue
-        fi
-        # grep separates 0 (marker present) from 1 (readable file, marker absent) and 2 (read
-        # error). Collapsing a read error into "marker absent" would report a restored build
-        # that nobody could actually read, so the error keeps the restore unproven.
-        local marker_rc=0
-        grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${root_io}" || marker_rc=$?
-        if (( marker_rc == 2 )); then
-            log_event "WARN" "${phase}" "rollback_entry_point_unreadable" \
-                "Entry point could not be read after rollback; the restore is unproven" 0 \
-                "root=${root}"
-            restore_failed=1
-            continue
-        fi
-        if (( marker_rc == 0 )); then
-            log_event "WARN" "${phase}" "rollback_artifact_still_patched" \
-                "Root still holds the patched build after rollback" 0 "root=${root}"
-            restore_failed=1
-        fi
-    done
-
-    if (( restore_failed == 0 )); then
-        log_event "INFO" "${phase}" "patch_rolled_back" \
-            "Published workflow package and npm roots verified after rollback" 0
-        return 0
-    fi
-    # An unrestored environment is a hard failure, not a warning: continuing would let the
-    # module report a healthy install while the roots hold a mix of both builds.
-    log_event "ERROR" "${phase}" "patch_rollback_failed" \
-        "Could not fully restore the published workflow package; run: pi install npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}" 1
-    exit 1
 }
 
 # Resolve the Pi package manifest. Order: explicit override, then the Pi config
@@ -1242,213 +1120,6 @@ pi_packages_manifest() {
         }
     done
     return 1
-}
-
-# Build the patched workflow package from the local checkout and install it into
-# BOTH pi roots. Nothing is guessed: the fix is proven in the source, then in the
-# built artifact, then in the installed artifact. Any unproven step returns 1 and
-# the caller keeps the published release.
-install_patched_pi_workflows() {
-    local phase="pi-workflows-patch"
-    local src="${PI_WORKFLOWS_SOURCE_DIR}"
-    local ref="${PI_WORKFLOWS_FIX_REF}"
-    local pkg_dir="${src}/packages/core"
-    local io_ts="${pkg_dir}/src/io.ts"
-    local io_js="${pkg_dir}/dist/src/io.js"
-
-    command -v git >/dev/null 2>&1 || {
-        log_event "WARN" "${phase}" "git_missing" \
-            "git is unavailable; cannot build the patched workflow package" 0 "source=${src}"
-        return 1
-    }
-
-    # Accept a worktree too: `.git` is a file there, not a directory.
-    if [[ ! -e "${src}/.git" ]]; then
-        if [[ -e "${src}" ]]; then
-            log_event "WARN" "${phase}" "source_not_git" \
-                "Configured workflow source is not a git checkout" 0 "source=${src}"
-            return 1
-        fi
-        run_cmd "${phase}" git clone "${PI_WORKFLOWS_REMOTE}" "${src}" || return 1
-        # A checkout setup-ai created itself may freely move to the fix ref.
-        run_optional "${phase}" git -C "${src}" checkout "${ref}"
-    fi
-
-    # Prefer a ref that already resolves locally (a shared checkout can hold the fix
-    # before it is pushed), then try the remote once. The fetched ref lands in
-    # refs/remotes, so that is what the second probe has to resolve.
-    if ! git -C "${src}" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null; then
-        run_optional "${phase}" git -C "${src}" fetch origin \
-            "+refs/heads/${ref}:refs/remotes/origin/${ref}"
-    fi
-    if ! git -C "${src}" rev-parse --verify --quiet "${ref}^{commit}" >/dev/null \
-        && ! git -C "${src}" rev-parse --verify --quiet "refs/remotes/origin/${ref}^{commit}" >/dev/null; then
-        log_event "WARN" "${phase}" "fix_ref_unavailable" \
-            "Workflow fix ref is unavailable; keeping the published release" 0 \
-            "ref=${ref};source=${src}"
-        return 1
-    fi
-
-    # Trust the CONTENT, not the branch name: the checkout may sit on another branch,
-    # and setup-ai must never switch a checkout the user owns.
-    if [[ ! -f "${io_ts}" ]]; then
-        log_event "WARN" "${phase}" "source_missing" \
-            "Workflow source file not found; keeping the published release" 0 "path=${io_ts}"
-        return 1
-    fi
-    if ! grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${io_ts}"; then
-        log_event "WARN" "${phase}" "retry_missing_in_source" \
-            "Checked-out workflow source has no transient-rename retry" 0 \
-            "path=${io_ts};ref=${ref};hint=git -C ${src} checkout ${ref}"
-        return 1
-    fi
-    log_event "INFO" "${phase}" "retry_found_in_source" \
-        "Workflow source carries the transient-rename retry" 0 "path=${io_ts}"
-
-    # packages/core builds through the workspace toolchain, so install the workspace
-    # first. packages/core's own build script is POSIX-only (rm -rf, cp -R), which is
-    # why the patched build is a Unix/WSL path: Windows keeps the published release
-    # unless a POSIX shell is available to run that script.
-    # The checkout must be an npm project root, or npm would walk up into an unrelated
-    # ancestor project and rewrite its manifest.
-    if [[ ! -f "${src}/package.json" ]]; then
-        log_event "WARN" "${phase}" "source_not_npm_project" \
-            "Workflow checkout has no package.json; nothing is installed into it" 0 \
-            "source=${src}"
-        return 1
-    fi
-    # Called as an `if` condition, so errexit is suspended in here: every directory change
-    # before an npm command is checked, or npm would run in the previous directory and
-    # rewrite an unrelated project's manifest.
-    if ! pushd "${src}" >/dev/null; then
-        log_event "ERROR" "${phase}" "workspace_unavailable" \
-            "Could not enter the workflow checkout; refusing to install into an unrelated directory" 1 \
-            "path=${src}"
-        return 1
-    fi
-    # --no-save --package-lock=false: install only what the build needs without
-    # writing to the checkout's tracked manifest or lockfile - this source tree
-    # belongs to the user, and setup-ai must not leave edits behind in it.
-    if ! run_cmd "${phase}" --optional npm install --no-save --package-lock=false --no-audit --no-fund; then
-        popd >/dev/null
-        log_event "WARN" "${phase}" "workspace_install_failed" \
-            "Workspace dependencies could not be installed; keeping the published release" 0 \
-            "source=${src};hint=npm 12 blocks dependency install scripts by default"
-        return 1
-    fi
-    if ! run_cmd "${phase}" --optional npm run build --workspace=packages/core; then
-        popd >/dev/null
-        log_event "WARN" "${phase}" "patch_build_failed" \
-            "Workflow package build failed; keeping the published release" 0 \
-            "source=${src};hint=the core build script needs a POSIX shell (rm, cp)"
-        return 1
-    fi
-    popd >/dev/null
-
-    assert_transient_rename_retry "${io_js}" "${phase}" "built" || return 1
-
-    # Shared resolution roots FIRST: this only writes node_modules, so it can still
-    # fail without any settings change - nothing is swapped while it can fail.
-    local root verified_roots=0 skipped_roots=""
-    for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}"; do
-        [[ -d "${root}" ]] || continue
-        # Never run npm in a directory that is not an npm project root: without a local
-        # package.json npm walks UP the tree and installs into an ancestor project,
-        # rewriting that project's manifest.
-        if [[ ! -f "${root}/package.json" ]]; then
-            log_event "WARN" "${phase}" "root_not_npm_project" \
-                "Resolution root has no package.json; skipping it instead of installing into an ancestor" 0 \
-                "root=${root}"
-            skipped_roots="${skipped_roots}${skipped_roots:+,}${root}"
-            continue
-        fi
-        if ! pushd "${root}" >/dev/null; then
-            log_event "ERROR" "${phase}" "root_unavailable" \
-                "Could not enter the resolution root; refusing to install into an unrelated directory" 1 \
-                "root=${root}"
-            rollback_published_pi_workflows
-            return 1
-        fi
-        if ! run_cmd "${phase}" --optional npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
-            popd >/dev/null
-            # The root may already carry the patched build: restore before leaving, so a
-            # failure here never leaves a mixed patched/published installation behind.
-            rollback_published_pi_workflows
-            return 1
-        fi
-        popd >/dev/null
-        if ! assert_transient_rename_retry \
-            "${root}/node_modules/pi-extensible-workflows/dist/src/io.js" \
-            "${phase}" "root=${root}"; then
-            rollback_published_pi_workflows
-            return 1
-        fi
-        verified_roots=$(( verified_roots + 1 ))
-    done
-
-    # Swap, do not add: `pi install <local path>` only ADDS an entry, so leaving the
-    # npm source in place would keep the unpatched copy in the managed root and
-    # register two copies of the same extension at once. From this point the published
-    # package is unregistered, so every failure path restores it.
-    run_optional "${phase}" pi uninstall npm:pi-extensible-workflows
-    if ! assert_pi_package_registered "${phase}" "npm:pi-extensible-workflows" absent; then
-        rollback_published_pi_workflows
-        return 1
-    fi
-    if ! run_cmd "${phase}" pi install "${pkg_dir}"; then
-        rollback_published_pi_workflows
-        return 1
-    fi
-    if ! assert_pi_package_registered "${phase}" "${pkg_dir}"; then
-        rollback_published_pi_workflows
-        return 1
-    fi
-
-    # An unpatched copy left in the managed root would shadow the patched build at
-    # import time. `pi uninstall` normally removes it; repair and verify when it
-    # survived. Past the swap the whole operation is all-or-nothing, so a failure here
-    # restores the published registration instead of leaving a half-patched install.
-    local managed_pkg="${PI_NPM_DIR}/node_modules/pi-extensible-workflows"
-    local managed_io="${managed_pkg}/dist/src/io.js"
-    # A root that still carries the package without its entry point is not a skipped root,
-    # it is an unverifiable one: the loaded build cannot be proven patched, so fail closed.
-    if [[ -d "${managed_pkg}" && ! -f "${managed_io}" ]]; then
-        log_event "ERROR" "${phase}" "managed_artifact_missing" \
-            "The managed root still carries the workflow package without its entry point; cannot prove the patched build is the one loaded" 1 \
-            "path=${managed_pkg}"
-        rollback_published_pi_workflows
-        return 1
-    fi
-    if [[ -f "${managed_io}" ]]; then
-        if ! grep -q "${PI_WORKFLOWS_RETRY_MARKER}" "${managed_io}"; then
-            log_event "WARN" "${phase}" "managed_copy_stale" \
-                "Unpatched copy survived in the managed root; replacing it with the patched build" 0 \
-                "path=${managed_io}"
-            if ! pushd "${PI_NPM_DIR}" >/dev/null; then
-                log_event "ERROR" "${phase}" "managed_root_unavailable" \
-                    "Could not enter the managed root; refusing to install into an unrelated directory" 1 \
-                    "root=${PI_NPM_DIR}"
-                rollback_published_pi_workflows
-                return 1
-            fi
-            if ! run_cmd "${phase}" --optional npm install --save-exact --no-audit --no-fund --legacy-peer-deps "${pkg_dir}"; then
-                popd >/dev/null
-                rollback_published_pi_workflows
-                return 1
-            fi
-            popd >/dev/null
-        fi
-        if ! assert_transient_rename_retry "${managed_io}" "${phase}" "managed-root"; then
-            rollback_published_pi_workflows
-            return 1
-        fi
-    fi
-
-    # Report what was ACTUALLY verified: a skipped root is not a verified root, and the
-    # message must never claim more than the checks proved.
-    log_event "INFO" "${phase}" "patched_workflow_installed" \
-        "Patched pi-extensible-workflows installed and verified in ${verified_roots} resolution root(s)" 0 \
-        "source=${pkg_dir};ref=${ref};verified_roots=${verified_roots};skipped_roots=${skipped_roots:-none}"
 }
 
 # ==============================================================================
@@ -1897,8 +1568,7 @@ mod_skills() {
 # --- pi-extensible-workflows ------------------------------------------------
 # Concept split for this module:
 #   1. npm behavior of both pi roots (npm 12 EALLOWREMOTE on remote sources)
-#   2. published pi-extensible-workflows (baseline that always stays usable)
-#   3. patched local build (transient-rename retry for EPERM-prone state writes)
+#   2. published pi-extensible-workflows, verified down to the loaded artifact
 mod_pi_workflows() {
     section "pi-extensible-workflows"
     require_command pi
@@ -1992,24 +1662,15 @@ mod_pi_workflows() {
             "Verified installed dotenv workflow package" 0 "path=${dotenv_workflow_pkg}"
     fi
 
-    # 3. Patched local build LAST, so it wins in both roots over the published
-    #    release installed above. A failure here is reported, never hidden: the
-    #    environment keeps working with the published release.
-    if install_patched_pi_workflows; then
-        local patched_version="unknown"
-        if ! capture_cmd patched_version "pi-workflows-patch" --optional node -e \
-            'console.log(require(process.argv[1]).version)' \
-            "${PI_EXTENSIONS_DIR}/node_modules/pi-extensible-workflows/package.json"; then
-            patched_version="unknown"
-        fi
-        log_event "INFO" "pi-workflows-patch" "patched_version_active" \
-            "Effective workflow package is the patched local build" 0 \
-            "version=${patched_version};published=${PI_WORKFLOW_VERSION}"
-    else
-        log_event "WARN" "pi-workflows-patch" "patched_build_unavailable" \
-            "Keeping the published pi-extensible-workflows; EPERM-prone state writes may still fail" 0 \
-            "source=${PI_WORKFLOWS_SOURCE_DIR};ref=${PI_WORKFLOWS_FIX_REF}"
-    fi
+    # 2. Prove the artifact pi will load carries the transient-rename retry the published
+    #    release ships. Reading the installed file - not the install command - is the only
+    #    proof of which build was loaded; an unproven root is reported, never hidden.
+    local root root_io
+    for root in "${PI_EXTENSIONS_DIR}" "${DOTENV_EXT_DIR}" "${PI_NPM_DIR}"; do
+        [[ -d "${root}" ]] || continue
+        root_io="${root}/node_modules/pi-extensible-workflows/dist/src/io.js"
+        assert_transient_rename_retry "${root_io}" "pi-workflows" "root=${root}" || continue
+    done
 }
 
 # --- pi-packages ------------------------------------------------------------
@@ -2020,7 +1681,7 @@ mod_pi_workflows() {
 # `git:<host>/<owner>/<repo>[@<ref>]`, or a local path. Blank lines and `#`
 # comments are ignored, and every install is verified by reading pi's own
 # settings.json back. pi-extensible-workflows is skipped here on purpose: the
-# pi-workflows module owns that package (published + patched build).
+# pi-workflows module owns that package (published release).
 mod_pi_packages() {
     section "pi-packages"
     require_command pi

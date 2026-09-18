@@ -87,25 +87,13 @@ $PiNpmDir   = Join-Path $PiAgentDir "npm"
 # environment here too; the pi roots and the retry marker stay fixed, as in Bash.
 if (-not $env:PI_PACKAGES_FILE) { $PiPackagesFile = "" } else { $PiPackagesFile = $env:PI_PACKAGES_FILE }
 
-# Local checkout that can carry a fix not yet published upstream. setup-ai only
-# reads/builds from it: it never pushes, publishes, or switches the branch of an
-# existing checkout. See Install-PatchedPiWorkflows.
-if (-not $env:PI_WORKFLOWS_SOURCE_DIR) { $PiWorkflowsSourceDir = Join-Path $HOME "git\personale\pi-extensible-workflows" } else { $PiWorkflowsSourceDir = $env:PI_WORKFLOWS_SOURCE_DIR }
-if (-not $env:PI_WORKFLOWS_FIX_REF) { $PiWorkflowsFixRef = 'fix/windows-atomic-persistence' } else { $PiWorkflowsFixRef = $env:PI_WORKFLOWS_FIX_REF }
-if (-not $env:PI_WORKFLOWS_REMOTE) { $PiWorkflowsRemote = 'https://github.com/darkrei08/pi-extensible-workflows.git' } else { $PiWorkflowsRemote = $env:PI_WORKFLOWS_REMOTE }
-
-# Marker of the transient-rename retry in pi-extensible-workflows. The published
-# release writes state as a bare write(.tmp) + rename() without retry, so a
-# transient lock on the target (Defender, indexing, sync client, or a concurrent pi
-# process) fails the run with EPERM. The fix adds `renameWithRetry`; that symbol is
-# the marker because the package version does NOT change when the fix is applied
-# locally - only the artifact content proves which build is loaded.
+# Marker of the transient-rename retry in pi-extensible-workflows. State is written as
+# a bare write(.tmp) + rename(), so a transient lock on the target (Defender, indexing,
+# sync client, or a concurrent pi process) fails the write with EPERM unless the loaded
+# artifact retries it. The retry ships in the published release; the version string
+# cannot prove which build pi loads, so the symbol in the artifact is the proof.
 $PiWorkflowsRetryMarker = 'renameWithRetry'
-# Set when a rollback could not restore the published workflow package; the module turns
-# that into a hard failure instead of a warning. Initialized here because StrictMode
-# throws when a variable is read before it has been set.
-$script:SetupAiRollbackFailed = $false
-# Read by Restore-PublishedPiWorkflows before Mod-PiWorkflows ever assigns it.
+# Holds the resolved published workflow version for the module and its readbacks.
 $script:SetupAiWorkflowVersion = ''
 
 # Upstream agent-skill stack mirrored from darkrei08/dotenv setup_env.sh so the
@@ -810,7 +798,7 @@ function Test-TransientRenameMarker {
     }
 }
 
-# Prove a built/installed atomic-write module carries the transient-rename retry.
+# Prove an installed atomic-write module carries the transient-rename retry.
 # Returns $false with a WARN when it cannot be proven, so callers decide the fallback.
 function Assert-TransientRenameRetry {
     param([string]$IoJs, [string]$Phase, [string]$Context)
@@ -820,7 +808,7 @@ function Assert-TransientRenameRetry {
         return $false
     }
     if (-not (Test-TransientRenameMarker -IoJs $IoJs)) {
-        Write-Log WARN $Phase "retry_missing" "Artifact has no transient-rename retry; EPERM-prone state writes stay unfixed" 0 "path=$IoJs;context=$Context"
+        Write-Log WARN $Phase "retry_missing" "Artifact has no transient-rename retry; EPERM-prone state writes stay unfixed" 0 "path=$IoJs;context=$Context;remedy=reinstall the latest pi-extensible-workflows release"
         return $false
     }
     Write-Log INFO $Phase "retry_verified" "Transient-rename retry present in the loaded artifact" 0 "path=$IoJs;context=$Context"
@@ -853,9 +841,7 @@ function Get-PiPackageId {
 }
 
 # Prove pi recorded a package by reading back pi's own registry, not by trusting
-# the install command we just ran. With -Expectation absent the check is inverted:
-# it passes only when NO entry with that id is registered (used to prove that the
-# published workflow package was really replaced by the patched local source).
+# the install command we just ran.
 function Get-PiPackageIdentity {
     param([string]$Spec, [string]$BaseDir)
     $spec = ([string]$Spec).Trim()
@@ -887,10 +873,9 @@ function Get-PiPackageIdentity {
 }
 
 function Assert-PiPackageRegistered {
-    param([string]$Phase, [string]$Spec, [string]$Expectation = "present")
+    param([string]$Phase, [string]$Spec)
     $settings = Join-Path $PiAgentDir "settings.json"
     $want = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
-    $expectAbsent = ($Expectation -eq "absent")
 
     if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) {
         Write-Log ERROR $Phase "settings_missing" "pi settings.json not found; cannot verify installed packages" 1 "path=$settings"
@@ -901,7 +886,7 @@ function Assert-PiPackageRegistered {
         $parsed = Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json
         if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['packages']) { $entries = @($parsed.packages) }
     } catch {
-        # An unparsable registry cannot prove anything, absence included: fail closed
+        # An unparsable registry cannot prove the registration: fail closed
             # instead of reporting the package as missing.
             Write-Log ERROR $Phase "settings_unreadable" "pi settings.json could not be parsed; cannot prove the package state" 1 "path=$settings"
             throw "pi settings.json could not be parsed ($settings)"
@@ -918,125 +903,12 @@ function Assert-PiPackageRegistered {
         }
         if ($source -and ((Get-PiPackageIdentity -Spec $source -BaseDir $PiAgentDir) -ieq $want)) { $found = $true; break }
     }
-    if ($found -eq (-not $expectAbsent)) {
-        if ($expectAbsent) {
-            Write-Log INFO $Phase "package_absent" "pi no longer registers the replaced package" 0 "spec=$Spec"
-        } else {
-            Write-Log INFO $Phase "package_registered" "pi registered the package" 0 "spec=$Spec"
-        }
+    if ($found) {
+        Write-Log INFO $Phase "package_registered" "pi registered the package" 0 "spec=$Spec"
         return
-    }
-    if ($expectAbsent) {
-        Write-Log ERROR $Phase "package_still_registered" "The replaced package is still registered in settings.json" 1 "spec=$Spec;settings=$settings"
-        throw "The replaced package is still registered in settings.json ($Spec)"
     }
     Write-Log ERROR $Phase "package_not_registered" "pi did not register the package in settings.json" 1 "spec=$Spec;settings=$settings"
     throw "pi did not register the package in settings.json ($Spec)"
-}
-
-# Restore the published workflow package after a failed swap. Once the npm source is
-# unregistered, a failure must not leave the workflow package missing from settings:
-# the environment has to look exactly like it did before the patch attempt.
-function Restore-PublishedPiWorkflows {
-    $phase = "pi-workflows-patch"
-    $pkgDir = Join-Path $PiWorkflowsSourceDir "packages\core"
-    $ver = $script:SetupAiWorkflowVersion
-    if (-not $ver) {
-        # Route the lookup through Invoke-Step so the command and its diagnostics are
-        # logged instead of being swallowed by a silent try/catch.
-        $null = Invoke-Step -Phase $phase -Optional -Verify -Action { $script:SetupAiWorkflowVersion = (npm view pi-extensible-workflows version).Trim() }
-        $ver = $script:SetupAiWorkflowVersion
-    }
-
-    Write-Log WARN $phase "patch_rollback_start" "Restoring the published workflow package after a failed swap" 0 "version=$ver"
-    if (-not $ver) {
-        $script:SetupAiRollbackFailed = $true
-    Write-Log ERROR $phase "patch_rollback_failed" "Could not restore the published workflow package; run: pi install npm:pi-extensible-workflows" 1
-        return $false
-    }
-
-    # Undo the swap in reverse order: drop the local source, register the published one
-    # again, then put the published build back into every resolution root this module
-    # overwrote. Ending as we started is the point - a rollback that restores only the
-    # registration would leave a mix of local and published artifacts behind.
-    $null = Invoke-Step -Phase $phase -Optional -Action { pi uninstall $pkgDir }
-    $null = Invoke-Step -Phase $phase -Optional -Action { pi install "npm:pi-extensible-workflows@$ver" }
-    foreach ($root in @($PiExtDir, $PiNpmDir)) {
-        if (-not (Test-Path -LiteralPath (Join-Path $root "package.json") -PathType Leaf)) { continue }
-        Push-Location $root
-        try {
-            $null = Invoke-Step -Phase $phase -Optional -Action { npm install --save-exact --no-audit --no-fund --legacy-peer-deps "pi-extensible-workflows@$ver" }
-        } finally {
-            Pop-Location
-        }
-    }
-
-    # Prove the restore instead of trusting the commands: the registration AND the exact
-    # artifact inside every root we touched must be back on the published build. A root
-    # left on the patched build means the environment is mixed, which is what a rollback
-    # must never leave behind.
-    $restoreFailed = $false
-    try {
-        Assert-PiPackageRegistered -Phase $phase -Spec $pkgDir -Expectation "absent"
-            Assert-PiPackageRegistered -Phase $phase -Spec "npm:pi-extensible-workflows"
-    } catch {
-        $restoreFailed = $true
-    }
-    foreach ($root in @($PiExtDir, $PiNpmDir)) {
-        if (-not (Test-Path -LiteralPath (Join-Path $root "package.json") -PathType Leaf)) { continue }
-        $rootPkg = Join-Path $root "node_modules\pi-extensible-workflows\package.json"
-        if (-not (Test-Path -LiteralPath $rootPkg -PathType Leaf)) {
-            Write-Log WARN $phase "rollback_artifact_missing" "Published workflow package did not come back in this root" 0 "root=$root"
-            $restoreFailed = $true
-            continue
-        }
-        $rootVersion = $null
-        try {
-            $rootVersion = (Get-Content -Raw -LiteralPath $rootPkg | ConvertFrom-Json).version
-        } catch {
-            # An unreadable artifact cannot prove the restore: fail closed here instead of
-            # letting the exception escape past the rollback-failure latch below.
-            Write-Log WARN $phase "rollback_artifact_unreadable" "Published workflow package metadata could not be read after rollback" 0 "root=$root;error=$($_.Exception.Message)"
-            $restoreFailed = $true
-            continue
-        }
-        if ($rootVersion -ne $ver) {
-            Write-Log WARN $phase "rollback_artifact_version_mismatch" "Root holds a different workflow version after rollback" 0 "root=$root;expected=$ver;actual=$rootVersion"
-            $restoreFailed = $true
-            continue
-        }
-        $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
-        if (-not (Test-Path -LiteralPath $rootIo -PathType Leaf)) {
-            Write-Log WARN $phase "rollback_entry_point_missing" "Published workflow package came back without its entry point; the restored build cannot be used" 0 "root=$root"
-            $restoreFailed = $true
-            continue
-        }
-        # A missing or unreadable entry point is not proof of a clean restore, so the marker
-        # state is read explicitly and an unreadable file keeps the restore unproven.
-        $markerState = "absent"
-        try {
-            if (Select-String -LiteralPath $rootIo -SimpleMatch $PiWorkflowsRetryMarker -Quiet) { $markerState = "present" }
-        } catch {
-            $markerState = "unreadable"
-        }
-        if ($markerState -eq "unreadable") {
-            Write-Log WARN $phase "rollback_entry_point_unreadable" "Entry point could not be read after rollback; the restore is unproven" 0 "root=$root"
-            $restoreFailed = $true
-            continue
-        }
-        if ($markerState -eq "present") {
-            Write-Log WARN $phase "rollback_artifact_still_patched" "Root still holds the patched build after rollback" 0 "root=$root"
-            $restoreFailed = $true
-        }
-    }
-
-    if (-not $restoreFailed) {
-        Write-Log INFO $phase "patch_rolled_back" "Published workflow package and resolution roots verified after rollback" 0
-        return $true
-    }
-    $script:SetupAiRollbackFailed = $true
-    Write-Log ERROR $phase "patch_rollback_failed" "Could not fully restore the published workflow package; run: pi install npm:pi-extensible-workflows@$ver" 1
-    return $false
 }
 
 # Resolve the Pi package manifest. Order: explicit override, then the Pi config
@@ -1048,239 +920,6 @@ function Get-PiPackagesManifest {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
     }
     return $null
-}
-
-# Build the patched workflow package from the local checkout and install it into
-# EVERY pi root. Nothing is guessed: the fix is proven in the source, then in the
-# built artifact, then in each installed artifact. Any unproven step returns $false
-# and the caller keeps the published release.
-function Install-PatchedPiWorkflows {
-    $phase = "pi-workflows-patch"
-    # One attempt, one verdict: never inherit a previous run's rollback outcome.
-    $script:SetupAiRollbackFailed = $false
-    # Tracks any filesystem mutation this run made, not only the registration swap: once a
-    # root holds the patched build, a later failure must restore before reporting the
-    # fallback, or the caller would claim a published release that is not the one installed.
-    $environmentMutated = $false
-    $src = $PiWorkflowsSourceDir
-    $ref = $PiWorkflowsFixRef
-    $pkgDir = Join-Path $src "packages\core"
-    $ioTs = Join-Path $pkgDir "src\io.ts"
-    $ioJs = Join-Path $pkgDir "dist\src\io.js"
-
-    try {
-        if (-not (Test-Cmd git)) {
-            Write-Log WARN $phase "git_missing" "git is unavailable; cannot build the patched workflow package" 0 "source=$src"
-            return $false
-        }
-
-        # Accept a worktree too: `.git` is a file there, not a directory.
-        if (-not (Test-Path -LiteralPath (Join-Path $src ".git"))) {
-            if (Test-Path -LiteralPath $src) {
-                Write-Log WARN $phase "source_not_git" "Configured workflow source is not a git checkout" 0 "source=$src"
-                return $false
-            }
-            $null = Invoke-Step -Phase $phase -Action { git clone $PiWorkflowsRemote $src }
-            # A checkout setup-ai created itself may freely move to the fix ref.
-            $null = Invoke-Step -Phase $phase -Optional -Action { git -C $src checkout $ref }
-        }
-
-        # Prefer a ref that already resolves locally (a shared checkout can hold the fix
-        # before it is pushed), then try the remote once. The fetched ref lands in
-        # refs/remotes, so that is what the second probe has to resolve.
-        $refOk = Invoke-Step -Phase $phase -Optional -Verify -ExpectedExitCodes @(1, 128) -Action {
-            git -C $src rev-parse --verify --quiet "$ref^{commit}"
-        }
-        if (-not $refOk) {
-            $null = Invoke-Step -Phase $phase -Optional -Action { git -C $src fetch origin "+refs/heads/$ref`:refs/remotes/origin/$ref" }
-            $refOk = Invoke-Step -Phase $phase -Optional -Verify -ExpectedExitCodes @(1, 128) -Action {
-                git -C $src rev-parse --verify --quiet "$ref^{commit}"
-            }
-            if (-not $refOk) {
-                $refOk = Invoke-Step -Phase $phase -Optional -Verify -ExpectedExitCodes @(1, 128) -Action {
-                    git -C $src rev-parse --verify --quiet "refs/remotes/origin/$ref^{commit}"
-                }
-            }
-        }
-        if (-not $refOk) {
-            Write-Log WARN $phase "fix_ref_unavailable" "Workflow fix ref is unavailable; keeping the published release" 0 "ref=$ref;source=$src"
-            return $false
-        }
-
-        # Trust the CONTENT, not the branch name: the checkout may sit on another branch,
-        # and setup-ai must never switch a checkout the user owns.
-        if (-not (Test-Path -LiteralPath $ioTs -PathType Leaf)) {
-            Write-Log WARN $phase "source_missing" "Workflow source file not found; keeping the published release" 0 "path=$ioTs"
-            return $false
-        }
-        $retryInSource = Test-TransientRenameMarker -IoJs $ioTs
-        if (-not $retryInSource) {
-            Write-Log WARN $phase "retry_missing_in_source" "Checked-out workflow source has no transient-rename retry" 0 "path=$ioTs;ref=$ref;hint=git -C $src checkout $ref"
-            return $false
-        }
-        Write-Log INFO $phase "retry_found_in_source" "Workflow source carries the transient-rename retry" 0 "path=$ioTs"
-
-        # The POSIX form is passed as an ARGUMENT, never interpolated into shell source: a path
-        # containing a quote could otherwise inject shell syntax. packages/core's build script
-        # is POSIX-only (rm -rf, cp -R), so on Windows the
-        # patched build runs through a POSIX shell when one exists: plain PowerShell or
-        # cmd fails with "'rm' is not recognized". Without a shell the published release
-        # stays in place; this module never fails for that.
-        $bashExe = ""
-        if (Test-Cmd bash) { $bashExe = (Get-Command bash -ErrorAction SilentlyContinue).Source }
-        if (-not $bashExe) {
-            $gitBashCandidates = @()
-            if ($env:ProgramFiles) { $gitBashCandidates += (Join-Path $env:ProgramFiles "Git\bin\bash.exe") }
-            if (${env:ProgramFiles(x86)}) { $gitBashCandidates += (Join-Path ${env:ProgramFiles(x86)} "Git\bin\bash.exe") }
-            foreach ($candidate in $gitBashCandidates) {
-                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $bashExe = $candidate; break }
-            }
-        }
-        if (-not $bashExe) {
-            Write-Log WARN $phase "posix_shell_missing" "No POSIX shell found; the core build script (rm, cp) cannot run here; keeping the published release" 0 "source=$src"
-            return $false
-        }
-
-        # The checkout must be an npm project root, or npm would walk up into an unrelated
-        # ancestor project and rewrite its manifest.
-        if (-not (Test-Path -LiteralPath (Join-Path $src "package.json") -PathType Leaf)) {
-            Write-Log WARN $phase "source_not_npm_project" "Workflow checkout has no package.json; nothing is installed into it" 0 "source=$src"
-            return $false
-        }
-
-        # packages/core builds through the workspace toolchain, so install the workspace
-        # FIRST: typescript/esbuild come from its devDependencies and are hoisted by npm.
-        # --no-save --package-lock=false: install only what the build needs without
-        # writing to the checkout's tracked manifest or lockfile - this source tree
-        # belongs to the user, and setup-ai must not leave edits behind in it.
-        Push-Location $src
-        try {
-            $workspaceOk = Invoke-Step -Phase $phase -Optional -Action { npm install --no-save --package-lock=false --no-audit --no-fund }
-            if (-not $workspaceOk) {
-                Write-Log WARN $phase "workspace_install_failed" "Workspace dependencies could not be installed; keeping the published release" 0 "source=$src;hint=npm 12 blocks dependency install scripts by default"
-                return $false
-            }
-            $buildOk = Invoke-Step -Phase $phase -Optional -Action {
-                $srcPosix = $src.Replace([char]92, [char]47)   # backslash -> slash
-                & $bashExe -c 'cd "$1" && npm run build --workspace=packages/core' setup-ai-build $srcPosix
-            }
-            if (-not $buildOk) {
-                Write-Log WARN $phase "patch_build_failed" "Workflow package build failed; keeping the published release" 0 "source=$src;hint=the core build script needs a POSIX shell (rm, cp)"
-                return $false
-            }
-        } finally {
-            Pop-Location
-        }
-
-        if (-not (Assert-TransientRenameRetry -IoJs $ioJs -Phase $phase -Context "built")) { return $false }
-
-        # Shared resolution roots FIRST: this only writes node_modules, so it can still
-        # fail without any settings change - nothing is swapped while it can fail.
-        # The dotenv extension root that setup-ai.sh patches is deliberately NOT here:
-        # the dotenv flow is Linux-only, so on Windows that path is not an npm project
-        # and nothing installs into it.
-        $verifiedRoots = 0
-        $skippedRoots = @()
-        foreach ($root in @($PiExtDir, $PiNpmDir)) {
-            if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
-            # Never run npm in a directory that is not an npm project root: without a local
-            # package.json npm walks UP the tree and installs into an ancestor project,
-            # rewriting that project's manifest (observed once: it rewrote
-            # <dotenv>\pi\agent\package.json and created ~169 MB of node_modules there).
-            if (-not (Test-Path -LiteralPath (Join-Path $root "package.json") -PathType Leaf)) {
-                Write-Log WARN $phase "root_not_npm_project" "Resolution root has no package.json; skipping it instead of installing into an ancestor" 0 "root=$root"
-                $skippedRoots += $root
-                continue
-            }
-            Push-Location $root
-            try {
-                $environmentMutated = $true
-                $rootOk = Invoke-Step -Phase $phase -Optional -Action { npm install --save-exact --no-audit --no-fund --legacy-peer-deps $pkgDir }
-            } finally {
-                Pop-Location
-            }
-            $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
-            $markerOk = $rootOk -and (Assert-TransientRenameRetry -IoJs $rootIo -Phase $phase -Context "root=$root")
-            if (-not $markerOk) {
-                # The root may already carry the patched build: restore before leaving, so a
-                # failure here never leaves a mixed patched/published installation behind.
-                $null = Restore-PublishedPiWorkflows
-                return $false
-            }
-            $verifiedRoots += 1
-        }
-
-        # Swap, do not add: `pi install <local path>` only ADDS an entry, so leaving the
-        # npm source in place would keep the unpatched copy in the managed root and
-        # register two copies of the same extension at once. From this point the published
-        # package is unregistered, so every failure path restores it.
-        # Past this point the published package is unregistered, so an unexpected exception
-        # must still put the environment back before the fallback is reported.
-        $environmentMutated = $true
-        $null = Invoke-Step -Phase $phase -Optional -Action { pi uninstall npm:pi-extensible-workflows }
-        try {
-            # The local source may already be registered by a previous successful run: a
-            # rerun must converge, so only the npm source is required to be gone. Bash does
-            # the same, and requiring the local source to be absent made every rerun roll back.
-            Assert-PiPackageRegistered -Phase $phase -Spec "npm:pi-extensible-workflows" -Expectation "absent"
-            $null = Invoke-Step -Phase $phase -Action { pi install $pkgDir }
-            Assert-PiPackageRegistered -Phase $phase -Spec $pkgDir
-        } catch {
-            $null = Restore-PublishedPiWorkflows
-            return $false
-        }
-
-        # An unpatched copy left in the managed root would shadow the patched build at
-        # import time. `pi uninstall` normally removes it; repair and verify when it
-        # survived. Past the swap the whole operation is all-or-nothing, so a failure here
-        # restores the published registration instead of leaving a half-patched install.
-        $managedPkg = Join-Path $PiNpmDir "node_modules\pi-extensible-workflows"
-        $managedIo = Join-Path $managedPkg "dist\src\io.js"
-        # A root that still carries the package without its entry point is not a skipped
-        # root, it is an unverifiable one, so fail closed instead of reporting success.
-        if ((Test-Path -LiteralPath $managedPkg -PathType Container) -and -not (Test-Path -LiteralPath $managedIo -PathType Leaf)) {
-            Write-Log ERROR $phase "managed_artifact_missing" "The managed root still carries the workflow package without its entry point; cannot prove the patched build is the one loaded" 1 "path=$managedPkg"
-            $null = Restore-PublishedPiWorkflows
-            return $false
-        }
-        if (Test-Path -LiteralPath $managedIo -PathType Leaf) {
-            if (-not (Test-TransientRenameMarker -IoJs $managedIo)) {
-                Write-Log WARN $phase "managed_copy_stale" "Unpatched copy survived in the managed root; replacing it with the patched build" 0 "path=$managedIo"
-                Push-Location $PiNpmDir
-                try {
-                    $repairOk = Invoke-Step -Phase $phase -Optional -Action { npm install --save-exact --no-audit --no-fund --legacy-peer-deps $pkgDir }
-                } finally {
-                    Pop-Location
-                }
-                if (-not $repairOk) {
-                    $null = Restore-PublishedPiWorkflows
-                    return $false
-                }
-            }
-            if (-not (Assert-TransientRenameRetry -IoJs $managedIo -Phase $phase -Context "managed-root")) {
-                $null = Restore-PublishedPiWorkflows
-                return $false
-            }
-        }
-
-        # Report what was ACTUALLY verified: a skipped root is not a verified root, and the
-        # message must never claim more than the checks proved.
-        $skippedText = if ($skippedRoots.Count -gt 0) { $skippedRoots -join "," } else { "none" }
-        Write-Log INFO $phase "patched_workflow_installed" "Patched pi-extensible-workflows installed and verified in $verifiedRoots resolution root(s)" 0 "source=$pkgDir;ref=$ref;verified_roots=$verifiedRoots;skipped_roots=$skippedText"
-        return $true
-    } catch {
-        # Invoke-Step already logged the failing step; the caller falls back to the
-        # published release instead of failing the module, but the cause is still reported.
-        # Once any root or the registration has been touched, a throw may have left the
-        # environment patched, so the restore runs here too and its own failure raises the
-        # hard rollback-failure latch.
-        if ($environmentMutated) {
-            try { $null = Restore-PublishedPiWorkflows }
-            catch { $script:SetupAiRollbackFailed = $true }
-        }
-        Write-Log WARN $phase "patch_unexpected_failure" "Unexpected failure while installing the patched build" 0 "error=$($_.Exception.Message)"
-        return $false
-    }
 }
 
 # ==============================================================================
@@ -1299,7 +938,7 @@ $ModuleDesc = [ordered]@{
     'dotenv'       = 'darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)'
     'ee'           = 'Engineering Excellence skill (npx skills add, all detected agents)'
     'skills'       = 'Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add'
-    'pi-workflows' = 'pi-extensible-workflows (patched build + npm 12 remote sources for pi installs)'
+    'pi-workflows' = 'pi-extensible-workflows (published release + npm 12 remote sources for pi installs)'
     'herdr'        = 'herdr terminal multiplexer'
     'gentle-ai'    = 'gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi'
     'codex'        = 'OpenAI Codex CLI'
@@ -1535,23 +1174,13 @@ function Mod-PiWorkflows {
         }
     }
 
-    # Patched local build LAST, so it wins in both roots over the published release
-    # installed above. A failure here is reported, never hidden: the environment
-    # keeps working with the published release.
-    $patchedActive = $false
-    try { $patchedActive = [bool](Install-PatchedPiWorkflows) } catch {
-        # A throw after a failed restore means the environment was not put back: surface it
-        # instead of degrading to a published release we cannot prove is intact.
-        if ($script:SetupAiRollbackFailed) { throw }
-        $patchedActive = $false
-    }
-    if ($patchedActive) {
-        $patchedVersion = "unknown"
-        try { $patchedVersion = (Get-Content -Raw $localPkg | ConvertFrom-Json).version } catch { $patchedVersion = "unknown" }
-        Write-Log INFO "pi-workflows-patch" "patched_version_active" "Effective workflow package is the patched local build" 0 "version=$patchedVersion;published=$ver"
-    } else {
-        if ($script:SetupAiRollbackFailed) { throw "Workflow patch rollback failed; the environment was not restored" }
-        Write-Log WARN "pi-workflows-patch" "patched_build_unavailable" "Keeping the published pi-extensible-workflows; EPERM-prone state writes may still fail" 0 "source=$PiWorkflowsSourceDir;ref=$PiWorkflowsFixRef"
+    # Prove the artifact pi will load carries the transient-rename retry the published
+    # release ships. Reading the installed file - not the install command - is the only
+    # proof of which build was loaded; an unproven root is reported, never hidden.
+    foreach ($root in @($PiExtDir, $PiNpmDir)) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
+        $null = Assert-TransientRenameRetry -IoJs $rootIo -Phase "pi-workflows" -Context "root=$root"
     }
 }
 
@@ -1563,7 +1192,7 @@ function Mod-PiWorkflows {
 # `git:<host>/<owner>/<repo>[@<ref>]`, or a local path. Blank lines and `#`
 # comments are ignored, and every install is verified by reading pi's own
 # settings.json back. pi-extensible-workflows is skipped here on purpose: the
-# pi-workflows module owns that package (published + patched build).
+# pi-workflows module owns that package (published release).
 function Mod-PiPackages {
     Write-Log INFO "pi-packages" "start" "pi-packages"
     if (-not (Test-Cmd pi)) { throw "pi not found; pi-packages cannot be installed" }

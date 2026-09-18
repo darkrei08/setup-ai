@@ -8,6 +8,7 @@
   },
   "files": [
     "bin/setup-ai.mjs",
+    "bin/check-workflow-retry-marker.mjs",
     "setup-ai.sh",
     "setup-ai.ps1",
     "pi-packages.example.txt",
@@ -23,7 +24,8 @@
     "win32"
   ],
   "scripts": {
-    "list": "node bin/setup-ai.mjs --list"
+    "list": "node bin/setup-ai.mjs --list",
+    "check:retry-marker": "node bin/check-workflow-retry-marker.mjs"
   },
   "keywords": [
     "ai",

@@ -39,7 +39,7 @@ const MODULES = [
   { name: "go",           core: true,  desc: "Go toolchain" },
   { name: "ee",           core: true,  desc: "Engineering Excellence skill (npx skills add, all detected agents)" },
   { name: "skills",       core: true,  desc: "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" },
-  { name: "pi-workflows", core: true,  desc: "pi-extensible-workflows (patched build + npm 12 remote sources for pi installs)" },
+  { name: "pi-workflows", core: true,  desc: "pi-extensible-workflows (published release + npm 12 remote sources for pi installs)" },
   { name: "herdr",        core: true,  desc: "herdr terminal multiplexer" },
   { name: "gentle-ai",    core: true,  desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
   { name: "codex",        core: true,  desc: "OpenAI Codex CLI" },
