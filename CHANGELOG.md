@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `base` no longer requests `github-cli` when another package already provides `gh`.
 - `skills` and `ee` report the shared skills root at INFO for codex, instead of one `skill_not_copied_to_agent_root` WARN per agent and skill.
 - Documented how to read the install log and the real live Pi config path, `~/.pi/agent/settings.json`, including the leftover symlink claim the README still carried.
+- `TMP_DIR` was assigned twice, so `cleanup` removed only the second directory and the first leaked on every run; under `--dry-run` that leaked the log directory as well, because `LOG_DIR` derives from the first value.
 
 ### Changed
 

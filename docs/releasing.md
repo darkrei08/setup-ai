@@ -32,14 +32,14 @@ locally; publication belongs to the workflow.
 3. Create and push the annotated version tag:
 
    ```bash
-   git tag -a v3.5.2 -m "Release v3.5.2"
-   git push origin v3.5.2
+   git tag -a v3.6.0 -m "Release v3.6.0"
+   git push origin v3.6.0
    ```
 
 4. Dispatch the workflow from `main` with the exact tag:
 
    ```bash
-   gh workflow run publish.yml --repo darkrei08/setup-ai --ref main -f tag=v3.5.2
+   gh workflow run publish.yml --repo darkrei08/setup-ai --ref main -f tag=v3.6.0
    run_id="$(gh run list --repo darkrei08/setup-ai --workflow publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
    gh run watch "$run_id" --repo darkrei08/setup-ai --exit-status
    ```
@@ -47,7 +47,7 @@ locally; publication belongs to the workflow.
 5. Confirm npm has the released version:
 
    ```bash
-   npm view @darkrei08/setup-ai@3.5.2 version
+   npm view @darkrei08/setup-ai@3.6.0 version
    ```
 
 The workflow verifies that the tag points to a commit contained in `main` and that its

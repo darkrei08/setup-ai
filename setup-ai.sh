@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.5.2
+# Version: 3.6.0
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -60,7 +60,6 @@ HUMAN_LOG="${LOG_DIR}/setup_${RUN_ID}.log"
 JSONL_LOG="${LOG_DIR}/setup_${RUN_ID}.jsonl"
 REPORT_FILE="${LOG_DIR}/engineering-report_${RUN_ID}.md"
 
-TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
 PI_STARTUP_PID=""
 PI_STARTUP_WATCHDOG_PID=""
 
@@ -1141,7 +1140,7 @@ assert_pi_package_registered() {
     if (( DRY_RUN == 1 )); then
         log_event "INFO" "${phase}" "dry_run_skipped" \
             "pi package read-back needs an installed state; a dry run does not verify it" 0 \
-            "spec=${spec};expectation=${expectation}"
+            "spec=${spec}"
         return 0
     fi
 
