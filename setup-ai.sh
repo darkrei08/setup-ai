@@ -2123,21 +2123,38 @@ mod_herdr() {
 # Delete one exact line from an existing file, keeping every other byte. No
 # `sed -i` (BSD/macOS sed needs an -i '' argument); the rewrite goes through a
 # temp file and only replaces the original after grep succeeded, so a failure
-# leaves the file as it was. Only LF lines are considered: every line this
-# installer ever appended used LF.
+# leaves the file as it was. Return 0 when the line was removed, 1 when there was
+# nothing to remove, and 2 when the line was present but the file could not be
+# rewritten. Only LF lines are considered: every line this installer ever
+# appended used LF.
 remove_line_from_file() {
-    local file="$1" line="$2"
-    [[ -f "${file}" ]] && grep -Fqx -- "${line}" "${file}" 2>/dev/null || return 1
-    local tmp="${TMP_DIR}/remove-line.tmp" rc=0
+    local file="$1" line="$2" grep_rc
+    [[ -f "${file}" ]] || return 1
+    if grep -Fqx -- "${line}" "${file}" 2>/dev/null; then :; else
+        grep_rc=$?
+        if (( grep_rc == 1 )); then return 1; fi
+        return 2
+    fi
+    if [[ -L "${file}" ]]; then
+        log_event "ERROR" "gentle-ai" "remove_line_symlink" \
+            "Refusing to replace symlink ${file}; its target was left unchanged" 1
+        return 2
+    fi
+    local tmp="${file}.setup-ai.tmp" rc=0
+    if ! cp -p -- "${file}" "${tmp}"; then
+        rm -f -- "${tmp}"
+        return 2
+    fi
     grep -vxF -- "${line}" "${file}" > "${tmp}" || rc=$?
     if (( rc > 1 )); then
         rm -f -- "${tmp}"
-        return 1
+        return 2
     fi
     if ! mv -- "${tmp}" "${file}"; then
         rm -f -- "${tmp}"
-        return 1
+        return 2
     fi
+    return 0
 }
 
 # An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
@@ -2147,16 +2164,29 @@ remove_line_from_file() {
 # this installer wrote, unconditionally: a machine can carry them with no
 # shadowing package left. Anything else in those files belongs to the user.
 remove_stale_quiet_tools_switch() {
-    local changed=() rc
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
-        if remove_line_from_file "${rc}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
-            changed+=("${rc}")
+    local changed=() failed=() candidate remove_rc
+    for candidate in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if remove_line_from_file "${candidate}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
+            changed+=("${candidate}")
+        else
+            remove_rc=$?
+            if (( remove_rc == 2 )); then failed+=("${candidate}"); fi
         fi
     done
     # systemd --user sessions and panes that never source an rc read this file.
     local envd="${HOME}/.config/environment.d/50-gentle-pi.conf"
     if remove_line_from_file "${envd}" 'GENTLE_PI_QUIET_TOOLS=0'; then
         changed+=("${envd}")
+    else
+        remove_rc=$?
+        if (( remove_rc == 2 )); then failed+=("${envd}"); fi
+    fi
+    if (( ${#failed[@]} > 0 )); then
+        local remediation="replace each listed symlink with a regular file or remove the stale line manually, then rerun setup-ai"
+        log_event "ERROR" "gentle-ai" "stale_quiet_tools_switch_unremoved" \
+            "Could not remove GENTLE_PI_QUIET_TOOLS=0 from files=$(IFS=,; printf '%s' "${failed[*]}"); ${remediation}" 1 \
+            "files=$(IFS=,; printf '%s' "${failed[*]}");remediation=${remediation}"
+        return 1
     fi
     (( ${#changed[@]} > 0 )) || return 0
     log_event "INFO" "gentle-ai" "stale_quiet_tools_switch_removed" \
@@ -2174,7 +2204,7 @@ remove_stale_quiet_tools_switch() {
 # statically and the entry rewritten as raw text, which leaves the rest of the
 # file's formatting untouched.
 handle_quiet_tools_conflict() {
-    remove_stale_quiet_tools_switch
+    remove_stale_quiet_tools_switch || return 1
 
     local settings="${PI_AGENT_DIR}/settings.json"
     [[ -f "${settings}" ]] || return 0
