@@ -1479,7 +1479,18 @@ mod_base() {
             ;;
         pacman)
             local pkgs=(base-devel curl wget git unzip tar ca-certificates gnupg jq
-                       python python-pip neovim github-cli go imagemagick wl-clipboard xclip)
+                       python python-pip neovim go imagemagick wl-clipboard xclip)
+            # github-cli conflicts with every other package that provides gh (github-cli-git
+            # from the AUR, common on CachyOS). --noconfirm answers pacman's removal prompt
+            # with "no", so the transaction aborts and takes the whole run with it. Request
+            # it only when nothing provides gh yet: an existing provider is never removed.
+            if command -v gh >/dev/null 2>&1 || pacman -Qq github-cli-git >/dev/null 2>&1; then
+                log_event "INFO" "base" "gh_provider_present" \
+                    "gh is already installed; skipping github-cli to avoid an unresolvable pacman conflict" 0 \
+                    "package=github-cli"
+            else
+                pkgs+=(github-cli)
+            fi
             run_cmd "base" sudo pacman -Sy --needed --noconfirm "${pkgs[@]}"
             ;;
         zypper)
