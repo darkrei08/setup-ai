@@ -9,3 +9,5 @@ node_modules/
 .pi/
 # Local CodeGraph index artifact
 .codegraph/
+# Local field reports and issue drafts (never published)
+buugg/
