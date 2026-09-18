@@ -66,8 +66,8 @@ idempotent, so it is safe alongside the Linux `dotenv` run.
 
 ## pi-workflows
 
-Installs `pi-extensible-workflows` (published release + optional patched local
-build) and enables npm 12 remote sources for pi installs. Full guide:
+Installs `pi-extensible-workflows` (published release, verified down to the
+loaded artifact) and enables npm 12 remote sources for pi installs. Full guide:
 [pi-workflows-guide.md](./pi-workflows-guide.md).
 
 ## herdr

@@ -25,7 +25,7 @@
 # unnoticed. Re-running the installer is idempotent.
 #
 # pi-extensible-workflows is intentionally NOT listed here: the `pi-workflows`
-# module owns that package (published release + patched local build).
+# module owns that package (published release).
 #
 # On another machine, point setup-ai at any list without copying files:
 #   PI_PACKAGES_FILE=/path/to/list.txt bash setup-ai.sh --only pi-packages

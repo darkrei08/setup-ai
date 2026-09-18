@@ -275,7 +275,7 @@ of passing unnoticed. Re-running the installer is safe.
 **Deliberate skip**: `pi-extensible-workflows` must not be listed here. If it
 appears, the module logs `workflow_owned_elsewhere` (WARN), counts it as `skipped`,
 and continues: that package is owned by the `pi-workflows` module (published
-release + patched local build).
+release, verified down to the loaded artifact).
 
 **Esempi di manifest / Example manifests**
 
@@ -396,156 +396,87 @@ hand-editing `settings.json`, so a fresh machine converges with no manual steps.
 
 **Italiano**
 
-Il modulo `pi-workflows` fa tre cose, in quest'ordine:
+Il modulo `pi-workflows` installa la **release pubblicata** di
+`pi-extensible-workflows` e ne verifica l'artefatto, in quest'ordine:
 
-1. **Configura npm** nelle due root (§2) prima della prima installazione.
-2. **Installa la release pubblicata** di `pi-extensible-workflows` alla versione
-   risolta con `npm view pi-extensible-workflows version` (o da
-   `PI_WORKFLOW_VERSION` se impostata): prima con
-   `pi install npm:pi-extensible-workflows@<ver>`, poi con
+1. **Configura npm** nelle root (§2) prima della prima installazione.
+2. **Installa la release pubblicata** alla versione risolta con
+   `npm view pi-extensible-workflows version` (o da `PI_WORKFLOW_VERSION` se
+   impostata): prima con `pi install npm:pi-extensible-workflows@<ver>`, poi con
    `npm install --save-exact` nella root `extensions`, e — se
    `<dotenv>/pi/agent/extensions/pi-ext-workflows` esiste — anche lì. Ogni copia è
    verificata leggendo il `package.json` **di quella directory** e confrontando la
    versione.
-3. **Installa per ultima la build locale patchata**, così vince su entrambe le root.
-   Provenienza: il checkout in `PI_WORKFLOWS_SOURCE_DIR` (default
-   `~/git/personale/pi-extensible-workflows`) al ref `PI_WORKFLOWS_FIX_REF` (default
-   `fix/windows-atomic-persistence`).
+3. **Verifica l'artefatto che pi caricherà**: in ogni root scritta legge
+   `<root>/node_modules/pi-extensible-workflows/dist/src/io.js` e cerca il simbolo
+   **`renameWithRetry`** (`PI_WORKFLOWS_RETRY_MARKER`). La versione dice quale
+   release ha servito npm, non quale build viene caricata: la prova è il contenuto
+   dell'artefatto.
 
-**Cosa fa e cosa non fa con git**: se la directory non esiste la clona da
-`PI_WORKFLOWS_REMOTE` e può spostare **quel** checkout (creato da setup-ai) sul fix
-ref. Su un checkout che possiedi non cambia mai branch: preferisce il ref già
-risolto in locale, altrimenti fa **un** `git fetch` del solo ref in
-`refs/remotes`, e verifica il **contenuto** (il file sorgente), non il nome del
-branch. Non fa mai push e non pubblica nulla.
+| Esito / Outcome | Evento / Event |
+| --- | --- |
+| retry presente / marker present | `retry_verified` (`context=root=<root>`) |
+| artefatto assente / artifact missing | `retry_probe_missing` (WARN) |
+| marcatore assente / marker missing | `retry_missing` (WARN, con `remedy=`) |
 
-**La catena di prova** (il fix è dimostrato, non assunto):
+Un `retry_missing` **non** ferma l'installazione: la release pubblicata resta
+installata e usabile, ma la protezione EPERM non è dimostrata. Il rimedio è
+reinstallare l'ultima release: `pi install npm:pi-extensible-workflows@latest`.
 
-| Passo / Step | File | Evento / Event |
-| --- | --- | --- |
-| sorgente / source | `<src>/packages/core/src/io.ts` | `retry_found_in_source` |
-| artefatto buildato / built artifact | `<src>/packages/core/dist/src/io.js` | `retry_verified` (`context=built`) |
-| artefatto installato / installed artifact | `<root>/node_modules/pi-extensible-workflows/dist/src/io.js` | `retry_verified` (`context=root=<root>`) |
-| root gestito / managed root | `<pi agent>/npm/node_modules/pi-extensible-workflows/dist/src/io.js` | `retry_verified` (`context=managed-root`) |
+**Nessuna build locale**: setup-ai non clona, non builda, non pubblica e non registra
+un checkout proprio di `pi-extensible-workflows`. La patch EPERM
+(`renameWithRetry`: EACCES/EBUSY/EPERM con backoff limitato) è **upstream** dalla
+`5.15.0`, quindi nessun percorso può produrre un artefatto migliore della release.
+`PI_WORKFLOWS_SOURCE_DIR`, `PI_WORKFLOWS_FIX_REF` e `PI_WORKFLOWS_REMOTE` non
+esistono più: nessun clone, nessun `git fetch`, nessun cambio di branch su un
+checkout tuo, nessun push.
 
-Il marcatore cercato è il simbolo **`renameWithRetry`** (`PI_WORKFLOWS_RETRY_MARKER`).
-**Ordine delle operazioni** (niente mezzo-swap): prima i **root di risoluzione**
-(scrivono solo `node_modules`, quindi possono fallire senza toccare la configurazione),
-poi lo **swap**: `pi uninstall npm:pi-extensible-workflows` → verifica `package_absent`
-→ `pi install <checkout>/packages/core` → verifica `package_registered`. Perché lo swap:
-`pi install` di un path locale **aggiunge** una entry, quindi lasciare registrata la
-sorgente npm terrebbe due copie della stessa estensione (e la copia non patchata nel
-root gestito). Da quel punto ogni fallimento esegue un **rollback**
-(`patch_rollback_start` → `patch_rolled_back`); se il ripristino non riesce lo dice con
-`patch_rollback_failed` (ERROR), che include il comando da lanciare a mano.
+**Guardia anti walk-up**: `ensure_npm_remote_sources` crea il marcatore
+`package.json` in ogni root prima che npm giri, così `npm install` non può risalire
+l'albero e riscrivere il manifest di un progetto antenato.
 
-**Guardia anti walk-up**: `npm install` gira **solo** in directory con un `package.json`
-locale. Un root senza manifest viene saltato con `root_not_npm_project`, altrimenti npm
-risale l'albero e riscrive il manifest di un progetto antenato.
-
-Se un passo non è dimostrabile il modulo **tiene la release pubblicata** e lo dice:
-`workspace_install_failed`, `patch_build_failed`, `retry_missing`, `retry_probe_missing`,
-`fix_ref_unavailable`, `source_missing`, `source_not_git`, `retry_missing_in_source`,
-`root_not_npm_project`, `managed_copy_stale`, e in chiusura `patched_build_unavailable`
-(WARN). Il successo finale è `patched_workflow_installed` (+ `patched_version_active`).
-
-**Riavvia pi dopo lo swap**: una sessione già in esecuzione ha risolto le risorse dal
-vecchio root npm (estensioni, `dist/starter/roles`), quindi può fallire finché non
-riparte; dopo il riavvio pi carica la build patchata dal nuovo path.
-
-**Limite Windows**: lo script di build di `packages/core` è **POSIX-only**
-(`rm -rf dist`, `cp -R ...`): da PowerShell/cmd fallisce con `'rm' is not recognized`.
-`setup-ai.ps1` cerca uno shell POSIX — `bash` nel `PATH`, poi
-`%ProgramFiles%\Git\bin\bash.exe` e la variante `(x86)` — e passa da lì la build; se non
-lo trova logga `posix_shell_missing` e resta la release pubblicata. Su una macchina
-pulita serve prima un `npm install` nella root del checkout, perché `typescript` ed
-`esbuild` arrivano dalle devDependencies di `packages/core`.
+**Check eseguibile**: `npm run check:retry-marker` (o
+`node bin/check-workflow-retry-marker.mjs`) fallisce se il marcatore o l'asserzione
+spariscono dal percorso di install, in entrambi gli script.
 
 **English**
 
-The `pi-workflows` module does three things, in this order:
+The `pi-workflows` module installs the **published release** of
+`pi-extensible-workflows` and verifies its artifact, in this order:
 
-1. **Configures npm** in both roots (§2) before the first install.
-2. **Installs the published release** of `pi-extensible-workflows` at the version
-   resolved with `npm view pi-extensible-workflows version` (or from
-   `PI_WORKFLOW_VERSION` when set): first with
-   `pi install npm:pi-extensible-workflows@<ver>`, then with `npm install
-   --save-exact` in the `extensions` root, and — if
-   `<dotenv>/pi/agent/extensions/pi-ext-workflows` exists — there too. Every copy
-   is verified by reading **that directory's** `package.json` and comparing the
+1. **Configures npm** in the roots (§2) before the first install.
+2. **Installs the published release** at the version resolved with
+   `npm view pi-extensible-workflows version` (or from `PI_WORKFLOW_VERSION` when
+   set): first with `pi install npm:pi-extensible-workflows@<ver>`, then with
+   `npm install --save-exact` in the `extensions` root, and — if
+   `<dotenv>/pi/agent/extensions/pi-ext-workflows` exists — there too. Every copy is
+   verified by reading **that directory's** `package.json` and comparing the
    version.
-3. **Installs the patched local build last**, so it wins in both roots. Source: the
-   checkout at `PI_WORKFLOWS_SOURCE_DIR` (default
-   `~/git/personale/pi-extensible-workflows`) at `PI_WORKFLOWS_FIX_REF` (default
-   `fix/windows-atomic-persistence`).
+3. **Verifies the artifact pi will load**: in every root it wrote, it reads
+   `<root>/node_modules/pi-extensible-workflows/dist/src/io.js` and looks for the
+   symbol **`renameWithRetry`** (`PI_WORKFLOWS_RETRY_MARKER`). The version says
+   which release npm served, not which build is loaded: the artifact content is the
+   proof.
 
-**What it does and does not do with git**: if the directory does not exist it clones
-it from `PI_WORKFLOWS_REMOTE` and may move **that** checkout (created by setup-ai)
-to the fix ref. On a checkout you own it never switches branch: it prefers a ref
-that already resolves locally, otherwise makes **one** `git fetch` of just that ref
-into `refs/remotes`, and trusts the **content** (the source file), not the branch
-name. It never pushes and never publishes.
+Same outcome table as above. `retry_missing` does **not** fail the install: the
+published release stays installed and usable, but the EPERM protection is not
+proven; the remedy is to reinstall the latest release with
+`pi install npm:pi-extensible-workflows@latest`.
 
-**The proof chain** (the fix is proven, not assumed): see the table above — source
-→ built artifact → installed artifact, each step logged.
+**No local build**: setup-ai does not clone, build, publish or register its own
+checkout of `pi-extensible-workflows`. The EPERM fix (`renameWithRetry`:
+EACCES/EBUSY/EPERM with bounded backoff) is **upstream** since `5.15.0`, so no path
+can produce a better artifact than the release. `PI_WORKFLOWS_SOURCE_DIR`,
+`PI_WORKFLOWS_FIX_REF` and `PI_WORKFLOWS_REMOTE` are gone: no clone, no
+`git fetch`, no branch switch on a checkout you own, no push.
 
-The marker it greps for is the symbol **`renameWithRetry`**
-(`PI_WORKFLOWS_RETRY_MARKER`).
+**Walk-up guard**: `ensure_npm_remote_sources` writes the `package.json` marker into
+every root before npm runs, so `npm install` cannot walk up the tree and rewrite an
+ancestor project's manifest.
 
-**Order of operations** (no half-swap): the **resolution roots** come first (they only
-write `node_modules`, so they can fail without touching configuration), then the
-**swap**: `pi uninstall npm:pi-extensible-workflows` → verify `package_absent` →
-`pi install <checkout>/packages/core` → verify `package_registered`. Why the swap:
-`pi install` of a local path only **adds** an entry, so leaving the npm source
-registered would keep two copies of the same extension (including the unpatched one in
-the managed root). From that point every failure runs a **rollback**
-(`patch_rollback_start` → `patch_rolled_back`); when the restore itself fails it says so
-with `patch_rollback_failed` (ERROR), including the command to run by hand.
-
-**Walk-up guard**: `npm install` only ever runs in a directory that has a local
-`package.json`. A root without a manifest is skipped with `root_not_npm_project`,
-otherwise npm walks up the tree and rewrites an ancestor project's manifest.
-
-If a step cannot be proven the module **keeps the published release** and says so:
-`workspace_install_failed`, `patch_build_failed`, `retry_missing`,
-`retry_probe_missing`, `fix_ref_unavailable`, `source_missing`, `source_not_git`,
-`retry_missing_in_source`, `root_not_npm_project`, `managed_copy_stale`, and finally
-`patched_build_unavailable` (WARN). Success is `patched_workflow_installed`
-(plus `patched_version_active`).
-
-**Restart pi after the swap**: a session that is already running resolved resources
-(extensions, `dist/starter/roles`) from the old npm root, so it can fail until it
-restarts; after the restart pi loads the patched build from the new path.
-
-**Windows limitation**: `packages/core`'s build script is **POSIX-only**
-(`rm -rf dist`, `cp -R ...`): from PowerShell/cmd it fails with
-`'rm' is not recognized`. `setup-ai.ps1` looks for a POSIX shell — `bash` on `PATH`,
-then `%ProgramFiles%\Git\bin\bash.exe` and the `(x86)` variant — and runs the build
-through it; without one it logs `posix_shell_missing` and keeps the published release.
-On a clean machine a root `npm install` in the checkout is required first, because
-`typescript` and `esbuild` come from `packages/core`'s devDependencies.
-
-```bash
-# Linux / macOS / WSL: override source, ref and remote
-PI_WORKFLOWS_SOURCE_DIR=/path/to/pi-extensible-workflows \
-PI_WORKFLOWS_FIX_REF=fix/windows-atomic-persistence \
-bash setup-ai.sh --only pi-workflows
-```
-
-```powershell
-# Windows: build the checkout through Git Bash (validated: exit 0, ~23s on node v26 / npm 12.0.2)
-cd C:\path\to\pi-extensible-workflows
-npm install
-& "C:\Program Files\Git\bin\bash.exe" -lc "cd '$(Get-Location)' && npm run build --workspace=packages/core"
-```
-
-> **(raccomandazione / recommendation)** Sul checkount dei workflow npm 12 può
-> bloccare gli script di installazione delle dipendenze (es. il postinstall di
-> `esbuild`): è una causa nota di `workspace_install_failed`. Abilita gli script
-> per quel workspace prima della build.
-> In the workflow checkout, npm 12 may block dependency install scripts (e.g.
-> `esbuild`'s postinstall): a known cause of `workspace_install_failed`. Allow
-> scripts for that workspace before building.
+**Runnable check**: `npm run check:retry-marker` (or
+`node bin/check-workflow-retry-marker.mjs`) fails when the marker or the assertion
+disappears from the install path, in either script.
 
 ---
 
@@ -711,11 +642,11 @@ await agent("Review this change", {
    su Windows `powershell -File .\setup-ai.ps1 -Only pi,pi-packages,pi-workflows`).
 5. **verifica dagli eventi** (non a occhio): `remote_sources_enabled` per entrambe
    le root, `install_scripts_approved` (script di installazione), `manifest_loaded` +
-   `manifest_applied` (`installed=`, `skipped=`), `retry_found_in_source` + due
-   `retry_verified` + `patched_workflow_installed` **oppure**
-   `patched_build_unavailable` con la release pubblicata.
-6. **verifica l'artefatto** con il marcatore `renameWithRetry` (§9): `2` = patchato,
-   `0` = release pubblicata.
+   `manifest_applied` (`installed=`, `skipped=`), e un `retry_verified` per ogni root
+   scritta dal modulo `pi-workflows`.
+6. **verifica l'artefatto** con il marcatore `renameWithRetry` (§9): `2` = retry
+   presente, `0` = `retry_missing` (WARN: la protezione EPERM non è dimostrata, non
+   un fallimento dell'install).
 7. **pinna ciò che non deve derivare** (`npm:pkg@1.2.3`) e tieni come path locale
    solo i pacchetti che costruisci tu. **(raccomandazione)**
 
@@ -734,11 +665,11 @@ await agent("Review this change", {
    on Windows `powershell -File .\setup-ai.ps1 -Only pi,pi-packages,pi-workflows`).
 5. **verify from the events** (not by eye): `remote_sources_enabled` for both roots,
    `install_scripts_approved` (install scripts), `manifest_loaded` +
-   `manifest_applied` (`installed=`, `skipped=`), `retry_found_in_source` + two
-   `retry_verified` + `patched_workflow_installed` **or** `patched_build_unavailable`
-   with the published release.
-6. **verify the artifact** with the `renameWithRetry` marker (§9): `2` = patched,
-   `0` = published release.
+   `manifest_applied` (`installed=`, `skipped=`), and one `retry_verified` for every
+   root the `pi-workflows` module wrote.
+6. **verify the artifact** with the `renameWithRetry` marker (§9): `2` = retry
+   present, `0` = `retry_missing` (WARN: the EPERM protection is unproven, not a
+   failed install).
 7. **pin what must not drift** (`npm:pkg@1.2.3`) and keep local paths only for
    packages you build yourself. **(recommendation)**
 
@@ -768,11 +699,13 @@ await agent("Review this change", {
   `~/.pi/agent/npm/node_modules/gentle-pi/.gentle-ai/` manca. Fix: riesegui setup-ai
   (che ora approva per nome) o il fallback di §2. Un'approvazione per nome non può
   più essere scavalcata da un aggiornamento.
-- **`EPERM: operation not permitted, rename '...state.json.tmp'`** — causa: la
-  release pubblicata scrive lo stato con write(`.tmp`) + `rename()` senza retry, e
-  un lock transitorio (Defender, indicizzazione, client di sync o un pi concorrente)
-  fa fallire la scrittura. Il fix è il retry di `renameWithRetry` (EACCES/EBUSY/EPERM
-  con backoff limitato). Controllo del marcatore:
+- **`EPERM: operation not permitted, rename '...state.json.tmp'`** — causa: lo stato
+  è scritto con write(`.tmp`) + `rename()`, e un lock transitorio (Defender,
+  indicizzazione, client di sync o un pi concorrente) fa fallire la scrittura. Il
+  retry `renameWithRetry` (EACCES/EBUSY/EPERM con backoff limitato) è nella release
+  pubblicata dalla `5.15.0`: un artefatto installato **senza** il marcatore è una
+  release più vecchia (o una regressione upstream) e il modulo lo segnala con
+  `retry_missing` + `remedy=` — non lo nasconde. Controllo del marcatore:
 
   ```bash
   # Linux / macOS / WSL
@@ -787,45 +720,44 @@ await agent("Review this change", {
   Select-String -Path "$HOME\.pi\agent\extensions\node_modules\pi-extensible-workflows\dist\src\io.js" -Pattern renameWithRetry
   ```
 
-  Un artefatto **non patchato** è di ~2277 byte con `0` match; uno **patchato** di
-  ~3077 byte con `2` match. Devono risultare patchate **entrambe** le root.
-- **Trappola principale: la versione non cambia.** Il pacchetto resta `5.13.2`
-  anche dopo la patch locale, quindi un controllo di versione (`node -e
-  "console.log(require('<path>/package.json').version)"`) **non** distingue
-  patchato da non patchato: l'unica prova è il contenuto dell'artefatto
-  (`renameWithRetry`).
+  Un artefatto **senza** il retry è di ~2277 byte con `0` match; uno **con** il retry
+  di ~3077 byte con `2` match. Entrambe le root devono riportare `2`. Il percorso di
+  install è protetto da un check eseguibile: `npm run check:retry-marker`.
+- **La versione non prova l'artefatto.** `npm view pi-extensible-workflows version`
+  dice quale release è stata installata, non quale file `.js` viene caricato (una
+  `dist/` stale o una copia diversa per root non si vedono dalla versione): l'unica
+  prova resta il contenuto dell'artefatto (`renameWithRetry`).
 - **Pacchetto mancante dopo l'install** — `package_not_registered` (ERROR): pi non
   ha registrato il sorgente in `~/.pi/agent/settings.json`. Controlla il `meta`
   (`spec=`, `settings=`), che il sorgente sia valido per `pi install`, e che
   `settings.json` esista.
-- **Copie stale/duplicate nelle due root** — sintomo tipico: una root patchata e
+- **Copie stale/duplicate nelle due root** — sintomo tipico: una root con il retry e
   l'altra no, o versioni divergenti. Le due `package.json` non sono equivalenti:
   `~/.pi/agent/npm/package.json` usa un range caret (`"^5.13.2"`) mentre
   `~/.pi/agent/extensions/package.json` pinna esatto (`"5.13.2"`): un aggiornamento
   del managed root può quindi lasciare la seconda indietro. Rimedio: riesegui il
-  modulo `pi-workflows` (riscrive e riverifica entrambe) e ricontrolla i due
-  marcatori.
+  modulo `pi-workflows` (riscrive e riverifica entrambe) e ricontrolla i due artefatti
+  con il marcatore `renameWithRetry`.
 - **`pi update --extensions` fallisce su un sorgente cattivo** — causa: reinstalla
   tutto attraverso il managed root, quindi un solo sorgente con dipendenza remote
   (o un ref git non raggiungibile) rompe il comando intero. Rimedio: sistema o
   rimuovi quella riga dal manifest / da `settings.json`, poi ripeti.
-- **Root dotenv su Windows** — il flusso `dotenv` è Linux-only, quindi su Windows
-  `<checkout dotenv>\pi\agent\extensions\pi-ext-workflows` non è un progetto npm (non
-  ha `package.json`). Il modulo `pi-workflows` lo salta con `root_not_npm_project`
-  invece di installare in un antenato: è il comportamento corretto, non un errore.
-  Su Linux/WSL quel root esiste come progetto npm e viene patchato come gli altri.
+- **Root dotenv su Windows** — il flusso `dotenv` è Linux-only, quindi su Windows non
+  esiste una root `extensions` di dotenv in cui installare: `setup-ai.ps1` scrive solo
+  il managed root e la root `extensions`, e verifica esattamente quelle due. Su
+  Linux/WSL la root di dotenv esiste come progetto npm e viene verificata come le
+  altre.
 - **Leggere le prove strutturate** — ogni run scrive `logs/setup_<runid>.log`
   (umano), `logs/setup_<runid>.jsonl` (strutturato) e
   `engineering-report_<runid>.md`. Ogni riga JSONL ha `phase`, `event`, `meta`:
 
   ```bash
-  jq -r 'select(.event|test("remote_sources_enabled|install_scripts_approved|install_scripts_unverified|retry_verified|retry_found_in_source|patched_workflow_installed|patched_build_unavailable|manifest_applied|workflow_owned_elsewhere")) | "\(.phase)\t\(.event)\t\(.meta // "")"' \
+  jq -r 'select(.event|test("remote_sources_enabled|install_scripts_approved|install_scripts_unverified|retry_verified|retry_missing|manifest_applied|workflow_owned_elsewhere")) | "\(.phase)\t\(.event)\t\(.meta // "")"' \
     logs/setup_<runid>.jsonl
   ```
 
   `remote_sources_enabled` → `meta` con `npmrc=<root>/.npmrc`; `retry_verified` →
-  `path=...;context=built|installed`; `patched_workflow_installed` →
-  `source=...;ref=...`; `patched_build_unavailable` → `source=...;ref=...`;
+  `path=...;context=root=<root>`; `retry_missing` → `path=...;context=...;remedy=...`;
   `manifest_applied` → `installed=<n>;skipped=<n>;manifest=<path>`;
   `workflow_owned_elsewhere` → `spec=<riga>`.
 
@@ -851,38 +783,41 @@ await agent("Review this change", {
   `~/.pi/agent/npm/node_modules/gentle-pi/.gentle-ai/` is missing. Fix: re-run setup-ai
   (it now approves by name) or the §2 fallback. A name-only approval cannot be
   invalidated by an update.
-- **`EPERM: operation not permitted, rename '...state.json.tmp'`** — cause: the
-  published release writes state with write(`.tmp`) + `rename()` without retry, and
-  a transient lock (Defender, indexing, a sync client, or a concurrent pi process)
-  makes the write fail. The fix is the `renameWithRetry` retry (EACCES/EBUSY/EPERM
-  with bounded backoff). Marker check: see the commands and sizes above; an
-  **unpatched** artifact is ~2277 bytes with `0` matches, a **patched** one ~3077
-  bytes with `2` matches, and **both** roots must be patched.
-- **Main trap: the version does not change.** The package stays `5.13.2` even after
-  the local patch, so a version check (`node -e
-  "console.log(require('<path>/package.json').version)"`) **cannot** distinguish
-  patched from unpatched: the only proof is the artifact content
-  (`renameWithRetry`).
+- **`EPERM: operation not permitted, rename '...state.json.tmp'`** — cause: state is
+  written with write(`.tmp`) + `rename()`, and a transient lock (Defender, indexing,
+  a sync client, or a concurrent pi process) makes the write fail. The
+  `renameWithRetry` retry (EACCES/EBUSY/EPERM with bounded backoff) ships in the
+  published release since `5.15.0`: an installed artifact **without** the marker is
+  an older release (or an upstream regression), reported by the module as
+  `retry_missing` + `remedy=` rather than hidden. Marker check: see the commands
+  above; an artifact **without** the retry is ~2277 bytes with `0` matches, one
+  **with** it ~3077 bytes with `2` matches, and **both** roots must report `2`.
+  The install path itself is guarded by a runnable check:
+  `npm run check:retry-marker`.
+- **The version does not prove the artifact.** `npm view
+  pi-extensible-workflows version` says which release was installed, not which
+  `.js` file gets loaded (a stale `dist/` or a different copy per root is invisible
+  to the version): the only proof is the artifact content (`renameWithRetry`).
 - **Package missing after install** — `package_not_registered` (ERROR): pi did not
   record the source in `~/.pi/agent/settings.json`. Check the `meta` (`spec=`,
   `settings=`), that the source is valid for `pi install`, and that
   `settings.json` exists.
-- **Stale/duplicated copies in the two roots** — typical symptom: one root patched
-  and the other not, or diverging versions. The two `package.json` files are not
-  equivalent: `~/.pi/agent/npm/package.json` uses a caret range (`"^5.13.2"`) while
-  `~/.pi/agent/extensions/package.json` pins exactly (`"5.13.2"`): updating the
-  managed root can leave the second one behind. Remedy: re-run the `pi-workflows`
-  module (it rewrites and re-verifies both) and re-check both markers.
+- **Stale/duplicated copies in the two roots** — typical symptom: one root carries
+  the retry and the other does not, or diverging versions. The two `package.json`
+  files are not equivalent: `~/.pi/agent/npm/package.json` uses a caret range
+  (`"^5.13.2"`) while `~/.pi/agent/extensions/package.json` pins exactly
+  (`"5.13.2"`): updating the managed root can leave the second one behind. Remedy:
+  re-run the `pi-workflows` module (it rewrites and re-verifies both) and re-check
+  both artifacts with the `renameWithRetry` marker.
 - **`pi update --extensions` fails on one bad source** — cause: it reinstalls
   everything through the managed root, so a single source with a remote dependency
   (or an unreachable git ref) breaks the whole command. Remedy: fix or remove that
   line from the manifest / `settings.json`, then retry.
-- **dotenv root on Windows** — the `dotenv` flow is Linux-only, so on Windows
-  `<dotenv checkout>\pi\agent\extensions\pi-ext-workflows` is not an npm project (it
-  has no `package.json`). The `pi-workflows` module skips it with
-  `root_not_npm_project` instead of installing into an ancestor: that is correct
-  behaviour, not an error. On Linux/WSL that root exists as an npm project and is
-  patched like the others.
+- **dotenv root on Windows** — the `dotenv` flow is Linux-only, so on Windows there
+  is no dotenv extensions root to install into: `setup-ai.ps1` writes only the
+  managed root and the `extensions` root, and verifies exactly those two. On
+  Linux/WSL the dotenv root exists as an npm project and is verified like the
+  others.
 - **Reading the structured evidence** — every run writes `logs/setup_<runid>.log`
   (human), `logs/setup_<runid>.jsonl` (structured) and
   `engineering-report_<runid>.md`. Every JSONL line has `phase`, `event`, `meta`;
@@ -898,9 +833,6 @@ Tabella di riferimento (nomi, default e valori sono letterali) / Reference table
 | Variable | Default | Purpose | Platform notes |
 | --- | --- | --- | --- |
 | `PI_PACKAGES_FILE` | unset (`""`) | Explicit path of the extra-packages manifest; **first** candidate of the resolution order | Declared and consumed by both scripts (`pi-packages` / `Mod-PiPackages`). A set-but-missing path does not error: resolution falls through to `<agentDir>/pi-packages.txt` then `<script dir>/pi-packages.txt`. |
-| `PI_WORKFLOWS_SOURCE_DIR` | `$HOME/git/personale/pi-extensible-workflows` | Local checkout that can carry the unpushed fix; source of the patched build | Declared and consumed by both scripts. Read/build only: never pushed, never published, and an existing checkout is never switched to another branch. |
-| `PI_WORKFLOWS_FIX_REF` | `fix/windows-atomic-persistence` | Ref whose **content** must contain `renameWithRetry` | Declared and consumed by both scripts. Prefers a locally resolvable ref, else one `git fetch` of that ref; a checkout created by setup-ai may be moved to it. |
-| `PI_WORKFLOWS_REMOTE` | `https://github.com/darkrei08/pi-extensible-workflows.git` | Clone source used when `PI_WORKFLOWS_SOURCE_DIR` does not exist | Declared and consumed by both scripts. Used only for the initial clone. |
 
 Variabili correlate / Related variables:
 
