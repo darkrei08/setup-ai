@@ -94,8 +94,9 @@ COCKPIT_REPO="jlcodes99/cockpit-tools"
 # toolchain needs without hand-editing ~/.pi/agent/settings.json.
 #
 # Where the manifest is read from follows the same split the dotenv repo uses: the Pi
-# CONFIG (settings, package list) lives in the dotenv checkout that ~/.pi/agent
-# points at, while the extensions themselves stay separate packages:
+# CONFIG (settings, package list) comes from the dotenv checkout, which setup_env.sh
+# copies into the live ~/.pi/agent with a selective rsync (it is not a symlink), while
+# the extensions themselves stay separate packages:
 #   1. PI_PACKAGES_FILE, when set explicitly
 #   2. <pi agent dir>/pi-packages.txt   (the dotenv/config repo)
 #   3. <script dir>/pi-packages.txt     (a profile kept next to the installer)
@@ -1231,9 +1232,10 @@ rollback_published_pi_workflows() {
     exit 1
 }
 
-# Resolve the Pi package manifest. Order: explicit override, then the Pi config
-# repo (~/.pi/agent usually symlinks into a dotenv checkout), then a profile kept
-# next to the installer. Prints the chosen path, or returns 1 when none exists.
+# Resolve the Pi package manifest. Order: explicit override, then the live Pi config
+# dir (~/.pi/agent, populated by dotenv's setup_env.sh through a selective rsync),
+# then a profile kept next to the installer. Prints the chosen path, or returns 1
+# when none exists.
 pi_packages_manifest() {
     local candidate
     for candidate in "${PI_PACKAGES_FILE}" "${PI_AGENT_DIR}/pi-packages.txt" "${SCRIPT_DIR}/pi-packages.txt"; do
