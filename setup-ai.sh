@@ -2686,6 +2686,23 @@ mod_rotator() {
     else
         log_event "INFO" "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=${gw}"
     fi
+    # The CLI's undici dependency needs the global File (Node >= 20): on an older runtime
+    # it dies with "ReferenceError: File is not defined", so installing it there only
+    # produces a gateway that cannot start plus a login hint that cannot work. Check the
+    # runtime first and leave the machine untouched instead.
+    local node_version="" node_major=""
+    if command -v node >/dev/null 2>&1; then
+        if capture_cmd node_version "rotator" --optional node --version \
+            && [[ "${node_version}" =~ ^v([0-9]+) ]]; then
+            node_major="${BASH_REMATCH[1]}"
+        fi
+    fi
+    if [[ -z "${node_major}" ]] || (( node_major < 20 )); then
+        log_event "WARN" "rotator" "node_too_old" \
+            "tuxevil-rotator not installed: it needs Node.js >= 20 and crashes on older runtimes; install Node.js 20+ (the node module ships 22) and re-run the rotator module" 0 \
+            "node=${node_version:-none};minimum=20"
+        return 0
+    fi
     # Install the CLI idempotently. Never runs login and never writes secrets; the
     # start below is best-effort and never fails the module.
     if command -v tuxevil-rotator >/dev/null 2>&1; then
