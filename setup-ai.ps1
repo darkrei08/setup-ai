@@ -1065,6 +1065,34 @@ function Get-PiPackagesManifest {
     return $null
 }
 
+# Pick the POSIX shell the POSIX-only core build script (rm, cp) runs through. Git Bash
+# is tried FIRST: a `bash` earlier on PATH can be the WSL relay
+# (C:\Windows\System32\bash.exe), which exists but fails with execvpe(/bin/bash) when no
+# distro is installed - the build would fail and the EPERM workaround would never be
+# applied. Every candidate must really run a command, so a shell that only exists as a
+# file is skipped. Returns an empty string when none of them works.
+function Get-BuildPosixShell {
+    param([string]$Phase)
+    $candidates = @()
+    foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ($root) { $candidates += (Join-Path $root "Git\bin\bash.exe") }
+    }
+    if (Test-Cmd bash) {
+        $pathBash = (Get-Command bash -ErrorAction SilentlyContinue).Source
+        if ($pathBash -and ($candidates -notcontains $pathBash)) { $candidates += $pathBash }
+    }
+    foreach ($candidate in $candidates) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        # `true` is the cheapest command that proves this shell can execute anything at all.
+        if (Invoke-Step -Phase $Phase -Optional -Verify -Action { & $candidate -c 'true' }) {
+            Write-Log INFO $Phase "posix_shell_selected" "Patched build will run through this POSIX shell" 0 "shell=$candidate"
+            return $candidate
+        }
+        Write-Log WARN $Phase "posix_shell_unusable" "POSIX shell exists but cannot run a command; trying the next candidate" 0 "shell=$candidate"
+    }
+    return ""
+}
+
 # Build the patched workflow package from the local checkout and install it into
 # EVERY pi root. Nothing is guessed: the fix is proven in the source, then in the
 # built artifact, then in each installed artifact. Any unproven step returns $false
@@ -1141,18 +1169,9 @@ function Install-PatchedPiWorkflows {
         # patched build runs through a POSIX shell when one exists: plain PowerShell or
         # cmd fails with "'rm' is not recognized". Without a shell the published release
         # stays in place; this module never fails for that.
-        $bashExe = ""
-        if (Test-Cmd bash) { $bashExe = (Get-Command bash -ErrorAction SilentlyContinue).Source }
+        $bashExe = Get-BuildPosixShell -Phase $phase
         if (-not $bashExe) {
-            $gitBashCandidates = @()
-            if ($env:ProgramFiles) { $gitBashCandidates += (Join-Path $env:ProgramFiles "Git\bin\bash.exe") }
-            if (${env:ProgramFiles(x86)}) { $gitBashCandidates += (Join-Path ${env:ProgramFiles(x86)} "Git\bin\bash.exe") }
-            foreach ($candidate in $gitBashCandidates) {
-                if (Test-Path -LiteralPath $candidate -PathType Leaf) { $bashExe = $candidate; break }
-            }
-        }
-        if (-not $bashExe) {
-            Write-Log WARN $phase "posix_shell_missing" "No POSIX shell found; the core build script (rm, cp) cannot run here; keeping the published release" 0 "source=$src"
+            Write-Log WARN $phase "posix_shell_missing" "No usable POSIX shell found; the core build script (rm, cp) cannot run here; keeping the published release" 0 "source=$src"
             return $false
         }
 
