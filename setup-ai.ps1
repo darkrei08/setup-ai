@@ -737,6 +737,14 @@ function Get-PendingInstallScripts {
     }
 }
 
+# True when this npm enforces the npm 12 install-script gate. Probes the subcommand
+# instead of trusting a version number: npm < 12, and any other package manager pi can
+# be configured with, does not implement it.
+function Test-NpmInstallScriptsSupport {
+    param([string]$Phase)
+    return [bool](Invoke-Step -Phase $Phase -Optional -Verify -Action { npm install-scripts --help | Out-Null })
+}
+
 function Approve-NpmInstallScripts {
     param([string]$Dir, [string]$Phase = "pi-npm")
     $pkgJson = Join-Path $Dir "package.json"
@@ -746,10 +754,7 @@ function Approve-NpmInstallScripts {
         Write-Log WARN $Phase "npm_missing" "npm is unavailable; dependency install scripts cannot be approved" 0 "dir=$Dir"
         return
     }
-    # Probe the subcommand instead of trusting a version number: npm < 12, and any
-    # other package manager pi can be configured with, does not implement it.
-    $probe = Invoke-Step -Phase $Phase -Optional -Verify -Action { npm install-scripts --help | Out-Null }
-    if (-not $probe) {
+    if (-not (Test-NpmInstallScriptsSupport -Phase $Phase)) {
         Write-Log INFO $Phase "install_scripts_unsupported" "This npm does not implement install-scripts; dependency install-script approval skipped" 0 "dir=$Dir"
         return
     }
@@ -1949,13 +1954,25 @@ function Set-OpenCodePiBin {
 
 function Mod-Opencode {
     Write-Log INFO "opencode" "start" "opencode"
+    # opencode-ai ships a 479-byte stub at bin/opencode.exe and its postinstall is what
+    # installs the real launcher. npm 12 blocks that script, and the stub then prints
+    # "opencode-ai's postinstall script was not run" and exits 1, so installing without
+    # the approval would report success for a CLI that never works. `npm
+    # install-scripts approve` cannot be used here: it refuses global installs (the
+    # policy lives in a project package.json), while --allow-scripts is the form npm
+    # itself documents for `npm install -g`.
+    # npm stays required for the install and the repair only: an opencode that another
+    # package manager already installed needs neither, and the check below is what proves it.
+    $npmAvailable = Test-Cmd npm
+    $allowScripts = @()
+    if ($npmAvailable -and (Test-NpmInstallScriptsSupport -Phase "opencode")) { $allowScripts = @('--allow-scripts=opencode-ai') }
     if (Test-Cmd opencode) {
         Write-Log INFO "opencode" "already_present" "opencode already installed"
     } else {
-        if (-not (Test-Cmd npm)) {
+        if (-not $npmAvailable) {
             throw "npm not found; opencode cannot be installed"
         }
-        Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai }
+        Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai @allowScripts }
         # npm writes the shim into the user PATH; refresh this session so the
         # verification below sees it without a new shell (parity with setup-ai.sh).
         Update-SessionPath
@@ -1964,6 +1981,17 @@ function Mod-Opencode {
             throw "opencode not found on PATH after npm install"
         }
     }
+    # Repair an install the blocked postinstall left on the stub: reinstalling does not
+    # re-run it (npm treats the package as already installed), which is why an earlier
+    # run's broken opencode would otherwise stay broken. Optional because an opencode
+    # that comes from another package manager has nothing to rebuild; the CLI check below
+    # is the gate that decides.
+    if ($npmAvailable) {
+        $null = Invoke-Step -Phase "opencode" -Optional -Action { npm rebuild -g opencode-ai @allowScripts --foreground-scripts }
+    }
+    # The stub exits 1 with its own message, so the exit code of the CLI - not the
+    # existence of the shim - is what proves the real launcher is installed.
+    $null = Invoke-Step -Phase "opencode" -Verify -Action { opencode --version }
     Set-OpenCodePiBin
     @"
   OpenCode Go (paid) is hosted-model access; after install run: opencode auth login
