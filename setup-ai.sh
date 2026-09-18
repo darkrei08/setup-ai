@@ -107,7 +107,8 @@ PI_PACKAGES_FILE="${PI_PACKAGES_FILE:-}"
 # existing checkout. See `install_patched_pi_workflows`.
 PI_WORKFLOWS_SOURCE_DIR="${PI_WORKFLOWS_SOURCE_DIR:-${HOME}/git/personale/pi-extensible-workflows}"
 PI_WORKFLOWS_FIX_REF="${PI_WORKFLOWS_FIX_REF:-fix/windows-atomic-persistence}"
-PI_WORKFLOWS_REMOTE="${PI_WORKFLOWS_REMOTE:-https://github.com/darkrei08/pi-extensible-workflows.git}"
+# Upstream remote to clone from, and only when that local checkout does not exist yet.
+PI_WORKFLOWS_REMOTE="${PI_WORKFLOWS_REMOTE:-https://github.com/vekexasia/pi-extensible-workflows.git}"
 
 # ------------------------------------------------------------------------------
 # Cleanup

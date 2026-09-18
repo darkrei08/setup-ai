@@ -92,7 +92,8 @@ if (-not $env:PI_PACKAGES_FILE) { $PiPackagesFile = "" } else { $PiPackagesFile 
 # existing checkout. See Install-PatchedPiWorkflows.
 if (-not $env:PI_WORKFLOWS_SOURCE_DIR) { $PiWorkflowsSourceDir = Join-Path $HOME "git\personale\pi-extensible-workflows" } else { $PiWorkflowsSourceDir = $env:PI_WORKFLOWS_SOURCE_DIR }
 if (-not $env:PI_WORKFLOWS_FIX_REF) { $PiWorkflowsFixRef = 'fix/windows-atomic-persistence' } else { $PiWorkflowsFixRef = $env:PI_WORKFLOWS_FIX_REF }
-if (-not $env:PI_WORKFLOWS_REMOTE) { $PiWorkflowsRemote = 'https://github.com/darkrei08/pi-extensible-workflows.git' } else { $PiWorkflowsRemote = $env:PI_WORKFLOWS_REMOTE }
+# Upstream remote to clone from, and only when that local checkout does not exist yet.
+if (-not $env:PI_WORKFLOWS_REMOTE) { $PiWorkflowsRemote = 'https://github.com/vekexasia/pi-extensible-workflows.git' } else { $PiWorkflowsRemote = $env:PI_WORKFLOWS_REMOTE }
 
 # Marker of the transient-rename retry in pi-extensible-workflows. The published
 # release writes state as a bare write(.tmp) + rename() without retry, so a
