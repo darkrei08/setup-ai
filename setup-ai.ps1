@@ -20,6 +20,8 @@
    pwsh -File setup-ai.ps1 -List
    pwsh -File setup-ai.ps1 -Help
    pwsh -File setup-ai.ps1 -Verbose
+   pwsh -File setup-ai.ps1 -DryRun
+   pwsh -File setup-ai.ps1 -Uninstall
 ==============================================================================
 #>
 
@@ -29,10 +31,20 @@ param(
     [switch]$All,
     [switch]$List,
     [switch]$Yes,
-    [switch]$Help
+    [switch]$Help,
+    [switch]$DryRun,
+    [switch]$Uninstall
 )
 
 $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
+if ($DryRun -or $Uninstall) {
+    $flag = if ($DryRun) { '-DryRun' } else { '-Uninstall' }
+    Write-Host ""
+    Write-Host "$flag is not implemented on Windows." -ForegroundColor Red
+    Write-Host "setup-ai.ps1 cannot plan a run or remove the Windows install yet, and it will not pretend to: run setup-ai.sh for these flags, or remove the modules by hand (see docs/modules.md)." -ForegroundColor Red
+    Write-Host ""
+    exit 2
+}
 $script:VerboseOutput = ($VerbosePreference -eq 'Continue' -or $env:VERBOSE -eq '1')
 if ($script:VerboseOutput) { $env:DEBUG = '1' }
 
@@ -523,6 +535,11 @@ function Invoke-RemoteScriptNoPrompt {
 }
 
 function Test-NodeMinimum {
+    param(
+        [int]$MinimumMajor = 22,
+        [int]$MinimumMinor = 19
+    )
+    $script:SetupAiNodeVersionProbe = ''
     if (-not (Test-Cmd node)) { return $false }
     $versionText = ""
     $ok = Invoke-Step -Phase "node" -Optional -Verify -Action {
@@ -533,7 +550,7 @@ function Test-NodeMinimum {
     if ($versionText -notmatch '^v?(\d+)\.(\d+)') { return $false }
     $major = [int]$Matches[1]
     $minor = [int]$Matches[2]
-    return (($major -gt 22) -or (($major -eq 22) -and ($minor -ge 19)))
+    return (($major -gt $MinimumMajor) -or (($major -eq $MinimumMajor) -and ($minor -ge $MinimumMinor)))
 }
 
 function Assert-NodeMinimum {
@@ -2005,6 +2022,12 @@ function Mod-Rotator {
         Write-Log INFO "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=$gw;models=$count"
     } catch {
         Write-Log INFO "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=$gw"
+    }
+
+    if (-not (Test-NodeMinimum -MinimumMajor 20 -MinimumMinor 0)) {
+        $nodeProbe = if ($script:SetupAiNodeVersionProbe) { $script:SetupAiNodeVersionProbe } else { 'none' }
+        Write-Log WARN "rotator" "node_too_old" "tuxevil-rotator not installed: it needs Node.js >= 20 and crashes on older runtimes; install Node.js 20+ (the node module ships 22) and re-run the rotator module" 0 "node=$nodeProbe;minimum=20"
+        return
     }
 
     # Install the CLI idempotently. Never runs login and never writes secrets; the
