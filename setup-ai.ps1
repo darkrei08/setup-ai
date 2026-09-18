@@ -117,7 +117,7 @@ $SkillAgentConfigDirs = @{
     opencode = Join-Path $HOME ".config\opencode"
 }
 $SkillAgentRoots = @{
-    pi = Join-Path $HOME ".pi\agent\skills"
+    pi = Join-Path $PiAgentDir "skills"
     'claude-code' = Join-Path $HOME ".claude\skills"
     'gemini-cli' = Join-Path $HOME ".gemini\skills"
     cursor = Join-Path $HOME ".cursor\skills"
@@ -1945,7 +1945,7 @@ function Mod-Rotator {
         # A leftover legacy entry from such a run is tolerated by pi (`pi list` skips it)
         # and cannot be removed with `pi remove`, which only matches installed packages.
         $extensionSource = "git:github.com/darkrei08/pi-cockpit-tools-sync"
-        $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+        $piSettings = Join-Path $PiAgentDir "settings.json"
         Invoke-Step -Phase "rotator" -Action { pi install $extensionSource }
         if (-not (Test-Path -LiteralPath $piSettings -PathType Leaf) -or
             -not (Select-String -LiteralPath $piSettings -SimpleMatch $extensionSource -Quiet)) {

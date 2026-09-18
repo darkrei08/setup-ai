@@ -111,9 +111,14 @@ check_bash_wiring() {
     [[ "${handle_line%%:*}" -lt "${verify_line%%:*}" ]]
 }
 
+# The declarations are only half the contract: a consumer that rebuilds the path from
+# $HOME verifies a directory the installer never created, and the declaration grep
+# alone cannot see it. Assert the two consumers too.
 check_effective_agent_dir() {
     grep -Fq 'PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"' "${SETUP_AI_SH}" \
-        && grep -Fq '$env:PI_CODING_AGENT_DIR' "${ROOT}/setup-ai.ps1"
+        && grep -Fq '$env:PI_CODING_AGENT_DIR' "${ROOT}/setup-ai.ps1" \
+        && grep -Fq 'pi = Join-Path $PiAgentDir "skills"' "${ROOT}/setup-ai.ps1" \
+        && grep -Fq '$piSettings = Join-Path $PiAgentDir "settings.json"' "${ROOT}/setup-ai.ps1"
 }
 
 check_powershell_wiring() {
