@@ -69,7 +69,7 @@ $RunStartTime = Get-Date
 
 $EE_Slug  = "darkrei08/Engineering-Excellence"
 $EE_Skill = "engineering-excellence"
-$PiAgentDir = Join-Path $HOME ".pi\agent"
+$PiAgentDir = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $HOME ".pi\agent" }
 $PiExtDir   = Join-Path $PiAgentDir "extensions"
 $PiNpmDir   = Join-Path $PiAgentDir "npm"
 
@@ -1440,7 +1440,7 @@ function Mod-Pi {
     Write-Log INFO "pi" "start" "pi.dev CLI"
     # Establish the same extension/skill roots as Bash even when pi is already installed.
     New-Item -ItemType Directory -Force -Path $PiExtDir | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $HOME ".pi\agent\skills") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $PiAgentDir "skills") | Out-Null
     New-Item -ItemType Directory -Force -Path $PiNpmDir | Out-Null
     # pi's managed npm root is where `pi install` and `pi update --extensions` land.
     # npm 12 refuses URL/tarball dependencies in that root unless it opts in, so
@@ -1852,7 +1852,7 @@ function Mod-GentleAi {
         # later module fails before the final convergence pass runs.
         Approve-NpmInstallScripts -Dir $PiNpmDir -Phase "gentle-ai"
         Invoke-Step -Phase "gentle-ai" -Action { pi install npm:pi-mcp-adapter }
-        $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+        $piSettings = Join-Path $PiAgentDir "settings.json"
         $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
         if (($piSettingsRaw -match '"npm:gentle-pi"') -and ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
             Write-Log INFO "gentle-ai" "pi_enabled" "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)"
@@ -2373,7 +2373,7 @@ function Invoke-QualityGates {
             throw "gentle-ai quality gate could not find the gentle-ai CLI on PATH"
         }
         if (Test-Cmd pi) {
-            $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+            $piSettings = Join-Path $PiAgentDir "settings.json"
             $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
             if (-not ($piSettingsRaw -match '"npm:gentle-pi"') -or -not ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
                 throw "gentle-pi and/or pi-mcp-adapter not registered in pi settings ($piSettings)"

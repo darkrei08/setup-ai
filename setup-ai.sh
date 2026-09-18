@@ -75,7 +75,7 @@ UPSTREAM_SKILL_SOURCES=(
 )
 UPSTREAM_SKILL_NAMES=(herdr triage grill-me grilling wayfinder domain-modeling prototype research typescript-advanced show-me)
 
-PI_AGENT_DIR="${HOME}/.pi/agent"
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
 PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
 PI_NPM_DIR="${PI_AGENT_DIR}/npm"
 
