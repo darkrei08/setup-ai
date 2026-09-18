@@ -69,7 +69,7 @@ $RunStartTime = Get-Date
 
 $EE_Slug  = "darkrei08/Engineering-Excellence"
 $EE_Skill = "engineering-excellence"
-$PiAgentDir = Join-Path $HOME ".pi\agent"
+$PiAgentDir = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $HOME ".pi\agent" }
 $PiExtDir   = Join-Path $PiAgentDir "extensions"
 $PiNpmDir   = Join-Path $PiAgentDir "npm"
 
@@ -125,6 +125,10 @@ $SkillAgentRoots = @{
     codex = Join-Path $HOME ".codex\skills"
     opencode = Join-Path $HOME ".config\opencode\skills"
 }
+# Agents the skills CLI classifies as universal (`agents[type].skillsDir ==
+# ".agents/skills"`, skills 1.5.26): their --global install target IS the shared root
+# and they read it at user scope, so no copy under their own config dir is expected.
+$SkillSharedRootAgents = @('codex')
 # Candidate skill roots per agent: verification passes if SKILL.md exists in any
 # of them. The agent's own config dir comes first, and the shared ~/.agents/skills
 # root is accepted for every agent because upstream `skills add --global` installs
@@ -511,6 +515,11 @@ function Invoke-RemoteScriptNoPrompt {
 }
 
 function Test-NodeMinimum {
+    param(
+        [int]$MinimumMajor = 22,
+        [int]$MinimumMinor = 19
+    )
+    $script:SetupAiNodeVersionProbe = ''
     if (-not (Test-Cmd node)) { return $false }
     $versionText = ""
     $ok = Invoke-Step -Phase "node" -Optional -Verify -Action {
@@ -521,7 +530,7 @@ function Test-NodeMinimum {
     if ($versionText -notmatch '^v?(\d+)\.(\d+)') { return $false }
     $major = [int]$Matches[1]
     $minor = [int]$Matches[2]
-    return (($major -gt 22) -or (($major -eq 22) -and ($minor -ge 19)))
+    return (($major -gt $MinimumMajor) -or (($major -eq $MinimumMajor) -and ($minor -ge $MinimumMinor)))
 }
 
 function Assert-NodeMinimum {
@@ -571,10 +580,15 @@ function Assert-SkillInstalledForAgents {
             throw "$Skill SKILL.md missing for targeted agent '$agent' (checked: $($checked -join ', '))"
         }
         # A skill found only under the shared root means upstream skipped the copy into
-        # this agent's own config dir: reported, never hidden, and never a failure.
+        # this agent's own config dir: reported, never hidden, and never a failure. An
+        # agent whose own install target is that shared root is reported at INFO.
         $ownRoot = if ($SkillAgentRoots.ContainsKey($agent)) { $SkillAgentRoots[$agent] } else { $null }
         if ($ownRoot -and -not (Test-Path -LiteralPath (Join-Path (Join-Path $ownRoot $Skill) "SKILL.md"))) {
-            Write-Log WARN $Phase "skill_not_copied_to_agent_root" "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 "agent=$agent;skill=$Skill;shared=$(Join-Path $HOME '.agents\skills')"
+            if ($SkillSharedRootAgents -contains $agent) {
+                Write-Log INFO $Phase "skill_shared_root_only" "Skill is installed under the shared skills root, which is this agent's own install target" 0 "agent=$agent;skill=$Skill;shared=$(Join-Path $HOME '.agents\skills')"
+            } else {
+                Write-Log WARN $Phase "skill_not_copied_to_agent_root" "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 "agent=$agent;skill=$Skill;shared=$(Join-Path $HOME '.agents\skills')"
+            }
         }
     }
     Write-Log INFO $Phase "skill_verified" "$Skill verified for every targeted agent" 0 "agents=$($Agents -join ',')"
@@ -716,6 +730,14 @@ function Get-PendingInstallScripts {
     }
 }
 
+# True when this npm enforces the npm 12 install-script gate. Probes the subcommand
+# instead of trusting a version number: npm < 12, and any other package manager pi can
+# be configured with, does not implement it.
+function Test-NpmInstallScriptsSupport {
+    param([string]$Phase)
+    return [bool](Invoke-Step -Phase $Phase -Optional -Verify -Action { npm install-scripts --help | Out-Null })
+}
+
 function Approve-NpmInstallScripts {
     param([string]$Dir, [string]$Phase = "pi-npm")
     $pkgJson = Join-Path $Dir "package.json"
@@ -725,10 +747,7 @@ function Approve-NpmInstallScripts {
         Write-Log WARN $Phase "npm_missing" "npm is unavailable; dependency install scripts cannot be approved" 0 "dir=$Dir"
         return
     }
-    # Probe the subcommand instead of trusting a version number: npm < 12, and any
-    # other package manager pi can be configured with, does not implement it.
-    $probe = Invoke-Step -Phase $Phase -Optional -Verify -Action { npm install-scripts --help | Out-Null }
-    if (-not $probe) {
+    if (-not (Test-NpmInstallScriptsSupport -Phase $Phase)) {
         Write-Log INFO $Phase "install_scripts_unsupported" "This npm does not implement install-scripts; dependency install-script approval skipped" 0 "dir=$Dir"
         return
     }
@@ -1045,7 +1064,7 @@ function Mod-Pi {
     Write-Log INFO "pi" "start" "pi.dev CLI"
     # Establish the same extension/skill roots as Bash even when pi is already installed.
     New-Item -ItemType Directory -Force -Path $PiExtDir | Out-Null
-    New-Item -ItemType Directory -Force -Path (Join-Path $HOME ".pi\agent\skills") | Out-Null
+    New-Item -ItemType Directory -Force -Path (Join-Path $PiAgentDir "skills") | Out-Null
     New-Item -ItemType Directory -Force -Path $PiNpmDir | Out-Null
     # pi's managed npm root is where `pi install` and `pi update --extensions` land.
     # npm 12 refuses URL/tarball dependencies in that root unless it opts in, so
@@ -1251,6 +1270,227 @@ function Mod-Herdr {
     }
 }
 
+# An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
+# pi-hashline-edit-pro to keep pi startable. That value is exactly the one that
+# makes gentle-pi's bundled pi-pretty register the built-in tool names itself, so it
+# now causes the startup abort it was meant to avoid. Remove the User-scope value
+# this installer wrote, unconditionally: a machine can carry it with no shadowing
+# package left. Any other value belongs to the user and is left alone.
+function Remove-StaleQuietToolsSwitch {
+    $changed = @()
+    if ([Environment]::GetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', 'User') -eq '0') {
+        [Environment]::SetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', $null, 'User')
+        $changed += 'User:GENTLE_PI_QUIET_TOOLS'
+    }
+    if ($env:GENTLE_PI_QUIET_TOOLS -eq '0') {
+        # The current session inherited the value when it started; clear it there too.
+        $env:GENTLE_PI_QUIET_TOOLS = $null
+        if ($changed.Count -eq 0) { $changed += 'Process:GENTLE_PI_QUIET_TOOLS' }
+    }
+    if ($changed.Count -eq 0) { return }
+    Write-Log INFO "gentle-ai" "stale_quiet_tools_switch_removed" "Removed the GENTLE_PI_QUIET_TOOLS=0 switch an earlier setup-ai persisted: it disables gentle-pi quiet tools, which is what makes pi-pretty register the built-in tool names itself and abort startup" 0 ("removed=" + ($changed -join ','))
+}
+
+# gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools, and pi
+# aborts at startup ("Tool <name> conflicts") when a second installed extension
+# registers one of the same names. pi-tool-display does exactly that, and so does the
+# dropped pi-hashline-edit-pro still registered on machines upgraded from an older
+# install. gentle-pi has no per-registrant switch, so the repair is its object entry
+# in settings.json with both of its own registrants excluded. Loading extensions
+# without a model call is impossible, so the collision is detected statically and the
+# entry rewritten as raw text, which leaves the rest of the file's formatting
+# untouched.
+function Repair-QuietToolsConflict {
+    Remove-StaleQuietToolsSwitch
+
+    $settings = Join-Path $PiAgentDir "settings.json"
+    if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
+    # Read the bytes explicitly, so the text can be written back with the same
+    # encoding: UTF-8, with a byte-order mark only when the file already has one.
+    $bytes = [System.IO.File]::ReadAllBytes($settings)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $utf8 = New-Object System.Text.UTF8Encoding($hasBom)
+    $offset = 0
+    if ($hasBom) { $offset = 3 }
+    $raw = $utf8.GetString($bytes, $offset, $bytes.Length - $offset)
+
+    # One alternation, both identities: pi-tool-display registers read/bash/find/
+    # grep/ls, pi-hashline-edit-pro was that name's owner before it was dropped.
+    $shadow = ''
+    if ($raw -cmatch '"npm:(pi-tool-display|pi-hashline-edit-pro)(@[^"]*)?"') { $shadow = $Matches[1] }
+    if (-not $shadow) { return }
+
+    $remediation = '{"source":"npm:gentle-pi","extensions":["-extensions/quiet-tools.ts","-extensions/pi-pretty.ts"]}'
+
+    # Which edit is safe is a structural question, so parse the JSON for it; the edit
+    # itself stays textual to preserve formatting.
+    $state = 'invalid'
+    try {
+        $parsed = ConvertFrom-Json -InputObject $raw
+        $gentle = @()
+        if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['packages']) {
+            foreach ($entry in @($parsed.packages)) {
+                if ($null -eq $entry) { continue }
+                $isString = $entry -is [string]
+                $source = if ($isString) { $entry } elseif ($null -ne $entry.PSObject.Properties['source']) { [string]$entry.source } else { '' }
+                if (-not $source) { continue }
+                if ((Get-PiPackageIdentity -Spec $source -BaseDir $PiAgentDir) -ine 'npm:gentle-pi') { continue }
+                $extensions = if (-not $isString -and $null -ne $entry.PSObject.Properties['extensions']) { @($entry.extensions) } else { @() }
+                $gentle += @{ Kind = $(if ($isString) { 'string' } else { 'object' }); Extensions = $extensions }
+            }
+        }
+        $exclusions = @('-extensions/quiet-tools.ts', '-extensions/pi-pretty.ts')
+        if ($gentle.Count -eq 0) { $state = 'absent' }
+        elseif ($gentle.Count -gt 1) { $state = 'ambiguous' }
+        elseif ($gentle[0].Kind -eq 'string') { $state = 'string' }
+        elseif (@($exclusions | Where-Object { $gentle[0].Extensions -notcontains $_ }).Count -eq 0) { $state = 'guarded' }
+        else { $state = 'ambiguous' }
+    } catch {
+        $state = 'invalid'
+    }
+    if ($state -eq 'absent' -or $state -eq 'guarded') { return }
+    if ($state -ne 'string') {
+        # Never claim a repair we did not make: an entry that cannot be rewritten
+        # safely (duplicate, unparseable or compact JSON) is reported with the exact
+        # JSON the user has to put in its place.
+        Write-Log WARN "gentle-ai" "quiet_tools_conflict_unrepaired" "$shadow re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; replace the gentle-pi entry in $settings with the JSON below" 0 "expected=$remediation;settings=$settings"
+        return
+    }
+
+    # The single plain entry is the only text that changes; indentation, trailing
+    # comma and line ending follow the original line. The replacement is staged as a
+    # sibling of its target, so the final Replace is atomic and a failed write can
+    # never leave an unusable settings.json behind.
+    $entryMatch = [regex]::Matches($raw, '(?m)^([ \t]*)"npm:gentle-pi"([ \t]*)(,?)[ \t]*(\r?)$')
+    if ($entryMatch.Count -ne 1) {
+        Write-Log WARN "gentle-ai" "quiet_tools_conflict_unrepaired" "$shadow re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; $settings is unchanged, replace the gentle-pi entry with the JSON below" 0 "expected=$remediation;settings=$settings"
+        return
+    }
+    $indent = $entryMatch[0].Groups[1].Value
+    $comma = $entryMatch[0].Groups[3].Value
+    $lineEnding = if ($raw.Contains("`r`n")) { "`r`n" } else { "`n" }
+    $block = @(
+        "$indent{"
+        "$indent  `"source`": `"npm:gentle-pi`","
+        "$indent  `"extensions`": ["
+        "$indent    `"-extensions/quiet-tools.ts`","
+        "$indent    `"-extensions/pi-pretty.ts`""
+        "$indent  ]"
+        "$indent}$comma"
+    ) -join $lineEnding
+    $block += $entryMatch[0].Groups[4].Value
+    $updated = $raw.Remove($entryMatch[0].Index, $entryMatch[0].Length).Insert($entryMatch[0].Index, $block)
+
+    $tmp = "$settings.setup-ai.tmp"
+    $backup = "$settings.setup-ai.bak"
+    try {
+        [System.IO.File]::WriteAllText($tmp, $updated, $utf8)
+        # Verify the staged file before it replaces anything.
+        $null = [System.IO.File]::ReadAllText($tmp, $utf8) | ConvertFrom-Json
+        # The atomic swap on Windows, which also keeps the destination's attributes;
+        # the backup it writes is removed below.
+        [System.IO.File]::Replace($tmp, $settings, $backup)
+    } catch {
+        Write-Log ERROR "gentle-ai" "quiet_tools_conflict_unrepaired" "Could not replace $settings with the repaired copy: $($_.Exception.Message); pi keeps aborting at startup until gentle-pi excludes -extensions/quiet-tools.ts and -extensions/pi-pretty.ts" 1 "settings=$settings"
+        throw "Could not repair the gentle-pi entry in $settings"
+    } finally {
+        foreach ($stale in @($tmp, $backup)) {
+            if (Test-Path -LiteralPath $stale) {
+                try {
+                    Remove-Item -LiteralPath $stale -Force -ErrorAction Stop
+                } catch {
+                    Write-Log WARN "gentle-ai" "quiet_tools_temp_left" "Could not remove a temporary file next to settings.json" 0 "path=$stale"
+                }
+            }
+        }
+    }
+    Write-Log INFO "gentle-ai" "quiet_tools_conflict_repaired" "$shadow re-registers one of the built-in tool names gentle-pi's quiet tools own; repair applied with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded" 0 "settings=$settings"
+}
+
+# Verify the real pi startup path after the quiet-tools repair. PI_OFFLINE=1 and
+# the job's non-interactive stdin load extensions without a model call or network;
+# measured on pi 0.85.1 with pi-tool-display 0.5.0 and gentle-pi 3.2.1, the
+# conflicting settings exit 1 and the repaired settings exit 0 in about 12 seconds.
+function Test-PiStartup {
+    $piCommand = @(Get-Command -Name pi -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1)
+    if ($piCommand.Count -eq 0) {
+        Write-Log INFO "gentle-ai" "pi_startup_skipped" "pi is not on PATH; startup verification skipped"
+        return
+    }
+    $piPath = [string]$piCommand[0].Path
+
+    $timeoutText = if ($env:PI_STARTUP_TIMEOUT) { $env:PI_STARTUP_TIMEOUT } else { '120' }
+    [int]$timeoutSeconds = 0
+    if (-not [int]::TryParse($timeoutText, [Globalization.NumberStyles]::Integer, [Globalization.CultureInfo]::InvariantCulture, [ref]$timeoutSeconds) -or $timeoutSeconds -le 0) {
+        Write-Log ERROR "gentle-ai" "pi_startup_failed" "PI_STARTUP_TIMEOUT must be a positive integer" 1 "timeout=$timeoutText;settings=$(Join-Path $PiAgentDir 'settings.json')"
+        throw "PI_STARTUP_TIMEOUT must be a positive integer"
+    }
+
+    $settings = Join-Path $PiAgentDir "settings.json"
+    $logPath = Join-Path ([System.IO.Path]::GetTempPath()) "setup-ai-pi-startup-$PID-$([guid]::NewGuid().ToString('N')).log"
+    $job = $null
+    $lines = @()
+    $returnCode = 1
+    try {
+        # Start-Job gives pi a non-interactive worker, but Windows cannot guarantee
+        # that Stop-Job kills native children pi spawned after the timeout.
+        $job = Start-Job -ArgumentList $piPath -ScriptBlock {
+            param([string]$PiPath)
+            $ErrorActionPreference = 'Continue'
+            $PSNativeCommandUseErrorActionPreference = $false
+            $env:PI_OFFLINE = '1'
+            try {
+                $captured = @(& $PiPath 2>&1 | ForEach-Object { [string]$_ })
+            } catch {
+                return [pscustomobject]@{
+                    Kind = 'pi-startup-result'
+                    ExitCode = 127
+                    Lines = @("pi startup launch failed: $($_.Exception.Message)")
+                }
+            }
+            $nativeExitCode = $LASTEXITCODE
+            if ($null -eq $nativeExitCode -or $nativeExitCode -isnot [int]) {
+                $captured += 'pi startup returned no known exit status'
+                $code = 127
+            } else {
+                $code = [int]$nativeExitCode
+            }
+            [pscustomobject]@{ Kind = 'pi-startup-result'; ExitCode = $code; Lines = $captured }
+        }
+        $completed = Wait-Job -Job $job -Timeout $timeoutSeconds
+        if ($null -eq $completed) {
+            $null = Stop-Job -Job $job -ErrorAction SilentlyContinue
+            $returnCode = 124
+            $lines = @("pi startup verification timed out after $timeoutSeconds seconds")
+        } else {
+            $received = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            $result = @($received | Where-Object { $_.Kind -eq 'pi-startup-result' } | Select-Object -First 1)
+            if ($result.Count -eq 0) {
+                $lines = @('pi startup job returned no result')
+                $returnCode = 1
+            } else {
+                $lines = @($result[0].Lines | ForEach-Object { [string]$_ })
+                $returnCode = [int]$result[0].ExitCode
+            }
+        }
+    } finally {
+        if ($null -ne $job) {
+            if ($job.State -eq 'Running') { $null = Stop-Job -Job $job -ErrorAction SilentlyContinue }
+            Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    [System.IO.File]::WriteAllLines($logPath, [string[]]$lines, [System.Text.UTF8Encoding]::new($false))
+    $firstError = @($lines | Where-Object { $_ -match 'Error:|conflicts' } | Select-Object -First 1)
+    $diagnostic = if ($firstError.Count -gt 0) { [string]$firstError[0] } else { 'none' }
+    if ($returnCode -eq 0) {
+        Write-Log INFO "gentle-ai" "pi_startup_verified" "pi startup verified after the gentle-pi repair" 0 "log=$logPath;settings=$settings"
+        return
+    }
+    Write-Log ERROR "gentle-ai" "pi_startup_failed" "pi startup verification failed" $returnCode "diagnostic=$diagnostic;log=$logPath;settings=$settings"
+    throw "pi startup verification failed (return code $returnCode; first error line: $diagnostic; log: $logPath)"
+}
+
 # Reinstates the Gentle AI ecosystem configurator (sibling of mod_gentle_ai in
 # setup-ai.sh). `gentle-ai install` is the per-agent/per-IDE selector that also
 # wires each selected agent's MCP servers, so tools appear under /mcp. The
@@ -1310,7 +1550,7 @@ function Mod-GentleAi {
         # later module fails before the final convergence pass runs.
         Approve-NpmInstallScripts -Dir $PiNpmDir -Phase "gentle-ai"
         Invoke-Step -Phase "gentle-ai" -Action { pi install npm:pi-mcp-adapter }
-        $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+        $piSettings = Join-Path $PiAgentDir "settings.json"
         $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
         if (($piSettingsRaw -match '"npm:gentle-pi"') -and ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
             Write-Log INFO "gentle-ai" "pi_enabled" "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)"
@@ -1318,16 +1558,10 @@ function Mod-GentleAi {
             Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
             throw "gentle-pi and/or pi-mcp-adapter not present in pi settings after install"
         }
-        # gentle-pi quiet-tools re-registers the built-in read/edit/grep tools; a
-        # second extension that shadows one of them makes pi abort at startup.
-        # Warn with the exact remediation instead of ending on a green install.
-        if (($piSettingsRaw -match 'pi-hashline-edit-pro') -and ($env:GENTLE_PI_QUIET_TOOLS -ne '0')) {
-            # Persist the switch gentle-pi reads: a warning alone leaves pi unstartable.
-            [Environment]::SetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', '0', 'User')
-            $env:GENTLE_PI_QUIET_TOOLS = '0'
-            Write-Log WARN "gentle-ai" "quiet_tools_disabled" "pi-hashline-edit-pro owns read/grep, so gentle-pi quiet-tools is disabled (GENTLE_PI_QUIET_TOOLS=0) to keep pi startable; pi-tool-display still renders tool output compactly" 0 "scope=User"
-        }
     }
+
+    Repair-QuietToolsConflict
+    Test-PiStartup
 
     @"
   gentle-ai next steps (run yourself, per project):
@@ -1439,13 +1673,25 @@ function Set-OpenCodePiBin {
 
 function Mod-Opencode {
     Write-Log INFO "opencode" "start" "opencode"
+    # opencode-ai ships a 479-byte stub at bin/opencode.exe and its postinstall is what
+    # installs the real launcher. npm 12 blocks that script, and the stub then prints
+    # "opencode-ai's postinstall script was not run" and exits 1, so installing without
+    # the approval would report success for a CLI that never works. `npm
+    # install-scripts approve` cannot be used here: it refuses global installs (the
+    # policy lives in a project package.json), while --allow-scripts is the form npm
+    # itself documents for `npm install -g`.
+    # npm stays required for the install and the repair only: an opencode that another
+    # package manager already installed needs neither, and the check below is what proves it.
+    $npmAvailable = Test-Cmd npm
+    $allowScripts = @()
+    if ($npmAvailable -and (Test-NpmInstallScriptsSupport -Phase "opencode")) { $allowScripts = @('--allow-scripts=opencode-ai') }
     if (Test-Cmd opencode) {
         Write-Log INFO "opencode" "already_present" "opencode already installed"
     } else {
-        if (-not (Test-Cmd npm)) {
+        if (-not $npmAvailable) {
             throw "npm not found; opencode cannot be installed"
         }
-        Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai }
+        Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai @allowScripts }
         # npm writes the shim into the user PATH; refresh this session so the
         # verification below sees it without a new shell (parity with setup-ai.sh).
         Update-SessionPath
@@ -1454,6 +1700,17 @@ function Mod-Opencode {
             throw "opencode not found on PATH after npm install"
         }
     }
+    # Repair an install the blocked postinstall left on the stub: reinstalling does not
+    # re-run it (npm treats the package as already installed), which is why an earlier
+    # run's broken opencode would otherwise stay broken. Optional because an opencode
+    # that comes from another package manager has nothing to rebuild; the CLI check below
+    # is the gate that decides.
+    if ($npmAvailable) {
+        $null = Invoke-Step -Phase "opencode" -Optional -Action { npm rebuild -g opencode-ai @allowScripts --foreground-scripts }
+    }
+    # The stub exits 1 with its own message, so the exit code of the CLI - not the
+    # existence of the shim - is what proves the real launcher is installed.
+    $null = Invoke-Step -Phase "opencode" -Verify -Action { opencode --version }
     Set-OpenCodePiBin
     @"
   OpenCode Go (paid) is hosted-model access; after install run: opencode auth login
@@ -1636,6 +1893,12 @@ function Mod-Rotator {
         Write-Log INFO "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=$gw"
     }
 
+    if (-not (Test-NodeMinimum -MinimumMajor 20 -MinimumMinor 0)) {
+        $nodeProbe = if ($script:SetupAiNodeVersionProbe) { $script:SetupAiNodeVersionProbe } else { 'none' }
+        Write-Log WARN "rotator" "node_too_old" "tuxevil-rotator not installed: it needs Node.js >= 20 and crashes on older runtimes; install Node.js 20+ (the node module ships 22) and re-run the rotator module" 0 "node=$nodeProbe;minimum=20"
+        return
+    }
+
     # Install the CLI idempotently. Never runs login and never writes secrets; the
     # start below is best-effort and never fails the module.
     if (Test-Cmd tuxevil-rotator) {
@@ -1815,7 +2078,7 @@ function Invoke-QualityGates {
             throw "gentle-ai quality gate could not find the gentle-ai CLI on PATH"
         }
         if (Test-Cmd pi) {
-            $piSettings = Join-Path $HOME ".pi\agent\settings.json"
+            $piSettings = Join-Path $PiAgentDir "settings.json"
             $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
             if (-not ($piSettingsRaw -match '"npm:gentle-pi"') -or -not ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
                 throw "gentle-pi and/or pi-mcp-adapter not registered in pi settings ($piSettings)"

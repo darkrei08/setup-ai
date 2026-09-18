@@ -68,4 +68,25 @@ that is not an error. Failures are explicit: `command_failed` /
 `step_failed_optional` carry the return code. See
 [troubleshooting](./troubleshooting.md) for the errors seen in the field.
 
+### Expected INFO: `skill_shared_root_only` for codex
+
+`skills` and `ee` verify each skill for every targeted agent by looking for
+`<root>/<skill>/SKILL.md`, checking the agent's own config dir first and the shared
+`~/.agents/skills` root second. The upstream `skills` CLI treats Codex as a
+universal agent: under `--global --copy` its install target is `~/.agents/skills`,
+because Codex reads that path as a user-scope skills directory
+([Codex skills](https://developers.openai.com/codex/skills)), and it does not write
+a per-agent copy under `~/.codex/skills`. The check therefore reports one INFO per
+skill that landed only in the shared root:
+
+```text
+[INFO] skills skill_shared_root_only: Skill is installed under the shared skills root, which is this agent's own install target
+```
+
+For every other agent the same situation stays a WARN
+(`skill_not_copied_to_agent_root`), because there the shared root means the CLI
+skipped the copy into that agent's own config dir. The `skills_verified` INFO
+emitted after the loop is the success signal, and a skill missing from every
+candidate root is an ERROR (`skill_missing`) that fails the module.
+
 Back to the [README](../README.md).

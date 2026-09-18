@@ -27,6 +27,8 @@ npx @darkrei08/setup-ai --all                       # everything
 npx @darkrei08/setup-ai --verbose                   # core set, no prompts, with live command logs
 ```
 
+Startup acceptance check: `bash tests/pi-startup-check.sh`.
+
 Three details worth knowing:
 
 - **Use the npm package above.** `npx github:darkrei08/setup-ai` also works, but many npm setups block git fetches (`EALLOWGIT`); the published package avoids that. Run it from any folder except the repo's own source dir.
@@ -42,6 +44,29 @@ Three details worth knowing:
 | Here | `npm i -g @darkrei08/setup-ai` (permanent `setup-ai`) | `npx @darkrei08/setup-ai` (one-shot) |
 
 For a one-time installer, `npx` is ideal — nothing is left behind.
+
+## Logs and the live Pi config
+
+- **Human log** — `logs/setup_<runid>.log`, one line per event
+  (`<timestamp> [LEVEL] <phase> <event>: <message>`), alongside the structured
+  `logs/setup_<runid>.jsonl` (one JSON record per event) and the
+  `logs/engineering-report_<runid>.md`. `--verbose` renders the same events live.
+  `command_start` → `command_success` → `step_result` is one successful step,
+  immediately followed by the next step's `command_start`: normal, not an error.
+  Reference: [docs/logs.md](docs/logs.md).
+- **Run record** — the `.jsonl` ends with one `run_summary` record (`outcome`,
+  per-module status, step counts); a one-liner to read it back is in
+  [docs/logs.md](docs/logs.md).
+- **How setup-ai verifies its state** — it reads the assembled artifacts back
+  instead of trusting exit codes: pi packages in `~/.pi/agent/settings.json`,
+  skills as `<skill-root>/<skill>/SKILL.md` for every targeted agent, installed
+  npm trees as `<dir>/node_modules/<pkg>/package.json`.
+- **Live Pi config** — `~/.pi/agent/settings.json` (there is no
+  `~/.pi/agent.json`). The `dotenv` module's `setup_env.sh` populates `~/.pi/agent`
+  with a selective `rsync` from the dotenv checkout's `pi/agent` directory
+  (settings, models, prompts, skills, themes, ...), leaving `auth.json`,
+  `sessions/` and pi-managed installs untouched. It is a real directory, **not** a
+  symlink into the checkout.
 
 ## Documentation
 

@@ -44,6 +44,8 @@ JSONL_LOG="${LOG_DIR}/setup_${RUN_ID}.jsonl"
 REPORT_FILE="${LOG_DIR}/engineering-report_${RUN_ID}.md"
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
+PI_STARTUP_PID=""
+PI_STARTUP_WATCHDOG_PID=""
 
 export RUN_ID
 
@@ -75,7 +77,7 @@ UPSTREAM_SKILL_SOURCES=(
 )
 UPSTREAM_SKILL_NAMES=(herdr triage grill-me grilling wayfinder domain-modeling prototype research typescript-advanced show-me)
 
-PI_AGENT_DIR="${HOME}/.pi/agent"
+PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
 PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
 PI_NPM_DIR="${PI_AGENT_DIR}/npm"
 
@@ -94,8 +96,9 @@ COCKPIT_REPO="jlcodes99/cockpit-tools"
 # toolchain needs without hand-editing ~/.pi/agent/settings.json.
 #
 # Where the manifest is read from follows the same split the dotenv repo uses: the Pi
-# CONFIG (settings, package list) lives in the dotenv checkout that ~/.pi/agent
-# points at, while the extensions themselves stay separate packages:
+# CONFIG (settings, package list) comes from the dotenv checkout, which setup_env.sh
+# copies into the live ~/.pi/agent with a selective rsync (it is not a symlink), while
+# the extensions themselves stay separate packages:
 #   1. PI_PACKAGES_FILE, when set explicitly
 #   2. <pi agent dir>/pi-packages.txt   (the dotenv/config repo)
 #   3. <script dir>/pi-packages.txt     (a profile kept next to the installer)
@@ -106,7 +109,29 @@ PI_PACKAGES_FILE="${PI_PACKAGES_FILE:-}"
 # Cleanup
 # ------------------------------------------------------------------------------
 
+terminate_pi_startup_process_group() {
+    local pid="${PI_STARTUP_PID:-}"
+    [[ -n "${pid}" ]] || return 0
+    if kill -TERM -- "-${pid}" 2>/dev/null; then :; else
+        if kill -TERM "${pid}" 2>/dev/null; then :; fi
+    fi
+    sleep 1
+    if kill -KILL -- "-${pid}" 2>/dev/null; then :; else
+        if kill -KILL "${pid}" 2>/dev/null; then :; fi
+    fi
+}
+
 cleanup() {
+    if [[ -n "${PI_STARTUP_WATCHDOG_PID:-}" ]]; then
+        if kill -TERM "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+        if wait "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+        PI_STARTUP_WATCHDOG_PID=""
+    fi
+    if [[ -n "${PI_STARTUP_PID:-}" ]]; then
+        terminate_pi_startup_process_group
+        if wait "${PI_STARTUP_PID}" 2>/dev/null; then :; fi
+        PI_STARTUP_PID=""
+    fi
     rm -rf -- "${TMP_DIR}"
 }
 
@@ -1150,7 +1175,18 @@ mod_base() {
             ;;
         pacman)
             local pkgs=(base-devel curl wget git unzip tar ca-certificates gnupg jq
-                       python python-pip neovim github-cli go imagemagick wl-clipboard xclip)
+                       python python-pip neovim go imagemagick wl-clipboard xclip)
+            # github-cli conflicts with every other package that provides gh (github-cli-git
+            # from the AUR, common on CachyOS). --noconfirm answers pacman's removal prompt
+            # with "no", so the transaction aborts and takes the whole run with it. Request
+            # it only when nothing provides gh yet: an existing provider is never removed.
+            if command -v gh >/dev/null 2>&1 || pacman -Qq github-cli-git >/dev/null 2>&1; then
+                log_event "INFO" "base" "gh_provider_present" \
+                    "gh is already installed; skipping github-cli to avoid an unresolvable pacman conflict" 0 \
+                    "package=github-cli"
+            else
+                pkgs+=(github-cli)
+            fi
             run_cmd "base" sudo pacman -Sy --needed --noconfirm "${pkgs[@]}"
             ;;
         zypper)
@@ -1442,15 +1478,23 @@ agent_skill_root() {
 # ${HOME}/.agents/skills root is accepted for every agent: upstream `skills add
 # --global` installs there and names it as the install target in its own summary,
 # copying into an agent's config dir only when it supports that agent. A shared root
-# must never hide a skipped copy, so verify_skill_for_agents warns per agent.
+# must never hide a skipped copy, so verify_skill_for_agents reports per agent.
 agent_skill_roots() {
     agent_skill_root "$1" || return 1
     printf '%s\n' "${HOME}/.agents/skills"
 }
 
+# Agents the skills CLI classifies as universal (`agents[type].skillsDir ==
+# ".agents/skills"`, skills 1.5.26): their --global install target IS the shared root
+# and they read it at user scope, so no copy under their own config dir is expected.
+agent_uses_shared_skill_root() {
+    [[ "$1" == "codex" ]]
+}
+
 # Prove a skill reached every targeted agent. Nothing under any candidate root fails;
 # a skill found only under the shared root passes with a WARN naming the agent whose
-# own config dir the CLI skipped.
+# own config dir the CLI skipped, or with an INFO when that shared root is the agent's
+# own install target.
 verify_skill_for_agents() {
     local phase="$1" skill="$2"; shift 2
     local agent root own_root found own checked
@@ -1481,9 +1525,15 @@ verify_skill_for_agents() {
             return 1
         fi
         if (( own == 0 )); then
-            log_event "WARN" "${phase}" "skill_not_copied_to_agent_root" \
-                "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 \
-                "agent=${agent};skill=${skill};shared=${HOME}/.agents/skills;expected=${own_root}/${skill}/SKILL.md"
+            if agent_uses_shared_skill_root "${agent}"; then
+                log_event "INFO" "${phase}" "skill_shared_root_only" \
+                    "Skill is installed under the shared skills root, which is this agent's own install target" 0 \
+                    "agent=${agent};skill=${skill};shared=${HOME}/.agents/skills"
+            else
+                log_event "WARN" "${phase}" "skill_not_copied_to_agent_root" \
+                    "Skill is installed under the shared skills root but was not copied into this agent's own config dir" 0 \
+                    "agent=${agent};skill=${skill};shared=${HOME}/.agents/skills;expected=${own_root}/${skill}/SKILL.md"
+            fi
         fi
     done
     return 0
@@ -1753,48 +1803,286 @@ mod_herdr() {
 }
 
 # --- gentle-ai --------------------------------------------------------------
-# Append `line` to `file` exactly once, creating the file when it is missing.
-persist_env_line() {
-    local file="$1" line="$2"
-    mkdir -p "$(dirname "${file}")" 2>/dev/null || return 1
-    if [[ -f "${file}" ]] && grep -Fqx -- "${line}" "${file}" 2>/dev/null; then
-        return 0
+# Delete one exact line from an existing file, keeping every other byte. No
+# `sed -i` (BSD/macOS sed needs an -i '' argument); the rewrite goes through a
+# temp file and only replaces the original after grep succeeded, so a failure
+# leaves the file as it was. Return 0 when the line was removed, 1 when there was
+# nothing to remove, and 2 when the line was present but the file could not be
+# rewritten. Only LF lines are considered: every line this installer ever
+# appended used LF.
+remove_line_from_file() {
+    local file="$1" line="$2" grep_rc
+    [[ -f "${file}" ]] || return 1
+    if grep -Fqx -- "${line}" "${file}" 2>/dev/null; then :; else
+        grep_rc=$?
+        if (( grep_rc == 1 )); then return 1; fi
+        return 2
     fi
-    printf '\n%s\n' "${line}" >> "${file}" || return 1
+    if [[ -L "${file}" ]]; then
+        log_event "ERROR" "gentle-ai" "remove_line_symlink" \
+            "Refusing to replace symlink ${file}; its target was left unchanged" 1
+        return 2
+    fi
+    local tmp="${file}.setup-ai.tmp" rc=0
+    if ! cp -p -- "${file}" "${tmp}"; then
+        rm -f -- "${tmp}"
+        return 2
+    fi
+    grep -vxF -- "${line}" "${file}" > "${tmp}" || rc=$?
+    if (( rc > 1 )); then
+        rm -f -- "${tmp}"
+        return 2
+    fi
+    if ! mv -- "${tmp}" "${file}"; then
+        rm -f -- "${tmp}"
+        return 2
+    fi
+    return 0
 }
 
-# gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools. A
-# second installed extension that registers one of the same names makes `pi`
-# abort at startup ("Tool <name> conflicts"). Loading extensions without a model
-# call is not possible, so detect the known shadowing package statically and
-# persist the switch gentle-pi reads: a warning alone would leave pi unstartable
-# in every shell that never sourced the rc file.
-handle_quiet_tools_conflict() {
-    local settings="${PI_AGENT_DIR}/settings.json"
-    [[ -f "${settings}" ]] || return 0
-    [[ "${GENTLE_PI_QUIET_TOOLS:-}" == "0" ]] && return 0
-    grep -q 'pi-hashline-edit-pro' "${settings}" || return 0
-
-    local written=() rc
-    for rc in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
-        [[ -f "${rc}" ]] || continue
-        if persist_env_line "${rc}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
-            written+=("${rc}")
+# An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
+# pi-hashline-edit-pro to keep pi startable. That value is exactly the one that
+# makes gentle-pi's bundled pi-pretty register the built-in tool names itself, so
+# it now causes the startup abort it was meant to avoid. Remove the exact lines
+# this installer wrote, unconditionally: a machine can carry them with no
+# shadowing package left. Anything else in those files belongs to the user.
+remove_stale_quiet_tools_switch() {
+    local changed=() failed=() candidate remove_rc
+    for candidate in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
+        if remove_line_from_file "${candidate}" 'export GENTLE_PI_QUIET_TOOLS=0'; then
+            changed+=("${candidate}")
+        else
+            remove_rc=$?
+            if (( remove_rc == 2 )); then failed+=("${candidate}"); fi
         fi
     done
     # systemd --user sessions and panes that never source an rc read this file.
     local envd="${HOME}/.config/environment.d/50-gentle-pi.conf"
-    if persist_env_line "${envd}" 'GENTLE_PI_QUIET_TOOLS=0'; then
-        written+=("${envd}")
+    if remove_line_from_file "${envd}" 'GENTLE_PI_QUIET_TOOLS=0'; then
+        changed+=("${envd}")
+    else
+        remove_rc=$?
+        if (( remove_rc == 2 )); then failed+=("${envd}"); fi
+    fi
+    if (( ${#failed[@]} > 0 )); then
+        local remediation="replace each listed symlink with a regular file or remove the stale line manually, then rerun setup-ai"
+        log_event "ERROR" "gentle-ai" "stale_quiet_tools_switch_unremoved" \
+            "Could not remove GENTLE_PI_QUIET_TOOLS=0 from files=$(IFS=,; printf '%s' "${failed[*]}"); ${remediation}" 1 \
+            "files=$(IFS=,; printf '%s' "${failed[*]}");remediation=${remediation}"
+        return 1
+    fi
+    (( ${#changed[@]} > 0 )) || return 0
+    log_event "INFO" "gentle-ai" "stale_quiet_tools_switch_removed" \
+        "Removed the GENTLE_PI_QUIET_TOOLS=0 switch an earlier setup-ai persisted: it disables gentle-pi quiet tools, which is what makes pi-pretty register the built-in tool names itself and abort startup" 0 \
+        "files=$(IFS=,; printf '%s' "${changed[*]}")"
+}
+
+# gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools, and
+# pi aborts at startup ("Tool <name> conflicts") when a second installed extension
+# registers one of the same names. pi-tool-display does exactly that, and so does
+# the dropped pi-hashline-edit-pro still registered on machines upgraded from an
+# older install. gentle-pi has no per-registrant switch, so the repair is its
+# object entry in settings.json with both of its own registrants excluded. Loading
+# extensions without a model call is impossible, so the collision is detected
+# statically and the entry rewritten as raw text, which leaves the rest of the
+# file's formatting untouched.
+handle_quiet_tools_conflict() {
+    remove_stale_quiet_tools_switch || return 1
+
+    local settings="${PI_AGENT_DIR}/settings.json"
+    [[ -f "${settings}" ]] || return 0
+
+    local raw=""
+    raw="$(<"${settings}")"
+    # One alternation, both identities: pi-tool-display registers read/bash/find/
+    # grep/ls, pi-hashline-edit-pro was that name's owner before it was dropped.
+    local shadow=""
+    if [[ "${raw}" =~ \"npm:(pi-tool-display|pi-hashline-edit-pro)(@[^\"]*)?\" ]]; then
+        shadow="${BASH_REMATCH[1]}"
+    fi
+    [[ -n "${shadow}" ]] || return 0
+
+    local remediation='{"source":"npm:gentle-pi","extensions":["-extensions/quiet-tools.ts","-extensions/pi-pretty.ts"]}'
+
+    # Which edit is safe is a structural question, so parse the JSON for it; the
+    # edit itself stays textual to preserve formatting.
+    local state="invalid"
+    if ! state="$(node -e '
+        const fs = require("node:fs");
+        let settings;
+        try {
+            settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        } catch {
+            console.log("invalid");
+            process.exit(0);
+        }
+        const entries = (Array.isArray(settings.packages) ? settings.packages : []).filter((entry) => {
+            const source = typeof entry === "string" ? entry : (entry && entry.source) || "";
+            return /^npm:gentle-pi(@.*)?$/.test(source);
+        });
+        const wanted = ["-extensions/quiet-tools.ts", "-extensions/pi-pretty.ts"];
+        if (entries.length === 0) console.log("absent");
+        else if (entries.length > 1) console.log("ambiguous");
+        else if (typeof entries[0] === "string") console.log("string");
+        else if (wanted.every((name) => (entries[0].extensions || []).includes(name))) console.log("guarded");
+        else console.log("ambiguous");
+    ' "${settings}" 2>/dev/null)"; then
+        state="invalid"
+    fi
+    case "${state}" in
+        absent|guarded) return 0 ;;
+        string) ;;
+        *)
+            # Never claim a repair we did not make: an entry that cannot be
+            # rewritten safely (duplicate, unparseable or compact JSON) is reported
+            # with the exact JSON the user has to put in its place.
+            log_event "WARN" "gentle-ai" "quiet_tools_conflict_unrepaired" \
+                "${shadow} re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; replace the gentle-pi entry in ${settings} with the JSON below" 0 \
+                "expected=${remediation};settings=${settings}"
+            return 0
+            ;;
+    esac
+
+    # Stage the replacement as a sibling of its target: same filesystem (so the
+    # final mv is atomic) and `cp -p` carries the original mode over. Nothing is
+    # staged on the already-repaired paths above.
+    local tmp="${settings}.setup-ai.tmp" staged=0
+    if cp -p -- "${settings}" "${tmp}" \
+        && awk '
+            # The entry can be the last element of the array, so its own trailing
+            # comma has to survive, and the replacement follows its indentation.
+            /^[ \t]*"npm:gentle-pi"[ \t]*,?[ \t]*$/ {
+                hits++
+                indent = $0
+                sub(/[^ \t].*$/, "", indent)
+                comma = ($0 ~ /,[ \t]*$/) ? "," : ""
+                printf "%s{\n", indent
+                printf "%s  \"source\": \"npm:gentle-pi\",\n", indent
+                printf "%s  \"extensions\": [\n", indent
+                printf "%s    \"-extensions/quiet-tools.ts\",\n", indent
+                printf "%s    \"-extensions/pi-pretty.ts\"\n", indent
+                printf "%s  ]\n", indent
+                printf "%s}%s\n", indent, comma
+                next
+            }
+            { print }
+            END { exit (hits == 1 ? 0 : 1) }
+        ' "${settings}" > "${tmp}" \
+        && node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "${tmp}" 2>/dev/null; then
+        staged=1
+    fi
+    if (( staged == 0 )); then
+        rm -f -- "${tmp}"
+        log_event "WARN" "gentle-ai" "quiet_tools_conflict_unrepaired" \
+            "${shadow} re-registers a built-in tool name, so pi aborts at startup until gentle-pi excludes its own registrants; ${settings} is unchanged, replace the gentle-pi entry with the JSON below" 0 \
+            "expected=${remediation};settings=${settings}"
+        return 0
+    fi
+    if ! mv -- "${tmp}" "${settings}"; then
+        rm -f -- "${tmp}"
+        log_event "ERROR" "gentle-ai" "quiet_tools_conflict_unrepaired" \
+            "Could not replace ${settings} with the repaired copy; pi keeps aborting at startup until gentle-pi excludes -extensions/quiet-tools.ts and -extensions/pi-pretty.ts" 1 \
+            "settings=${settings}"
+        return 1
+    fi
+    log_event "INFO" "gentle-ai" "quiet_tools_conflict_repaired" \
+        "${shadow} re-registers one of the built-in tool names gentle-pi's quiet tools own; repair applied with -extensions/quiet-tools.ts and -extensions/pi-pretty.ts excluded" 0 \
+        "settings=${settings}"
+}
+
+# Verify the real pi startup path after the quiet-tools repair. PI_OFFLINE=1 and
+# stdin from /dev/null load extensions without a model call or network; measured
+# on pi 0.85.1 with pi-tool-display 0.5.0 and gentle-pi 3.2.1, the conflicting
+# settings exit 1 with a Tool "read" conflicts diagnostic and the repaired settings
+# exit 0 in about 12 seconds.
+verify_pi_startup() {
+    if ! command -v pi >/dev/null 2>&1; then
+        log_event "INFO" "gentle-ai" "pi_startup_skipped" \
+            "pi is not on PATH; startup verification skipped" 0
+        return 0
     fi
 
-    local files_csv="none"
-    if (( ${#written[@]} > 0 )); then
-        files_csv="$(IFS=,; printf '%s' "${written[*]}")"
+    local startup_timeout="${PI_STARTUP_TIMEOUT:-120}" output timeout_marker
+    if [[ ! "${startup_timeout}" =~ ^[1-9][0-9]*$ ]]; then
+        log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+            "PI_STARTUP_TIMEOUT must be a positive integer" 1 \
+            "timeout=${startup_timeout};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
     fi
-    log_event "WARN" "gentle-ai" "quiet_tools_disabled" \
-        "pi-hashline-edit-pro owns read/grep, so gentle-pi quiet-tools is disabled (GENTLE_PI_QUIET_TOOLS=0) to keep pi startable; pi-tool-display still renders tool output compactly" 0 \
-        "files=${files_csv}"
+    output="${TMP_DIR}/pi-startup-${RANDOM}.log"
+    timeout_marker="${output}.timeout"
+    if ! : > "${output}"; then
+        log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+            "Could not create the pi startup log" 1 \
+            "log=${output};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+
+    # A watchdog makes the wait bounded without requiring GNU timeout. The pi job
+    # gets its own process group, and the one-second grace period makes the measured
+    # upper bound PI_STARTUP_TIMEOUT + 1 second apart from command scheduling.
+    set -m
+    PI_OFFLINE=1 pi </dev/null >"${output}" 2>&1 &
+    PI_STARTUP_PID=$!
+    set +m
+    (
+        watchdog_sleep_pid=""
+        watchdog_cleanup() {
+            if [[ -n "${watchdog_sleep_pid}" ]]; then
+                if kill -TERM "${watchdog_sleep_pid}" 2>/dev/null; then :; fi
+                if wait "${watchdog_sleep_pid}" 2>/dev/null; then :; fi
+            fi
+            exit 0
+        }
+        trap 'watchdog_cleanup' HUP INT TERM
+        sleep "${startup_timeout}" &
+        watchdog_sleep_pid=$!
+        if wait "${watchdog_sleep_pid}"; then :; else exit 0; fi
+        if kill -0 "${PI_STARTUP_PID}" 2>/dev/null; then
+            if printf '%s\n' 'timed_out' > "${timeout_marker}"; then :; fi
+            terminate_pi_startup_process_group
+        fi
+    ) &
+    PI_STARTUP_WATCHDOG_PID=$!
+
+    local rc=0 timed_out=0 first_error=""
+    if wait "${PI_STARTUP_PID}"; then
+        rc=0
+    else
+        rc=$?
+    fi
+    if [[ -f "${timeout_marker}" ]]; then timed_out=1; fi
+    if (( timed_out == 1 )); then
+        if wait "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+    else
+        if kill -TERM "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+        if wait "${PI_STARTUP_WATCHDOG_PID}" 2>/dev/null; then :; fi
+    fi
+    PI_STARTUP_WATCHDOG_PID=""
+    PI_STARTUP_PID=""
+
+    if ! cat "${output}" >> "${HUMAN_LOG}"; then
+        log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+            "Could not append the pi startup output to the human log" 1 \
+            "log=${output};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+    if first_error="$(grep -m 1 -E 'Error:|conflicts' "${output}" 2>/dev/null)"; then :; else
+        first_error="none"
+    fi
+    local result_rc="${rc}"
+    if (( timed_out == 1 )); then result_rc=124; fi
+    if (( result_rc == 0 )); then
+        log_event "INFO" "gentle-ai" "pi_startup_verified" \
+            "pi startup verified after the gentle-pi repair" 0 \
+            "log=${output};settings=${PI_AGENT_DIR}/settings.json"
+        return 0
+    fi
+    log_event "ERROR" "gentle-ai" "pi_startup_failed" \
+        "pi startup verification failed" "${result_rc}" \
+        "diagnostic=${first_error};log=${HUMAN_LOG};settings=${PI_AGENT_DIR}/settings.json"
+    if (( result_rc == 124 )); then return 124; fi
+    return 1
 }
 
 # Reinstates the Gentle AI ecosystem configurator. `gentle-ai install` is the
@@ -1890,7 +2178,8 @@ mod_gentle_ai() {
         fi
     fi
 
-    handle_quiet_tools_conflict
+    handle_quiet_tools_conflict || return 1
+    verify_pi_startup || return 1
 
     log_event "INFO" "gentle-ai" "next_steps" "gentle-ai post-install hints" 0
     cat <<'HINT' | tee -a "${HUMAN_LOG}"
@@ -2208,6 +2497,23 @@ mod_rotator() {
         log_event "INFO" "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=${gw};models=${count}"
     else
         log_event "INFO" "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=${gw}"
+    fi
+    # The CLI's undici dependency needs the global File (Node >= 20): on an older runtime
+    # it dies with "ReferenceError: File is not defined", so installing it there only
+    # produces a gateway that cannot start plus a login hint that cannot work. Check the
+    # runtime first and leave the machine untouched instead.
+    local node_version="" node_major=""
+    if command -v node >/dev/null 2>&1; then
+        if capture_cmd node_version "rotator" --optional node --version \
+            && [[ "${node_version}" =~ ^v([0-9]+) ]]; then
+            node_major="${BASH_REMATCH[1]}"
+        fi
+    fi
+    if [[ -z "${node_major}" ]] || (( node_major < 20 )); then
+        log_event "WARN" "rotator" "node_too_old" \
+            "tuxevil-rotator not installed: it needs Node.js >= 20 and crashes on older runtimes; install Node.js 20+ (the node module ships 22) and re-run the rotator module" 0 \
+            "node=${node_version:-none};minimum=20"
+        return 0
     fi
     # Install the CLI idempotently. Never runs login and never writes secrets; the
     # start below is best-effort and never fails the module.

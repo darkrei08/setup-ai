@@ -29,7 +29,8 @@ Unix/macOS, `winget` on Windows; `bun`; the Go toolchain; the `pi` CLI through
 Linux-only: clones and runs [darkrei08/dotenv](https://github.com/darkrei08/dotenv),
 whose `setup_env.sh` detects **Arch/Omarchy vs Debian/Ubuntu** and installs the
 dotfiles (neovim, herdr, tmux, wezterm) plus the Pi configuration. It runs
-**before** `pi-packages`, so the manifest lands in the symlinked dotenv config.
+**before** `pi-packages`, so the manifest is already in place in the live
+`~/.pi/agent/pi-packages.txt`.
 
 Manual equivalent, without the installer:
 
@@ -38,9 +39,11 @@ git clone https://github.com/darkrei08/dotenv.git ~/git/personale/dotenv
 ~/git/personale/dotenv/setup_env.sh
 ```
 
-`setup_env.sh` links `~/.pi/agent` to the checkout's `pi/agent` and **backs up**
-an existing directory first (it is not destructive). Any other distro exits 1
-with an explicit message, and on Windows the module logs `skipped_non_linux`.
+`setup_env.sh` populates `~/.pi/agent` with a selective `rsync` from the checkout's
+`pi/agent` directory (settings, models, prompts, skills, themes, ...). It is a real
+directory, not a symlink, and it never deletes runtime state (`auth.json`,
+`sessions/`, pi-managed installs), so re-runs are idempotent. Any other distro
+exits 1 with an explicit message, and on Windows the module logs `skipped_non_linux`.
 
 ## pi-packages
 
@@ -67,8 +70,9 @@ idempotent, so it is safe alongside the Linux `dotenv` run.
 ## pi-workflows
 
 Installs `pi-extensible-workflows` (published release, verified down to the
-loaded artifact) and enables npm 12 remote sources for pi installs. Full guide:
-[pi-workflows-guide.md](./pi-workflows-guide.md).
+loaded artifact) and enables npm 12 remote sources for pi installs. The optional
+`@piewf/cli` and `@piewf/herdr` companions are **not** installed: full guide and
+opt-in instructions in [pi-workflows-guide.md](./pi-workflows-guide.md) §3.
 
 ## herdr
 

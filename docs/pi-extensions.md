@@ -327,8 +327,9 @@ first `pi install`.
 La separazione è quella usata da darkrei08: **configurazione** in un repo di
 dotfiles, **pacchetti** come artefatti separati.
 
-- `~/.pi/agent` è normalmente uno **symlink** dentro un checkout di dotfiles (per
-  esempio un fork di `darkrei08/dotenv`). Quel checkout contiene
+- `~/.pi/agent` è una **directory reale** popolata da un checkout di dotfiles (per
+  esempio un fork di `darkrei08/dotenv`): il suo `setup_env.sh` vi copia con `rsync`
+  un allowlist di file di configurazione, senza symlink. Quel checkout contiene
   `settings.json`, `package.json`, `prompts/`, `keybindings.json`, `models.json`,
   `skills/`, `themes/` e — per i workflow — `pi-extensible-workflows/settings.json`
   e `pi-extensible-workflows/roles/<nome>.md`.
@@ -362,8 +363,9 @@ manuali.
 The split is the same one darkrei08 uses: **configuration** in a dotfiles repo,
 **packages** as separate artifacts.
 
-- `~/.pi/agent` is normally a **symlink** into a dotfiles checkout (for example a
-  fork of `darkrei08/dotenv`). That checkout holds `settings.json`,
+- `~/.pi/agent` is a **real directory** populated from a dotfiles checkout (for
+  example a fork of `darkrei08/dotenv`): its `setup_env.sh` `rsync`s an allowlist of
+  configuration files into it, with no symlink. That checkout holds `settings.json`,
   `package.json`, `prompts/`, `keybindings.json`, `models.json`, `skills/`,
   `themes/` and — for workflows — `pi-extensible-workflows/settings.json` and
   `pi-extensible-workflows/roles/<name>.md`.
@@ -631,9 +633,9 @@ await agent("Review this change", {
 
 1. **verifica npm**: `npm --version`. Con major `>= 12` aspettati l'opt-in scritto
    da setup-ai nelle due root (§2).
-2. **clona/wire dotenv**: clona il tuo fork di dotenv e fai in modo che
-   `~/.pi/agent` risolva a `<dotenv>/pi/agent` (symlink; su Windows il layout è lo
-   stesso, cambia solo come lo colleghi).
+2. **clona/wire dotenv**: clona il tuo fork di dotenv ed esegui `setup_env.sh`,
+   che popola `~/.pi/agent` con un `rsync` selettivo da `<dotenv>/pi/agent` (non
+   uno symlink; su Windows, dove `setup_env.sh` non gira, copia gli stessi file).
 3. **crea/verifica il manifest**: copia `pi-packages.example.txt` in
    `<dotenv>/pi/agent/pi-packages.txt` (candidato 2) e commenta ciò che ti serve.
    Non listare `pi-extensible-workflows`: è saltato di proposito, lo possiede il
@@ -654,9 +656,9 @@ await agent("Review this change", {
 
 1. **check npm**: `npm --version`. With major `>= 12`, expect setup-ai's opt-in
    written into both roots (§2).
-2. **clone/wire dotenv**: clone your dotenv fork and make `~/.pi/agent` resolve to
-   `<dotenv>/pi/agent` (symlink; on Windows the layout is the same, only the way
-   you link it differs).
+2. **clone/wire dotenv**: clone your dotenv fork and run `setup_env.sh`, which
+   populates `~/.pi/agent` with a selective `rsync` from `<dotenv>/pi/agent` (not a
+   symlink; on Windows, where `setup_env.sh` does not run, copy the same files).
 3. **create/verify the manifest**: copy `pi-packages.example.txt` to
    `<dotenv>/pi/agent/pi-packages.txt` (candidate 2) and uncomment what you need.
    Do not list `pi-extensible-workflows`: it is deliberately skipped and owned by
