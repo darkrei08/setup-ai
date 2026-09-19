@@ -108,6 +108,11 @@ $PiWorkflowsRetryMarker = 'renameWithRetry'
 # Holds the resolved published workflow version for the module and its readbacks.
 $script:SetupAiWorkflowVersion = ''
 
+# npm 12 blocks a dependency's install scripts until that package is explicitly
+# approved; these are the ones the toolchain depends on. Declared once so the
+# .npmrc policy and the post-install approve/rebuild pass cannot drift apart.
+$Npm12InstallScriptPackages = @('gentle-pi','node-pty','pi-tool-display')
+
 # Upstream agent-skill stack mirrored from darkrei08/dotenv setup_env.sh so the
 # same skills land on every OS (dotenv itself is Linux-only). Installed via
 # `npx skills add`.
@@ -675,13 +680,20 @@ function Enable-NpmRemoteSources {
     }
 
     # Append-only: an existing .npmrc belongs to the user and may hold other keys.
+    #
+    # allow-scripts is the policy that has to survive `pi update --extensions`: an
+    # approval written into package.json's allowScripts field is lost the next time pi
+    # rewrites that file, and the blocked scripts come back as "pending". npm reads the
+    # policy from .npmrc as well, and pi does not own that file.
+    $allowScriptsLine = 'allow-scripts=' + ($Npm12InstallScriptPackages -join ',')
     Add-LineIfMissing -Path $npmrc -Line 'allow-remote=all'
     Add-LineIfMissing -Path $npmrc -Line 'allow-git=all'
+    Add-LineIfMissing -Path $npmrc -Line $allowScriptsLine
 
     # Verify the file npm will actually read, not the write we intended.
     $verified = $false
     if (Test-Path -LiteralPath $npmrc -PathType Leaf) {
-        $verified = [bool](Select-String -LiteralPath $npmrc -CaseSensitive -Pattern '^allow-remote=all$' -Quiet) -and [bool](Select-String -LiteralPath $npmrc -CaseSensitive -Pattern '^allow-git=all$' -Quiet)
+        $verified = [bool](Select-String -LiteralPath $npmrc -CaseSensitive -Pattern '^allow-remote=all$' -Quiet) -and [bool](Select-String -LiteralPath $npmrc -CaseSensitive -Pattern '^allow-git=all$' -Quiet) -and [bool](Select-String -LiteralPath $npmrc -CaseSensitive -Pattern ('^' + [regex]::Escape($allowScriptsLine) + '$') -Quiet)
     }
     if (-not $verified) {
         Write-Log ERROR $phase "remote_sources_unverified" "Could not enable remote sources; pi install/update would fail with EALLOWREMOTE" 1 "npmrc=$npmrc"
@@ -766,7 +778,7 @@ function Approve-NpmInstallScripts {
     # The packages whose blocked install scripts the toolchain depends on; one that
     # is not installed in this root is a skip, never an error.
     $present = @()
-    foreach ($pkg in @('gentle-pi','node-pty','pi-tool-display')) {
+    foreach ($pkg in $Npm12InstallScriptPackages) {
         if (Test-Path -LiteralPath (Join-Path $Dir "node_modules/$pkg/package.json") -PathType Leaf) { $present += $pkg }
     }
     if ($present.Count -eq 0) {

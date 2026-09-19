@@ -917,15 +917,23 @@ ensure_npm_remote_sources() {
     # Append-only: an existing .npmrc belongs to the user and may hold other keys.
     # npm 12 gates URL/tarball AND git sources separately (allow-remote, allow-git), and
     # pi's managed installs must be able to fetch a package that depends on either.
+    #
+    # allow-scripts is the policy that has to survive `pi update --extensions`: an
+    # approval written into package.json's allowScripts field is lost the next time pi
+    # rewrites that file, and the blocked scripts come back as "pending" (observed on
+    # a host whose gentle-pi postinstall had already been approved once). npm reads the
+    # policy from .npmrc as well, and pi does not own that file.
     local key
-    for key in 'allow-remote=all' 'allow-git=all'; do
+    for key in 'allow-remote=all' 'allow-git=all' \
+        "allow-scripts=$(IFS=,; printf '%s' "${NPM12_INSTALL_SCRIPT_PACKAGES[*]}")"; do
         if ! grep -qxF "${key}" "${npmrc}" 2>/dev/null; then
             printf '%s\n' "${key}" >> "${npmrc}"
         fi
     done
 
     # Verify the file npm will actually read, not the write we intended.
-    for key in 'allow-remote=all' 'allow-git=all'; do
+    for key in 'allow-remote=all' 'allow-git=all' \
+        "allow-scripts=$(IFS=,; printf '%s' "${NPM12_INSTALL_SCRIPT_PACKAGES[*]}")"; do
         if ! grep -qxF "${key}" "${npmrc}" 2>/dev/null; then
             log_event "ERROR" "${phase}" "remote_sources_unverified" \
                 "Could not enable npm 12 sources; pi install/update would fail with EALLOWREMOTE" 1 \
@@ -959,6 +967,7 @@ ensure_npm_remote_sources() {
 # script and silently removing what it installs (gentle-pi's review binary) until
 # this pass runs again. An absent package and an npm without `install-scripts` are
 # skips, never failures.
+NPM12_INSTALL_SCRIPT_PACKAGES=(gentle-pi node-pty pi-tool-display)
 
 # Print the comma-separated subset of "$@" that npm still reports as pending
 # (unreviewed) install scripts for the project at $1. Returns 1 when npm's state
@@ -1015,7 +1024,7 @@ approve_npm_install_scripts() {
     # is not installed in this root is a skip, never an error.
     local -a present=()
     local pkg
-    for pkg in gentle-pi node-pty pi-tool-display; do
+    for pkg in "${NPM12_INSTALL_SCRIPT_PACKAGES[@]}"; do
         [[ -f "${dir}/node_modules/${pkg}/package.json" ]] && present+=("${pkg}")
     done
     if (( ${#present[@]} == 0 )); then
