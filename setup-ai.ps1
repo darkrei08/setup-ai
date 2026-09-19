@@ -626,6 +626,22 @@ function Assert-SkillInstalledForAgents {
 # artifact verification live in one place instead of being duplicated per module.
 # ==============================================================================
 
+# Prefer a caller-provided GitHub token, then the GitHub CLI's current login, so
+# release metadata requests do not spend the unauthenticated API quota.
+function Get-GitHubApiHeaders {
+    $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN.Trim() } else { '' }
+    if (-not $token -and (Test-Cmd gh)) {
+        try {
+            $token = (@(gh auth token 2>$null) -join '').Trim()
+        } catch {
+            $token = ''
+        }
+    }
+    $headers = @{ 'User-Agent' = 'setup-ai' }
+    if ($token) { $headers['Authorization'] = "Bearer $token" }
+    return $headers
+}
+
 # Append one line to a file only when that exact line is absent, so an existing
 # .npmrc (user-owned, and it may hold other npm keys) is never rewritten or
 # clobbered. Returns nothing: callers re-read the file to verify the result.
@@ -1747,7 +1763,7 @@ function Mod-Cockpit {
     Write-Log INFO "cockpit" "start" "cockpit-tools (GUI)"
     Write-Log INFO "cockpit" "license_notice" "cockpit-tools is a desktop GUI app under CC BY-NC-SA 4.0"
     try {
-        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/jlcodes99/cockpit-tools/releases/latest" -Headers @{ 'User-Agent' = 'setup-ai' }
+        $rel = Invoke-RestMethod -Uri "https://api.github.com/repos/jlcodes99/cockpit-tools/releases/latest" -Headers (Get-GitHubApiHeaders)
         $asset = $rel.assets | Where-Object { $_.name -match '\.msi$' } | Select-Object -First 1
         if (-not $asset) { Write-Log WARN "cockpit" "no_msi" "No .msi asset in latest release; download manually"; return }
         $msi = Join-Path $env:TEMP $asset.name

@@ -86,6 +86,21 @@ refuses to run when the working directory is `/` or the home directory.
 
 **Fix**: launch pi from a project directory, not `~`.
 
+## OpenCode: `Failed to fetch version information`
+
+```text
+Failed to fetch version information
+```
+
+The opencode vendor installer resolves its version through an unauthenticated
+GitHub API request. Under rate limiting, that request returns 403 and the
+installer reports this message.
+
+**Fix**:
+
+- authenticate `gh` (`gh auth login`) or set `GITHUB_TOKEN`, then rerun;
+- or let the module's npm fallback install `opencode-ai` from the npm registry.
+
 ## Debian: opencode installed but `Required command not found: opencode` (127)
 
 The opencode installer appends `$HOME/.opencode/bin` to the shell rc only, so the
