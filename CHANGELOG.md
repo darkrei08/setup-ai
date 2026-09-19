@@ -5,6 +5,12 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.4] - 2026-09-19
+
+### Fixed
+
+- The rotator fix in 3.6.3 read the run-side `rotator-gateway.log`, which only holds the detached start attempt and did not even exist on the LXC. `No accounts configured` is written by `tuxevil-rotator` itself to `~/.tuxevil-rotator/gateway.log` (the file the Pi extension names in its own warning), so both logs are searched now and a missing one is not an error. The closing summary prints the login step accordingly ([#73](https://github.com/darkrei08/setup-ai/issues/73)).
+
 ## [3.6.3] - 2026-09-19
 
 ### Fixed
