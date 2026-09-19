@@ -64,6 +64,12 @@ logic, verification) **must be mirrored** in both `setup-ai.sh` and
 - Keep changes small and reviewable; explain non-obvious logic with a short comment.
 - Business logic that can silently break the install (version resolution,
   path/symlink handling, OS detection) must be **verified in-script** after it runs.
+- **One branch per review**: do not `git checkout` / `git switch` / create branches
+  while an RDD review is being negotiated. The review target is a snapshot of the
+  live workspace, so a checkout in that window makes every `start` reconcile to
+  `mutation_outcome: unknown` and then fail with `stale_target_identity`. Commit,
+  review, and only then move on; see
+  [rdd-review-troubleshooting.md](docs/rdd-review-troubleshooting.md#operational-rule-do-not-switch-branches-during-a-review).
 
 ## Commits
 
