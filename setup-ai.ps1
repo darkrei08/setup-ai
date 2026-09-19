@@ -631,7 +631,7 @@ function Assert-SkillInstalledForAgents {
 
 # Prefer a caller-provided GitHub token, then the GitHub CLI's current login, so
 # release metadata requests do not spend the unauthenticated API quota.
-function Get-GitHubApiHeaders {
+function Get-GitHubToken {
     $token = if ($env:GITHUB_TOKEN) { $env:GITHUB_TOKEN.Trim() } else { '' }
     if (-not $token -and (Test-Cmd gh)) {
         try {
@@ -640,6 +640,11 @@ function Get-GitHubApiHeaders {
             $token = ''
         }
     }
+    return $token
+}
+
+function Get-GitHubApiHeaders {
+    $token = Get-GitHubToken
     $headers = @{ 'User-Agent' = 'setup-ai' }
     if ($token) { $headers['Authorization'] = "Bearer $token" }
     return $headers
@@ -1544,6 +1549,13 @@ function Test-PiStartup {
 function Mod-GentleAi {
     Write-Log INFO "gentle-ai" "start" "gentle-ai"
 
+    # Repair the harmful quiet-tools switch and the pi settings entry BEFORE anything
+    # that can fail: the repair needs nothing from the installer (it only removes the
+    # exact shell-profile lines this installer writes and edits settings.json), while a
+    # failed `gentle-ai install` used to skip it and leave the switch behind, making a
+    # failed run permanently worse than a run that never happened (issue #61).
+    Repair-QuietToolsConflict
+
     # The per-agent selector and the pi harness both require the gentle-ai CLI
     # itself; a legacy standalone gga is NOT enough, so install whenever the
     # gentle-ai CLI is missing even if an old gga is on PATH.
@@ -1558,6 +1570,21 @@ function Mod-GentleAi {
         throw "gentle-ai CLI not found on PATH after remote installer"
     }
     Invoke-Step -Phase "gentle-ai" -Verify -Action { & gentle-ai --version }
+
+    # The configurator downloads the engram binary through the GitHub API. Unauthenticated
+    # that is the same 60-requests-per-hour-per-IP quota that already broke this ecosystem
+    # twice (issue #60: "download engram binary: fetch latest engram version: GitHub API
+    # returned HTTP 403"). The binary reads GITHUB_TOKEN/GH_TOKEN, so pass whichever token
+    # this machine has; without one the call stays unauthenticated and the upstream error
+    # is reported as before.
+    $ghToken = Get-GitHubToken
+    if ($ghToken) {
+        $env:GITHUB_TOKEN = $ghToken
+        $env:GH_TOKEN = $ghToken
+        Write-Log INFO "gentle-ai" "github_token_forwarded" "Forwarding a GitHub token to the gentle-ai configurator for its API calls"
+    } else {
+        Write-Log INFO "gentle-ai" "github_token_absent" "No GitHub token available; the configurator's GitHub API calls stay unauthenticated"
+    }
 
     # Detect the agents/IDEs present on this machine (same mapping as Mod-Ee).
     $detectedAgents = Get-TargetSkillAgents
