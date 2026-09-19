@@ -2247,6 +2247,13 @@ mod_gentle_ai() {
     # in this live process so the post-install verification can find it.
     export PATH="${HOME}/.local/bin:${HOME}/go/bin:${PATH}"
 
+    # Repair the harmful quiet-tools switch and the pi settings entry BEFORE anything
+    # that can fail: the repair needs nothing from the installer (it only removes the
+    # exact shell-profile lines this installer writes and edits settings.json), while a
+    # failed `gentle-ai install` used to skip it and leave the switch behind, making a
+    # failed run permanently worse than a run that never happened (issue #61).
+    handle_quiet_tools_conflict || return 1
+
     # The per-agent selector and the pi harness both require the gentle-ai CLI
     # itself; a legacy standalone `gga` is NOT enough, so install whenever the
     # gentle-ai CLI is missing even if an old gga is on PATH.
@@ -2290,21 +2297,52 @@ mod_gentle_ai() {
     # selector (run directly - run_cmd would redirect stdout and hide prompts);
     # otherwise we run it non-interactively over the detected agents so CI/pipes
     # never hang. A failure fails the module (no silent downgrade).
+    # The configurator downloads the engram binary through the GitHub API. Unauthenticated
+    # that is the same 60-requests-per-hour-per-IP quota that already broke this ecosystem
+    # twice (issue #60: "download engram binary: fetch latest engram version: GitHub API
+    # returned HTTP 403"). The binary reads GITHUB_TOKEN/GH_TOKEN, so pass whichever token
+    # this machine has; without one the call stays unauthenticated and the upstream error
+    # is reported as before.
+    #
+    # The token is EXPORTED, never passed as an argument: `run_cmd` logs its argv verbatim
+    # into the human log, the console, and the JSONL events, so an `env GITHUB_TOKEN=...`
+    # prefix would copy a credential into every artifact this run produces. The previous
+    # environment is restored right after the call.
+    local gh_token configurator_rc=0
+    local prev_github_token="${GITHUB_TOKEN:-}" prev_gh_token="${GH_TOKEN:-}"
+    gh_token="$(github_api_token)"
+    if [[ -n "${gh_token}" ]]; then
+        export GITHUB_TOKEN="${gh_token}" GH_TOKEN="${gh_token}"
+        log_event "INFO" "gentle-ai" "github_token_forwarded" \
+            "Forwarding a GitHub token to the gentle-ai configurator for its API calls" 0
+    else
+        log_event "INFO" "gentle-ai" "github_token_absent" \
+            "No GitHub token available; the configurator's GitHub API calls stay unauthenticated" 0
+    fi
+
     if [[ -t 0 && -t 1 && "${NONINTERACTIVE}" -eq 0 ]]; then
         if (( DRY_RUN == 1 )); then
             dry_run_note "gentle-ai" "gentle-ai install --scope global"
         else
             log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
-            if ! gentle-ai install --scope global; then
-                log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
-                return 1
-            fi
+            gentle-ai install --scope global || configurator_rc=1
         fi
     else
         local agents_csv; agents_csv="$(IFS=,; printf '%s' "${detected_agents[*]}")"
         log_event "INFO" "gentle-ai" "configurator_noninteractive" \
             "No TTY; installing gentle-ai for detected agents" 0 "agents=${agents_csv}"
-        run_cmd "gentle-ai" gentle-ai install --scope global --agents "${agents_csv}"
+        run_cmd "gentle-ai" gentle-ai install --scope global --agents "${agents_csv}" || configurator_rc=1
+    fi
+
+    # The credential lives in this process's environment only for that call.
+    if [[ -n "${gh_token}" ]]; then
+        if [[ -n "${prev_github_token}" ]]; then export GITHUB_TOKEN="${prev_github_token}"; else unset GITHUB_TOKEN; fi
+        if [[ -n "${prev_gh_token}" ]]; then export GH_TOKEN="${prev_gh_token}"; else unset GH_TOKEN; fi
+    fi
+
+    if (( configurator_rc != 0 )); then
+        log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
+        return 1
     fi
     log_event "INFO" "gentle-ai" "configurator_done" "gentle-ai install completed" 0
 
