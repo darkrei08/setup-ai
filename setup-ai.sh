@@ -1524,8 +1524,15 @@ PYPATCH
 
     if [[ -x "${DOTENV_DIR}/setup_env.sh" ]]; then
         # The upstream script also installs shared skills; both paths are
-        # idempotent, so keep the upstream integration intact.
-        run_cmd "dotenv" bash "${DOTENV_DIR}/setup_env.sh"
+        # idempotent, so keep the upstream integration intact. It runs its own
+        # copy only when no skill module replaces it in this pass, so `--only
+        # dotenv` still gets the skills while a full run does not install the
+        # same sources twice.
+        local -a dotenv_prefix=()
+        if is_selected ee || is_selected skills; then
+            dotenv_prefix=(env SETUP_AI_SKIP_SKILLS=1)
+        fi
+        run_cmd "dotenv" "${dotenv_prefix[@]}" bash "${DOTENV_DIR}/setup_env.sh"
     else
         log_event "ERROR" "dotenv" "setup_script_missing" \
             "dotenv/setup_env.sh missing or not executable" 1 \
@@ -1652,7 +1659,7 @@ mod_ee() {
         [[ -d "$(agent_config_dir "${agent}")" ]] || continue
         run_cmd "engineering-excellence" \
             npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
-            --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent "${agent}" --copy --yes
+            --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent "${agent}" --copy --yes </dev/null
         target_agents+=("${agent}")
         installed_any=1
     done
@@ -1661,7 +1668,7 @@ mod_ee() {
         # No agent detected yet - install at least for pi (created by mod_pi).
         run_cmd "engineering-excellence" \
             npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
-            --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent pi --copy --yes
+            --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent pi --copy --yes </dev/null
         target_agents=(pi)
     fi
 
@@ -1699,7 +1706,7 @@ mod_skills() {
         for agent in "${agents[@]}"; do
             run_cmd "skills" \
                 npx --yes skills@latest add "${source}" \
-                --skill "${skill_list[@]}" --global --agent "${agent}" --copy --yes
+                --skill "${skill_list[@]}" --global --agent "${agent}" --copy --yes </dev/null
         done
     done
 
