@@ -1980,10 +1980,15 @@ function Mod-Rotator {
         }
         if (-not $gatewayUp) {
             # A gateway with no account exits immediately, so the port never opens and the
-            # only way to see that is its log. Without this the run reports the rotator as
-            # installed while the gemini-* aliases stay broken.
-            $noAccounts = (Test-Path -LiteralPath $gatewayLog -PathType Leaf) -and
-                [bool](Select-String -LiteralPath $gatewayLog -SimpleMatch 'No accounts configured' -Quiet)
+            # only place that says so is the CLI's own log (the same file the Pi extension
+            # points at); the run-side log only holds the start attempt. Without this the
+            # run reports the rotator as installed while the gemini-* aliases stay broken.
+            $cliLog = Join-Path $HOME ".tuxevil-rotator\gateway.log"
+            $noAccounts = @($cliLog, $gatewayLog) |
+                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+                Where-Object { Select-String -LiteralPath $_ -SimpleMatch 'No accounts configured' -Quiet } |
+                Select-Object -First 1
+            $noAccounts = [bool]$noAccounts
             if ($noAccounts) {
                 Write-Log WARN "rotator" "accounts_missing" "tuxevil-rotator has no account configured, so the gateway cannot start; run 'tuxevil-rotator login' in an interactive terminal, then 'tuxevil-rotator start'" 0 "url=$gw;log=$gatewayLog"
                 $script:PostInstallActions += "rotator: run 'tuxevil-rotator login' in an interactive terminal (it prints a Google OAuth URL and waits for the browser callback on localhost:51121), then 'tuxevil-rotator status' and 'tuxevil-rotator start'"
