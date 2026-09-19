@@ -348,3 +348,23 @@ touching the store; repetition adds no information.
 - [#12 — docs/guard: prevent branch switching during an active RDD review](https://github.com/darkrei08/setup-ai/issues/12)
 - [`docs/pi-extensions.md`](pi-extensions.md) — the npm 12 install-script approval that
   §4 depends on, and the two-root package shadowing
+
+## Operational rule: do not switch branches during a review
+
+An RDD review binds its target to a **snapshot of the live workspace**. A `git
+checkout`, `git switch` or new branch in the window between negotiation and
+`start` rebuilds that snapshot, so the previously negotiated target no longer
+matches:
+
+```
+mutation_outcome: unknown        # every start reconciles to this
+stale_target_identity            # the direct native start error
+```
+
+This is the provider failing closed, not a defect: it refuses to bind a lineage
+to a workspace that changed underneath it. It is tracked as
+[#12](https://github.com/darkrei08/setup-ai/issues/12).
+
+**Rule**: finish the branch work, run the review on that branch, and only then
+create or switch branches. If a review is already negotiating, wait for its
+transition instead of moving the workspace.
