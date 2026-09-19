@@ -102,11 +102,18 @@ the read-only checks and the two continuations are in
 The other agent CLIs, each through its official installer.
 
 **opencode** installs the `opencode-ai` CLI and makes the `opencode-pi` Pi
-extension able to use it. That extension starts the CLI with
-`child_process.spawn` and no shell, so on Windows the npm `.cmd`/`.ps1` shims in
-`%APPDATA%\npm` are not executable for it and Node fails with
-`spawn opencode ENOENT` even when `opencode --version` works in a terminal. The
-module probes that same no-shell spawn, resolves the packaged
+extension able to use it. On Linux, the vendor installer resolves its version
+through GitHub with `GITHUB_TOKEN` or `gh auth token` when a token is available;
+if that path fails, the module falls back to the npm registry with
+`npm install -g opencode-ai` (and `--allow-scripts=opencode-ai` on npm 12+). If
+both paths fail, setup-ai reports the opencode module as failed and the log
+contains the vendor and npm errors. macOS installs it through Homebrew, and
+Windows through the npm registry directly.
+
+That extension starts the CLI with `child_process.spawn` and no shell, so on
+Windows the npm `.cmd`/`.ps1` shims in `%APPDATA%\npm` are not executable for it
+and Node fails with `spawn opencode ENOENT` even when `opencode --version` works
+in a terminal. The module probes that same no-shell spawn, resolves the packaged
 `node_modules/opencode-ai/bin/opencode.exe` behind the shim, and persists
 `OPENCODE_PI_BIN` for the current user. On Linux/macOS the installer appends its
 bin dir to the shell rc only, so the module resolves `$HOME/.opencode/bin` for
