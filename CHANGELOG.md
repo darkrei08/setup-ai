@@ -5,6 +5,14 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.2] - 2026-09-19
+
+### Fixed
+
+- The agent CLIs are installed before the tool that configures them. `gentle-ai` sat three modules ahead of `opencode`, and its installer refuses to finish when the OpenCode runtime is absent (`install OpenCode Gentle Logo plugin: OpenCode runtime version unavailable or unsupported`), which failed `--all` at module 12 of 17 on a fresh Debian 13 LXC and skipped the agent CLIs it was waiting for. `MODULE_ORDER`, the PowerShell `$ModuleOrder` and the launcher's mirrored list now put `codex`, `antigravity` and `opencode` first ([#69](https://github.com/darkrei08/setup-ai/issues/69)).
+- `opencode` installs on a machine whose anonymous GitHub API quota is spent. Its vendor installer resolves the release through an unauthenticated API call and exits with `Failed to fetch version information` when that request is rate-limited, which failed the module and the run. setup-ai now resolves the version itself with a token (`GITHUB_TOKEN`, otherwise `gh auth token`) and passes `--version` to the installer, and falls back to the npm registry (`npm install -g opencode-ai`, with `--allow-scripts=opencode-ai` on npm 12+) when there is no token or when that path fails. `cockpit`'s release lookup uses the same token, on Unix and on Windows ([#68](https://github.com/darkrei08/setup-ai/issues/68)).
+- `--dry-run` for `opencode` and `cockpit` writes no file and no longer reports a false warning when a lookup was only planned.
+
 ## [3.6.1] - 2026-09-19
 
 ### Fixed
