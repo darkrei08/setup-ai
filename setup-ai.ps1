@@ -969,7 +969,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','pi-packages','go','ee','skills','pi-workflows','herdr','gentle-ai','codex','antigravity','opencode','cockpit','rotator')
+$ModuleOrder = @('base','node','bun','pi','dotenv','pi-packages','go','ee','skills','pi-workflows','herdr','codex','antigravity','opencode','gentle-ai','cockpit','rotator')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'

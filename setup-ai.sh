@@ -719,9 +719,12 @@ EOF
 # and a human description. DEFAULT_MODULES is the "core" set used when no
 # --only/--all is given; OPTIONAL_MODULES (GUI apps etc.) are only installed
 # via --all or an explicit --only.
+# gentle-ai comes after the agent CLIs it configures: its installer fails with
+# "install OpenCode Gentle Logo plugin: OpenCode runtime version unavailable or
+# unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi dotenv pi-packages go ee skills pi-workflows herdr gentle-ai codex antigravity opencode cockpit rotator)
+MODULE_ORDER=(base node bun pi dotenv pi-packages go ee skills pi-workflows herdr codex antigravity opencode gentle-ai cockpit rotator)
 
 module_desc() {
     case "$1" in
