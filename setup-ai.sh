@@ -1248,10 +1248,18 @@ mod_base() {
 
     case "${PM}" in
         apt-get)
-            local pkgs=(build-essential curl wget git unzip tar ca-certificates gnupg jq
-                       python3 python3-venv python3-pip neovim gh golang-go imagemagick wl-clipboard xclip)
-            run_cmd "base" sudo apt-get update
-            run_cmd "base" sudo apt-get install -y "${pkgs[@]}"
+            local pkgs=(build-essential rsync sudo curl wget git unzip tar ca-certificates gnupg jq
+                       python3 python3-venv python3-pip neovim gh golang-go imagemagick wl-clipboard xclip
+                       x11-apps gedit pulseaudio-utils mesa-utils)
+            # A debconf question or conffile prompt would stall the run mid-install, so
+            # the upgrade runs non-interactive and keeps the installed conffiles.
+            run_cmd "base" sudo env DEBIAN_FRONTEND=noninteractive apt-get update
+            run_cmd "base" sudo env DEBIAN_FRONTEND=noninteractive apt-get \
+                -y -o Dpkg::Options::=--force-confold upgrade
+            # nala is the frontend for the bulk install below; apt-get bootstraps it so
+            # a machine that does not have it still converges in this one pass.
+            run_cmd "base" sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y nala
+            run_cmd "base" sudo nala install -y "${pkgs[@]}"
             ;;
         dnf)
             local pkgs=(gcc gcc-c++ make curl wget git unzip tar ca-certificates gnupg2 jq
