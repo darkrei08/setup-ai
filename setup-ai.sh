@@ -2303,10 +2303,16 @@ mod_gentle_ai() {
     # returned HTTP 403"). The binary reads GITHUB_TOKEN/GH_TOKEN, so pass whichever token
     # this machine has; without one the call stays unauthenticated and the upstream error
     # is reported as before.
-    local gh_token; gh_token="$(github_api_token)"
-    local -a GH_ENV=()
+    #
+    # The token is EXPORTED, never passed as an argument: `run_cmd` logs its argv verbatim
+    # into the human log, the console, and the JSONL events, so an `env GITHUB_TOKEN=...`
+    # prefix would copy a credential into every artifact this run produces. The previous
+    # environment is restored right after the call.
+    local gh_token configurator_rc=0
+    local prev_github_token="${GITHUB_TOKEN:-}" prev_gh_token="${GH_TOKEN:-}"
+    gh_token="$(github_api_token)"
     if [[ -n "${gh_token}" ]]; then
-        GH_ENV=(env GITHUB_TOKEN="${gh_token}" GH_TOKEN="${gh_token}")
+        export GITHUB_TOKEN="${gh_token}" GH_TOKEN="${gh_token}"
         log_event "INFO" "gentle-ai" "github_token_forwarded" \
             "Forwarding a GitHub token to the gentle-ai configurator for its API calls" 0
     else
@@ -2319,16 +2325,24 @@ mod_gentle_ai() {
             dry_run_note "gentle-ai" "gentle-ai install --scope global"
         else
             log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
-            if ! "${GH_ENV[@]}" gentle-ai install --scope global; then
-                log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
-                return 1
-            fi
+            gentle-ai install --scope global || configurator_rc=1
         fi
     else
         local agents_csv; agents_csv="$(IFS=,; printf '%s' "${detected_agents[*]}")"
         log_event "INFO" "gentle-ai" "configurator_noninteractive" \
             "No TTY; installing gentle-ai for detected agents" 0 "agents=${agents_csv}"
-        run_cmd "gentle-ai" "${GH_ENV[@]}" gentle-ai install --scope global --agents "${agents_csv}"
+        run_cmd "gentle-ai" gentle-ai install --scope global --agents "${agents_csv}" || configurator_rc=1
+    fi
+
+    # The credential lives in this process's environment only for that call.
+    if [[ -n "${gh_token}" ]]; then
+        if [[ -n "${prev_github_token}" ]]; then export GITHUB_TOKEN="${prev_github_token}"; else unset GITHUB_TOKEN; fi
+        if [[ -n "${prev_gh_token}" ]]; then export GH_TOKEN="${prev_gh_token}"; else unset GH_TOKEN; fi
+    fi
+
+    if (( configurator_rc != 0 )); then
+        log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
+        return 1
     fi
     log_event "INFO" "gentle-ai" "configurator_done" "gentle-ai install completed" 0
 
