@@ -494,6 +494,14 @@ require_command() {
     fi
 }
 
+github_api_token() {
+    local token="${GITHUB_TOKEN:-}"
+    if [[ -z "${token}" ]] && command -v gh >/dev/null 2>&1; then
+        token="$(gh auth token 2>/dev/null)" || token=""
+    fi
+    printf '%s' "${token}"
+}
+
 # Run a command. --verify marks a read-back whose success is counted as verification
 # rather than as an install; --optional marks one whose failure the caller recovers from.
 # Both keep the command's own events and its return code, and mirror -Verify / -Optional
@@ -2440,15 +2448,87 @@ mod_opencode() {
         if [[ "${OS_FAMILY}" == "macos" ]]; then
             run_cmd "opencode" brew install anomalyco/tap/opencode
         else
-            local installer="${TMP_DIR}/install-opencode.sh"
-            run_cmd "opencode" curl -fsSL https://opencode.ai/install -o "${installer}"
-            [[ -s "${installer}" ]] || {
-                log_event "ERROR" "opencode" "installer_missing" "opencode installer is empty" 1 "path=${installer}"
-                return 1
-            }
-            run_cmd "opencode" bash "${installer}"
+            if (( DRY_RUN == 1 )); then
+                dry_run_note "opencode" \
+                    "curl https://opencode.ai/install + bash install-opencode.sh (with --version when a GitHub token is available), then npm install -g opencode-ai when it fails"
+            else
+                local installer="${TMP_DIR}/install-opencode.sh"
+                local release_json="${TMP_DIR}/opencode-release.json"
+                local token version="" vendor_installed=0
+                token="$(github_api_token)"
+
+                # The vendor installer resolves its release through the
+                # unauthenticated GitHub API, which answers 403 under rate limiting
+                # and then reports "Failed to fetch version information". A token
+                # moves that lookup here and the installer skips its own; without a
+                # token the plain install is still attempted, because the rate limit
+                # is the only thing that made it fail.
+                if [[ -n "${token}" ]]; then
+                    local api_headers="${TMP_DIR}/opencode-github-headers"
+                    # The token stays out of run_cmd's command display: curl reads the header file.
+                    ( umask 077; printf '%s\n' \
+                        "Authorization: Bearer ${token}" \
+                        'Accept: application/vnd.github+json' > "${api_headers}" )
+                    if run_cmd "opencode" --optional curl -fsSL --retry 3 --retry-all-errors --retry-delay 2 \
+                        --header "@${api_headers}" \
+                        "https://api.github.com/repos/anomalyco/opencode/releases/latest" \
+                        -o "${release_json}"; then
+                        if [[ -s "${release_json}" ]]; then
+                            capture_cmd version "opencode" --optional sed -n \
+                                's/.*"tag_name": *"v\([^\"]*\)".*/\1/p' "${release_json}" || version=""
+                        else
+                            log_event "WARN" "opencode" "github_api_empty" \
+                                "GitHub returned no opencode release metadata; leaving the lookup to the vendor installer" 0
+                        fi
+                    else
+                        log_event "WARN" "opencode" "github_api_failed" \
+                            "Could not fetch opencode release metadata; leaving the lookup to the vendor installer" 0
+                    fi
+                else
+                    log_event "INFO" "opencode" "github_api_unauthenticated" \
+                        "No GitHub API token available; the vendor installer does its own release lookup" 0
+                fi
+
+                local -a vendor_args=()
+                [[ -n "${version}" ]] && vendor_args=(--version "${version}")
+                if run_cmd "opencode" --optional curl -fsSL https://opencode.ai/install -o "${installer}" \
+                    && [[ -s "${installer}" ]]; then
+                    if run_cmd "opencode" --optional bash "${installer}" "${vendor_args[@]}"; then
+                        if refresh_opencode_path && command -v opencode >/dev/null 2>&1; then
+                            vendor_installed=1
+                            log_event "INFO" "opencode" "vendor_install_succeeded" \
+                                "Installed opencode with the vendor installer" 0 "version=${version:-latest}"
+                        else
+                            log_event "WARN" "opencode" "vendor_install_unresolved" \
+                                "Vendor installer completed but opencode was not found; using the npm registry fallback" 0
+                        fi
+                    else
+                        log_event "WARN" "opencode" "vendor_install_failed" \
+                            "Vendor installer failed; using the npm registry fallback" 0
+                    fi
+                else
+                    log_event "WARN" "opencode" "installer_unavailable" \
+                        "Could not download the vendor installer; using the npm registry fallback" 0 \
+                        "path=${installer}"
+                fi
+
+                if (( vendor_installed == 0 )); then
+                    log_event "INFO" "opencode" "npm_fallback" "Installing opencode from the npm registry" 0
+                    require_command npm
+                    local npm_version npm_major
+                    capture_cmd npm_version "opencode" npm --version
+                    npm_major="${npm_version%%.*}"
+                    if [[ "${npm_major}" =~ ^[0-9]+$ ]] && (( npm_major >= 12 )); then
+                        run_cmd "opencode" npm install -g opencode-ai --allow-scripts=opencode-ai
+                    else
+                        run_cmd "opencode" npm install -g opencode-ai
+                    fi
+                    log_event "INFO" "opencode" "npm_install_succeeded" \
+                        "Installed opencode from the npm registry" 0
+                fi
+            fi
         fi
-        if ! refresh_opencode_path; then
+        if (( DRY_RUN == 0 )) && ! refresh_opencode_path; then
             log_event "WARN" "opencode" "path_unresolved" \
                 "opencode did not resolve on PATH after the installer; require_command will report it" 0
         fi
@@ -2485,12 +2565,34 @@ mod_cockpit() {
 
     # Linux: fetch the latest .deb (apt/dpkg) or .rpm (dnf) from GitHub Releases.
     local release_json="${TMP_DIR}/cockpit-release.json"
-    run_optional "cockpit" curl -fsSL \
-        "https://api.github.com/repos/${COCKPIT_REPO}/releases/latest" -o "${release_json}"
-    [[ -s "${release_json}" ]] || {
+    local token api_headers
+    token="$(github_api_token)"
+    if [[ -n "${token}" ]]; then
+        # Keep the token out of run_optional's command display; curl reads the headers from this file.
+        # A dry run writes nothing, so the file is only created for a real request.
+        api_headers="${TMP_DIR}/cockpit-github-headers"
+        if (( DRY_RUN == 0 )); then
+            ( umask 077; printf '%s\n' \
+                "Authorization: Bearer ${token}" \
+                'Accept: application/vnd.github+json' > "${api_headers}" )
+        fi
+        run_optional "cockpit" curl -fsSL --header "@${api_headers}" \
+            "https://api.github.com/repos/${COCKPIT_REPO}/releases/latest" -o "${release_json}"
+    else
+        log_event "INFO" "cockpit" "github_api_unauthenticated" \
+            "No GitHub API token available; trying the unauthenticated release lookup" 0
+        run_optional "cockpit" curl -fsSL -H 'Accept: application/vnd.github+json' \
+            "https://api.github.com/repos/${COCKPIT_REPO}/releases/latest" -o "${release_json}"
+    fi
+    if [[ ! -s "${release_json}" ]]; then
+        if (( DRY_RUN == 1 )); then
+            # Nothing was fetched, so the asset steps below have no input to plan.
+            dry_run_note "cockpit" "the release metadata above decides which package is downloaded"
+            return 0
+        fi
         log_event "WARN" "cockpit" "release_unavailable" "Could not fetch cockpit-tools release metadata"
         return
-    }
+    fi
 
     local asset_pat=""
     case "${PM}" in
