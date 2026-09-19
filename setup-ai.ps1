@@ -232,6 +232,9 @@ $script:SelectedModules = @()
 $script:SucceededModules = @()
 $script:FailedModules = @()
 $script:RunActive = $false
+# Post-install steps a module cannot perform for the user (an interactive login, a
+# token). They are printed with the closing summary so they are not buried in the log.
+$script:PostInstallActions = @()
 # Ctrl+C: Windows has no HUP/TERM, so the console event is cancelled and the run
 # finishes with the same `interrupted` summary setup-ai.sh writes on a signal.
 $script:Interrupted = $false
@@ -1976,7 +1979,17 @@ function Mod-Rotator {
             }
         }
         if (-not $gatewayUp) {
-            Write-Log WARN "rotator" "gateway_start_failed" "tuxevil-rotator did not answer within 10s; run 'tuxevil-rotator login', then check '$gatewayLog' or the 'tuxevil-rotator' scheduled task" 0 "url=$gw"
+            # A gateway with no account exits immediately, so the port never opens and the
+            # only way to see that is its log. Without this the run reports the rotator as
+            # installed while the gemini-* aliases stay broken.
+            $noAccounts = (Test-Path -LiteralPath $gatewayLog -PathType Leaf) -and
+                [bool](Select-String -LiteralPath $gatewayLog -SimpleMatch 'No accounts configured' -Quiet)
+            if ($noAccounts) {
+                Write-Log WARN "rotator" "accounts_missing" "tuxevil-rotator has no account configured, so the gateway cannot start; run 'tuxevil-rotator login' in an interactive terminal, then 'tuxevil-rotator start'" 0 "url=$gw;log=$gatewayLog"
+                $script:PostInstallActions += "rotator: run 'tuxevil-rotator login' in an interactive terminal (it prints a Google OAuth URL and waits for the browser callback on localhost:51121), then 'tuxevil-rotator status' and 'tuxevil-rotator start'"
+            } else {
+                Write-Log WARN "rotator" "gateway_start_failed" "tuxevil-rotator did not answer within 10s; check '$gatewayLog' or the 'tuxevil-rotator' scheduled task" 0 "url=$gw"
+            }
         }
     }
     if (Test-Cmd pi) {
@@ -2269,5 +2282,8 @@ Write-RunSummary -Selected $script:SelectedModules -Succeeded $script:SucceededM
 Write-Host "Report  : $ReportFile"
 if ($exitCode -eq 0) {
     Write-Host "`nNext: open a new terminal so PATH updates apply."
+    foreach ($action in $script:PostInstallActions) {
+        Write-Host "Then : $action"
+    }
 }
 exit $exitCode
