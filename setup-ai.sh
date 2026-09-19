@@ -2819,9 +2819,12 @@ mod_rotator() {
             done
             if (( gw_up == 0 )); then
                 # A gateway with no account exits immediately, so the port never opens and
-                # the only way to see that is its log. Without this the run reports the
-                # rotator as installed while the gemini-* aliases stay broken.
-                if grep -qs 'No accounts configured' "${gw_log}"; then
+                # the only place that says so is the CLI's own log (the same file the Pi
+                # extension points at); the run-side log only holds the start attempt.
+                # Without this the run reports the rotator as installed while the
+                # gemini-* aliases stay broken.
+                local cli_log="${HOME}/.tuxevil-rotator/gateway.log"
+                if grep -qs 'No accounts configured' "${cli_log}" "${gw_log}" 2>/dev/null; then
                     log_event "WARN" "rotator" "accounts_missing" \
                         "tuxevil-rotator has no account configured, so the gateway cannot start; run 'tuxevil-rotator login' in an interactive terminal, then 'tuxevil-rotator start'" 0 \
                         "url=${gw};log=${gw_log}"
