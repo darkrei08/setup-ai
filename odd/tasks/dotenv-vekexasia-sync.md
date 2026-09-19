@@ -39,13 +39,36 @@
 
 ## Tasks
 
-- [ ] T1. Meticulous analysis of the 6 upstream commits / 27 files, mapped
-      against the 33 own commits: what to bring, conflicts, breakage risk.
-- [ ] T2. Redesign `~/.pi/agent` management: selective rsync in
-      `dotenv/setup_env.sh` (or setup-ai module) preserving auth/sessions.
-- [ ] T3. Fix setup-ai `DOTENV_DIR` + dedup skills (single source of truth).
-- [ ] T4. Merge vekexasia into `darkrei08/dotenv` preserving the 33 integrations.
-- [ ] T5. Verify: `workflow` resolves roles+aliases post-install; no broken plugins.
+All five are done. Evidence for each:
+
+- [x] T1. Analysis of the upstream commits against the 33 own commits, per file,
+      with the conflict and breakage flags: `odd/tasks/vekexasia-divergence.md`.
+- [x] T2. `~/.pi/agent` is now managed by a selective rsync allowlist in
+      `dotenv/setup_env.sh` `sync_pi()` (config files, packages, prompts, skills,
+      themes, extensions minus the workflow wrappers); `auth.json`, `sessions/`,
+      `agents/` and the caches are never touched, and the function re-reads the
+      workflow roles and aliases it just copied.
+- [x] T3. `DOTENV_DIR` is overridable and the skills are installed once:
+      `mod_dotenv` sets `SETUP_AI_SKIP_SKILLS=1` when the `ee` or `skills` module
+      runs in the same pass (setup-ai 3.6.1, issue #62), and `dotenv`'s own block
+      keeps a `</dev/null` stdin so a non-interactive run cannot abort (dotenv #18).
+- [x] T4. Merged: `dotenv` master `f2de886` (`chore/vekexasia-alignment`) and then
+      `7a747d1`.
+- [x] T5. Verified on the Debian 13 LXC with the published 3.6.2: a full
+      `--all --verbose --yes` run is green (17/17 modules, TTY 155s and non-TTY
+      148s), and `sync_pi`'s own check proves the copied
+      `pi-extensible-workflows/roles` and `settings.json` are in place.
+
+## Follow-up found by the 3.6.2 container run
+
+The optional `rotator` module reported `success` while the gateway could not
+start at all: `tuxevil-rotator` exits immediately when no account is configured,
+so the port never opens and the Pi extension warns at session start while the
+closing summary says nothing. The module now reads `gateway.log`, logs
+`rotator accounts_missing` and queues an actionable line that the closing
+summary prints as `Then : …`, naming the interactive login, the OAuth browser
+callback on `localhost:51121` and the following `status`/`start` steps (both
+platforms).
 
 ## Progress
 

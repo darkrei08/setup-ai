@@ -273,6 +273,9 @@ CURRENT_MODULE=""
 RUN_ACTIVE=0
 MODULES_OK=""
 DRY_RUN_PARTIAL=""
+# Post-install steps a module cannot perform for the user (an interactive login, a
+# token). They are printed with the closing summary so they are not buried in the log.
+POST_INSTALL_ACTIONS=()
 MODULE_INDEX=0
 MODULE_TOTAL=0
 STEP_INSTALLED=0
@@ -2815,8 +2818,20 @@ mod_rotator() {
                 sleep 0.5
             done
             if (( gw_up == 0 )); then
-                log_event "WARN" "rotator" "gateway_start_failed" \
-                    "tuxevil-rotator did not answer within 10s; run 'tuxevil-rotator login', then check 'systemctl --user status tuxevil-rotator' or ${gw_log}" 0 "url=${gw}"
+                # A gateway with no account exits immediately, so the port never opens and
+                # the only way to see that is its log. Without this the run reports the
+                # rotator as installed while the gemini-* aliases stay broken.
+                if grep -qs 'No accounts configured' "${gw_log}"; then
+                    log_event "WARN" "rotator" "accounts_missing" \
+                        "tuxevil-rotator has no account configured, so the gateway cannot start; run 'tuxevil-rotator login' in an interactive terminal, then 'tuxevil-rotator start'" 0 \
+                        "url=${gw};log=${gw_log}"
+                    POST_INSTALL_ACTIONS+=(
+                        "rotator: run 'tuxevil-rotator login' in an interactive terminal (it prints a Google OAuth URL and waits for the browser callback on localhost:51121), then 'tuxevil-rotator status' and 'tuxevil-rotator start'"
+                    )
+                else
+                    log_event "WARN" "rotator" "gateway_start_failed" \
+                        "tuxevil-rotator did not answer within 10s; check 'systemctl --user status tuxevil-rotator' or ${gw_log}" 0 "url=${gw}"
+                fi
             fi
         fi
     fi
@@ -3708,3 +3723,8 @@ printf 'Human log : %s\n' "${HUMAN_LOG}"
 printf 'JSONL log : %s\n' "${JSONL_LOG}"
 printf 'Report    : %s\n' "${REPORT_FILE}"
 printf '\nNext: restart your shell (or source your rc file) so PATH updates apply.\n'
+if (( ${#POST_INSTALL_ACTIONS[@]} > 0 )); then
+    for action in "${POST_INSTALL_ACTIONS[@]}"; do
+        printf 'Then : %s\n' "${action}"
+    done
+fi
