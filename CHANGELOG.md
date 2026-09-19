@@ -5,6 +5,12 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.3] - 2026-09-19
+
+### Fixed
+
+- The `rotator` module no longer reports success while the gateway cannot start. A machine with no Antigravity account makes `tuxevil-rotator` exit immediately, so port 51200 never opens and the module's 10s probe could only observe "no answer". It now reads the gateway log, logs `rotator accounts_missing` and queues an actionable line that the closing summary prints as `Then : …`, naming the interactive `tuxevil-rotator login`, the Google OAuth URL it prints, the browser callback it waits for on `localhost:51121`, and the following `status` and `start` steps. The same behaviour is mirrored in PowerShell ([#73](https://github.com/darkrei08/setup-ai/issues/73)).
+
 ## [3.6.2] - 2026-09-19
 
 ### Fixed
