@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv pi-packages go ee skills pi-workflows herdr gentle-ai codex antigravity opencode [cockpit] [rotator]
+base node bun pi dotenv pi-packages go ee skills pi-workflows herdr codex antigravity opencode gentle-ai [cockpit] [rotator]
 ```
 
 ## base
@@ -96,6 +96,11 @@ re-run.
 When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`),
 the read-only checks and the two continuations are in
 [rdd-review-troubleshooting.md](./rdd-review-troubleshooting.md).
+
+The module runs **after** `codex`, `antigravity` and `opencode`: `gentle-ai
+install` fails with `install OpenCode Gentle Logo plugin: OpenCode runtime
+version unavailable or unsupported` when a CLI it configures is still absent, so
+the run has to install them first.
 
 ## codex / antigravity / opencode
 
