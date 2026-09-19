@@ -5,6 +5,18 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.1] - 2026-09-19
+
+### Fixed
+
+- An unattended install no longer aborts in the skills step. Every `npx skills add` call in `mod_ee` and `mod_skills` redirects stdin from `/dev/null`, because the CLI opens a readline interface on fd 0 and dies with `EBADF: bad file descriptor, read` whenever there is no usable stdin (`nohup`, CI, `ssh -T`, a script). Reproduced in a Debian 13 LXC, where a `nohup npx @darkrei08/setup-ai --all --yes` run stopped after 24s at the dotenv module with `failed_step=bash .../dotenv/setup_env.sh` ([#62](https://github.com/darkrei08/setup-ai/issues/62)).
+- `mod_dotenv` sets `SETUP_AI_SKIP_SKILLS=1` when the `ee` or `skills` module runs in the same pass, which is the contract `dotenv/setup_env.sh` documents. The shared skill stack is installed for every detected agent once instead of twice, and `--only dotenv` still installs it through dotenv. The sibling fix in the dotenv repository covers seven more `npx skills` calls ([dotenv#18](https://github.com/darkrei08/dotenv/issues/18)).
+- The npm 12 install-script policy survives a pi rewrite. `npm install-scripts approve` records the approval in `package.json`'s `allowScripts` field, which pi owns and rewrites on `pi install` / `pi update --extensions`; the policy is now written as `allow-scripts=gentle-pi,node-pty,pi-tool-display` into the Pi npm root `.npmrc`, next to the existing `allow-remote`/`allow-git` opt-ins, with the same append-only write and read-back verification. Without it a machine can report a clean install while gentle-pi's postinstall never ran, leaving the package-local review binary absent and the advisories that pi-tool-display's postinstall patches still open ([#63](https://github.com/darkrei08/setup-ai/issues/63)).
+
+### Changed
+
+- The Debian/Ubuntu `base` module upgrades the installed packages before installing anything else (non-interactive, `-o Dpkg::Options::=--force-confold`, so a debconf or conffile prompt cannot stall the run and local conffile edits survive), bootstraps `nala` with apt-get, and then performs the bulk install through `nala install`. The package list gains `x11-apps`, `gedit`, `pulseaudio-utils`, `mesa-utils`, `rsync` and `sudo`. The other package managers and the Windows base set are unchanged ([#64](https://github.com/darkrei08/setup-ai/issues/64)).
+
 ## [3.6.0] - 2026-09-18
 
 ### Added
