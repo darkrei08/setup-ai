@@ -14,9 +14,12 @@ base node bun pi dotenv pi-packages go ee skills pi-workflows herdr gentle-ai co
 ## base
 
 System packages (build tools, `git`, `gh`, `python`, `neovim`, `jq`,
-`imagemagick`, `go`, plus the clipboard tools `wl-clipboard` and `xclip` on Linux)
+`imagemagick`, `go`, plus the clipboard tools `wl-clipboard` and `xclip` and the
+desktop helpers `x11-apps`, `gedit`, `pulseaudio-utils` and `mesa-utils` on Linux)
 through the platform package manager: `apt-get`, `dnf`, `pacman`, `zypper`, or
-`brew` on macOS.
+`brew` on macOS. On Debian/Ubuntu the module first upgrades the installed
+packages non-interactively (`--force-confold`, so local conffile edits are kept)
+and installs `nala`, then performs the bulk install through `nala install`.
 
 ## node / bun / go / pi
 
