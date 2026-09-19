@@ -5,6 +5,17 @@ All notable changes to `@darkrei08/setup-ai` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.6.5] - 2026-09-19
+
+### Fixed
+
+- A failed `gentle-ai install` no longer leaves the harmful `GENTLE_PI_QUIET_TOOLS=0` switch behind. The quiet-tools repair ran only after the install steps, so the very failure it should survive skipped it and left the user's shell profile worse than before the run. It now also runs at the top of the module; the call before the startup check stays, because `pi install npm:gentle-pi` rewrites the package entry into the form that re-registers the colliding extensions ([#61](https://github.com/darkrei08/setup-ai/issues/61)).
+- The `gentle-ai` configurator receives a GitHub token. It downloads the engram binary through the API as an anonymous client, which is the same 60-requests-per-hour-per-IP quota that already broke the dotenv release download and opencode's vendor installer; on 403 the module aborted with `download engram binary: fetch latest engram version: GitHub API returned HTTP 403`. The token is exported around the call and restored afterwards, never passed as an argument, because `run_cmd` logs its argv into the human and JSONL logs ([#60](https://github.com/darkrei08/setup-ai/issues/60)).
+
+### Documentation
+
+- `docs/rdd-review-troubleshooting.md` and `AGENTS.md` now state that branches must not be created or switched while an RDD review is negotiating: the target is a snapshot of the live workspace, and a checkout in that window makes every `start` reconcile to `mutation_outcome: unknown` and then fail with `stale_target_identity` ([#12](https://github.com/darkrei08/setup-ai/issues/12)).
+
 ## [3.6.4] - 2026-09-19
 
 ### Fixed
