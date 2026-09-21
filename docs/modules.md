@@ -70,6 +70,39 @@ Installs darkrei08/dotenv's agent-skill stack on **every OS** via `npx skills ad
 (humanlayer/skills) — for every detected agent. `skills add --copy` is
 idempotent, so it is safe alongside the Linux `dotenv` run.
 
+## Agents configured, not installed
+
+The `ee`, `skills` and `gentle-ai` modules act on every agent **detected** on the
+machine, and that list is wider than what this installer installs. It contains
+`pi`, `claude-code`, `gemini-cli`, `cursor`, `antigravity`, `codex` and
+`opencode`; of those, the installer installs only `pi` (module `pi`), `codex`
+(module `codex`) and `opencode` (module `opencode`).
+
+Claude Code, Gemini CLI, Cursor and Antigravity are **configuration targets**.
+When their config directory already exists they receive the shared skills and,
+through the gentle-ai configurator, their MCP wiring. When it does not, nothing
+is installed for them, and the only sign is that they do not appear in the
+detected list. Nothing fails, so the silence is easy to misread as a bug: this
+section exists because it was.
+
+The boundary is deliberate. Each of those tools ships its own installer, expects
+a subscription, and needs an interactive login, so installing them would turn a
+toolchain setup into an unfinished account setup. Install them from the vendor
+when you want them, then re-run this installer so the skills and MCP modules pick
+the new agent up through the same detection.
+
+| Agent | Vendor install (verified 2026-09-21) |
+|---|---|
+| Claude Code | `npm install -g @anthropic-ai/claude-code` (package `2.1.278` confirmed in the registry), then run `claude` once to log in |
+| Gemini CLI | `npm install -g @google/gemini-cli` (package `0.60.0` confirmed in the registry), then run `gemini` once to log in |
+| Cursor | the vendor's own installer from its site; it is not distributed on npm, and this project has not exercised it |
+| Antigravity | the vendor's own installer from its site; it is not distributed on npm, and this project has not exercised it |
+
+Neither of the last two rows is a command this project has run, and `gemini` was
+absent on the machine this section was verified on, so treat all three as vendor
+documentation rather than as something this project has exercised. Only the Claude
+Code row describes a tool this project has seen installed and configured.
+
 ## pi-workflows
 
 Installs `pi-extensible-workflows` (published release, verified down to the

@@ -80,7 +80,7 @@ that matches your question.
 | Page | What it covers |
 |---|---|
 | [docs/install-matrix.md](docs/install-matrix.md) | The official install method of every tool, per OS |
-| [docs/modules.md](docs/modules.md) | Module list and order, what each module does, the manual `dotenv` setup |
+| [docs/modules.md](docs/modules.md) | Module list and order, what each module does, the boundary between installed and configured-only agents, the manual `dotenv` setup |
 | [docs/pi-extensions.md](docs/pi-extensions.md) | Pi package roots, npm 12 remote sources and install-script approval, models, resource selectors |
 | [docs/pi-workflows-guide.md](docs/pi-workflows-guide.md) | `pi-extensible-workflows`: install, `/workflow` picker, roles/aliases, Herdr, Neovim (bilingual) |
 | [docs/rdd-review-troubleshooting.md](docs/rdd-review-troubleshooting.md) | When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`) |
