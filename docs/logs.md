@@ -27,9 +27,9 @@ Every record starts with these keys:
 
 `meta`, `summary`, and `err` are optional and are appended in that order. `meta`
 remains a string, and `summary` keeps its existing object shape. A record with a
-non-zero `rc` also carries `err`, which contains only the known failure
-classification: the return code, whether the failed step was optional, and
-whether the run continues or aborts.
+non-zero `rc` always carries `err.rc`. The `optional` and `behavior` keys are
+included only when the caller supplied those classifications; the writers never
+infer them from the log level or a default value.
 
 ```json
 {

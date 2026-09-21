@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `docs/rdd-review-troubleshooting.md` and `AGENTS.md` now state that branches must not be created or switched while an RDD review is negotiating: the target is a snapshot of the live workspace, and a checkout in that window makes every `start` reconcile to `mutation_outcome: unknown` and then fail with `stale_target_identity` ([#12](https://github.com/darkrei08/setup-ai/issues/12)).
 
+## [Unreleased]
+
 ### Changed
 
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).

@@ -171,7 +171,8 @@ function Write-Log {
         [System.Collections.IDictionary]$Summary = $null, [bool]$Optional = $false, [string]$Behavior = ""
     )
     $ts = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
-    if (-not $Behavior) { $Behavior = if ($Optional) { 'continue' } else { 'abort' } }
+    $optionalSupplied = $PSBoundParameters.ContainsKey('Optional')
+    $behaviorSupplied = $PSBoundParameters.ContainsKey('Behavior')
     $obj = [ordered]@{
         ts = $ts; lvl = $Level; ph = $Phase; ev = $Event
         msg = $Message; rc = $ReturnCode; rid = $RunId; pid = $PID
@@ -179,7 +180,10 @@ function Write-Log {
     if ($Meta) { $obj.meta = $Meta }
     if ($Summary) { $obj.summary = $Summary }
     if ($ReturnCode -ne 0) {
-        $obj.err = [ordered]@{ rc = $ReturnCode; optional = $Optional; behavior = $Behavior }
+        $err = [ordered]@{ rc = $ReturnCode }
+        if ($optionalSupplied) { $err.optional = $Optional }
+        if ($behaviorSupplied) { $err.behavior = $Behavior }
+        $obj.err = $err
     }
     # -Depth 5 keeps the nested summary object (modules/steps) intact; the default of 2
     # would flatten it to type names.

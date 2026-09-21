@@ -197,7 +197,9 @@ json_escape() {
 json_log() {
     local timestamp="$1" level="$2" phase="$3" event="$4" message="$5"
     local return_code="${6:-0}" meta="${7:-}" extra="${8:-}"
-    local optional="${9:-0}" behavior="${10:-}"
+    local optional="" behavior="" optional_supplied=0 behavior_supplied=0
+    if (( $# >= 9 )); then optional="${9}"; optional_supplied=1; fi
+    if (( $# >= 10 )); then behavior="${10}"; behavior_supplied=1; fi
 
     local j_ts j_level j_phase j_event j_message j_meta j_behavior optional_json
     j_ts="$(json_escape "${timestamp}")"
@@ -206,12 +208,6 @@ json_log() {
     j_event="$(json_escape "${event}")"
     j_message="$(json_escape "${message}")"
     j_meta="$(json_escape "${meta}")"
-    if [[ -z "${behavior}" ]]; then
-        if (( optional == 1 )); then behavior="continue"; else behavior="abort"; fi
-    fi
-    j_behavior="$(json_escape "${behavior}")"
-    optional_json="false"
-    if (( optional == 1 )); then optional_json="true"; fi
 
     {
         printf '{"ts":"%s","lvl":"%s","ph":"%s","ev":"%s","msg":"%s","rc":%s,"rid":"%s","pid":%s' \
@@ -225,8 +221,17 @@ json_log() {
             printf ',"summary":%s' "${extra}"
         fi
         if (( return_code != 0 )); then
-            printf ',"err":{"rc":%s,"optional":%s,"behavior":"%s"}' \
-                "${return_code}" "${optional_json}" "${j_behavior}"
+            printf ',"err":{"rc":%s' "${return_code}"
+            if (( optional_supplied == 1 )); then
+                optional_json="false"
+                if [[ "${optional}" == "1" ]]; then optional_json="true"; fi
+                printf ',"optional":%s' "${optional_json}"
+            fi
+            if (( behavior_supplied == 1 )); then
+                j_behavior="$(json_escape "${behavior}")"
+                printf ',"behavior":"%s"' "${j_behavior}"
+            fi
+            printf '}'
         fi
         printf '}\n'
     } >> "${JSONL_LOG}"
@@ -240,7 +245,13 @@ log_event() {
     local timestamp
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}" "${optional}" "${behavior}"
+    if (( $# >= 9 )); then
+        json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}" "${optional}" "${behavior}"
+    elif (( $# >= 8 )); then
+        json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}" "${optional}"
+    else
+        json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}"
+    fi
 
     # First failure wins: later wrapper events (`script_failed`) only announce the failure
     # this one named, so they must not replace the root cause the summary falls back to.
@@ -567,7 +578,7 @@ run_cmd() {
     # a pipeline subshell, and wait makes logging deterministic before returning.
     if ! mkfifo "${stream}"; then
         log_event "ERROR" "${phase}" "output_stream_failed" "Could not create the command output stream" 1 "path=${stream}" "" "${optional}" "${failure_behavior}"
-        record_step "${phase}" "${status}" 1 "${display}"
+        record_step "${phase}" "failed" 1 "${display}"
         return 1
     fi
     tee -a "${HUMAN_LOG}" < "${stream}" &
