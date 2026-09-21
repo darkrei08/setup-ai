@@ -1606,6 +1606,8 @@ function Mod-GentleAi {
     $configuratorRetryDelays = @(15, 45)
     $configuratorRetryAttempt = 0
     $configuratorRateLimitExhausted = $false
+    $configuratorQuotaConfirmed = $false
+    $configuratorInterrupted = $false
     $configuratorRc = 0
     if ($configuratorInteractive) {
         Write-Log INFO "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)"
@@ -1629,17 +1631,24 @@ function Mod-GentleAi {
                 try {
                     Invoke-Step -Phase "gentle-ai" -CaptureOutput $configuratorOutput -Action { & gentle-ai install --scope global --agents $agentsCsv }
                 } catch {
-                    $configuratorRc = 1
+                    $nativeExitCode = $global:LASTEXITCODE
+                    $configuratorRc = if ($null -ne $nativeExitCode -and [int]$nativeExitCode -ne 0) { [int]$nativeExitCode } else { 1 }
                 }
                 if ($configuratorRc -ne 0 -and (Test-Path -LiteralPath $configuratorOutput)) {
                     $configuratorOutputText = Get-Content -Raw -LiteralPath $configuratorOutput
                     if ($configuratorOutputText -match '(?i)(HTTP 403.*GitHub API|GitHub API.*HTTP 403)') {
                         $configuratorSignature = 'HTTP 403 + GitHub API download path'
+                        $configuratorQuotaConfirmed = $true
                     }
                 }
             }
 
             if ($configuratorRc -eq 0) { break }
+            if ($configuratorRc -eq 130 -or $configuratorRc -eq 143) {
+                $configuratorInterrupted = $true
+                Write-Log INFO "gentle-ai" "configurator_retry_skipped" "No retry attempted because the gentle-ai configurator run was interrupted" $configuratorRc "return_code=$configuratorRc;signature=$configuratorSignature"
+                break
+            }
             if (-not $configuratorSignature) { break }
             if ($configuratorRetryAttempt -ge $configuratorRetryDelays.Count) {
                 $configuratorRateLimitExhausted = $true
@@ -1647,7 +1656,12 @@ function Mod-GentleAi {
             }
             $configuratorRetryAttempt++
             $configuratorBackoff = $configuratorRetryDelays[$configuratorRetryAttempt - 1]
-            Write-Log INFO "gentle-ai" "configurator_retry" "Retrying gentle-ai configurator after rate-limit signature (attempt $configuratorRetryAttempt/2; waiting ${configuratorBackoff}s)" 0 "attempt=$configuratorRetryAttempt;signature=$configuratorSignature;backoff_seconds=$configuratorBackoff"
+            $configuratorRetryMessage = if ($configuratorQuotaConfirmed) {
+                "Retrying gentle-ai configurator after confirmed rate-limit signature"
+            } else {
+                "Retrying gentle-ai configurator after observed selector failure"
+            }
+            Write-Log INFO "gentle-ai" "configurator_retry" "$configuratorRetryMessage (attempt $configuratorRetryAttempt/2; waiting ${configuratorBackoff}s)" 0 "attempt=$configuratorRetryAttempt;signature=$configuratorSignature;backoff_seconds=$configuratorBackoff"
             Start-Sleep -Seconds $configuratorBackoff
         }
     } finally {
@@ -1661,8 +1675,14 @@ function Mod-GentleAi {
     }
     if ($configuratorRc -ne 0) {
         $configuratorFailure = "gentle-ai install failed"
-        if ($configuratorRateLimitExhausted) {
+        if ($configuratorInterrupted) {
+            $configuratorFailure = "gentle-ai install interrupted (rc=$configuratorRc); no retry was attempted because the run was interrupted"
+        } elseif ($configuratorRateLimitExhausted -and $configuratorQuotaConfirmed) {
             $configuratorFailure = "gentle-ai install failed: anonymous GitHub API quota exhausted; remedies: run 'gh auth login', or export GITHUB_TOKEN/GH_TOKEN"
+        } elseif ($configuratorInteractive) {
+            $configuratorFailure = "gentle-ai install failed: the interactive gentle-ai selector exited non-zero (rc=$configuratorRc) and its output was not captured because the selector owns the TTY"
+        } else {
+            $configuratorFailure = "gentle-ai install failed: the non-interactive gentle-ai configurator exited non-zero (rc=$configuratorRc); no HTTP 403 + GitHub API signature was observed in captured output"
         }
         Write-Log ERROR "gentle-ai" "configurator_failed" $configuratorFailure 1
         throw $configuratorFailure

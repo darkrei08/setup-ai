@@ -2320,8 +2320,8 @@ mod_gentle_ai() {
     local gh_token configurator_rc=0
     local prev_github_token="${GITHUB_TOKEN:-}" prev_gh_token="${GH_TOKEN:-}"
     local configurator_output="${TMP_DIR}/gentle-ai-configurator.out"
-    local configurator_retry=0 configurator_rate_limit_exhausted=0
-    local configurator_signature="" configurator_backoff=""
+    local configurator_retry=0 configurator_rate_limit_exhausted=0 configurator_quota_confirmed=0
+    local configurator_signature="" configurator_backoff="" configurator_retry_message=""
     local configurator_tty=0
     local -a configurator_backoffs=(15 45)
     gh_token="$(github_api_token)"
@@ -2356,7 +2356,7 @@ mod_gentle_ai() {
             if (( configurator_tty == 1 )); then
                 # The selector must see the real TTY; teeing it would hide or buffer its prompts.
                 gentle-ai install --scope global || configurator_rc=$?
-                configurator_signature="interactive TTY failure (output not captured)"
+                configurator_signature="interactive selector failure (output not captured)"
             else
                 : > "${configurator_output}"
                 run_cmd "gentle-ai" --capture-output "${configurator_output}" \
@@ -2365,10 +2365,17 @@ mod_gentle_ai() {
                 if (( configurator_rc != 0 )) \
                     && grep -Eiq 'HTTP 403.*GitHub API|GitHub API.*HTTP 403' "${configurator_output}"; then
                     configurator_signature="HTTP 403 + GitHub API download path"
+                    configurator_quota_confirmed=1
                 fi
             fi
 
             (( configurator_rc == 0 )) && break
+            if (( configurator_rc == 130 || configurator_rc == 143 )); then
+                log_event "INFO" "gentle-ai" "configurator_retry_skipped" \
+                    "No retry attempted because the gentle-ai configurator run was interrupted" "${configurator_rc}" \
+                    "return_code=${configurator_rc};signature=${configurator_signature}"
+                break
+            fi
             [[ -n "${configurator_signature}" ]] || break
             if (( configurator_retry >= ${#configurator_backoffs[@]} )); then
                 configurator_rate_limit_exhausted=1
@@ -2376,8 +2383,13 @@ mod_gentle_ai() {
             fi
             configurator_retry=$(( configurator_retry + 1 ))
             configurator_backoff="${configurator_backoffs[$(( configurator_retry - 1 ))]}"
+            if (( configurator_quota_confirmed == 1 )); then
+                configurator_retry_message="Retrying gentle-ai configurator after confirmed rate-limit signature"
+            else
+                configurator_retry_message="Retrying gentle-ai configurator after observed selector failure"
+            fi
             log_event "INFO" "gentle-ai" "configurator_retry" \
-                "Retrying gentle-ai configurator after rate-limit signature (attempt ${configurator_retry}/2; waiting ${configurator_backoff}s)" 0 \
+                "${configurator_retry_message} (attempt ${configurator_retry}/2; waiting ${configurator_backoff}s)" 0 \
                 "attempt=${configurator_retry};signature=${configurator_signature};backoff_seconds=${configurator_backoff}"
             if ! sleep "${configurator_backoff}"; then
                 log_event "ERROR" "gentle-ai" "configurator_retry_sleep_failed" \
@@ -2397,8 +2409,14 @@ mod_gentle_ai() {
 
     if (( configurator_rc != 0 )); then
         local configurator_failure="gentle-ai install failed"
-        if (( configurator_rate_limit_exhausted == 1 )); then
+        if (( configurator_rc == 130 || configurator_rc == 143 )); then
+            configurator_failure="gentle-ai install interrupted (rc=${configurator_rc}); no retry was attempted because the run was interrupted"
+        elif (( configurator_rate_limit_exhausted == 1 && configurator_quota_confirmed == 1 )); then
             configurator_failure="gentle-ai install failed: anonymous GitHub API quota exhausted; remedies: run 'gh auth login', or export GITHUB_TOKEN/GH_TOKEN"
+        elif (( configurator_tty == 1 )); then
+            configurator_failure="gentle-ai install failed: the interactive gentle-ai selector exited non-zero (rc=${configurator_rc}) and its output was not captured because the selector owns the TTY"
+        else
+            configurator_failure="gentle-ai install failed: the non-interactive gentle-ai configurator exited non-zero (rc=${configurator_rc}); no HTTP 403 + GitHub API signature was observed in captured output"
         fi
         log_event "ERROR" "gentle-ai" "configurator_failed" "${configurator_failure}" 1
         return 1
