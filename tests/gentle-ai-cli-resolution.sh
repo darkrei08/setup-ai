@@ -32,6 +32,16 @@ extract_function mod_gentle_ai > "${TEST_DIR}/module.sh"
 source "${TEST_DIR}/resolver.sh"
 source "${TEST_DIR}/module.sh"
 
+# The extraction brings only the function, but mod_gentle_ai reads the run-summary
+# state the installer initialises before any module runs (setup-ai.sh:306-311).
+# Mirror it here, or the module dies on an unbound variable under set -u.
+STEP_FAILED=0
+STEP_FAIL_STEP=""
+STEP_FAIL_RC=0
+LAST_ERROR_STEP=""
+LAST_ERROR_RC=0
+RUN_INTERRUPTED=0
+
 log_event() {
     printf '%s|%s|%s|%s|%s|%s\n' "$1" "$2" "$3" "$4" "${5:-0}" "${6:-}" >> "${TEST_DIR}/events.log"
 }
