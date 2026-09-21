@@ -511,11 +511,16 @@ github_api_token() {
 # on Invoke-Step in setup-ai.ps1.
 run_cmd() {
     local phase="$1"; shift
-    local optional=0 verify=0
+    local optional=0 verify=0 capture_output=""
     while [[ "${1:-}" == --* ]]; do
         case "$1" in
             --optional) optional=1 ;;
             --verify)   verify=1 ;;
+            --capture-output)
+                (( $# >= 2 )) || return 2
+                capture_output="$2"
+                shift
+                ;;
             *)          break ;;
         esac
         shift
@@ -552,7 +557,11 @@ run_cmd() {
         record_step "${phase}" "failed" 1 "${display}"
         return 1
     fi
-    tee -a "${HUMAN_LOG}" < "${stream}" &
+    if [[ -n "${capture_output}" ]]; then
+        tee -a "${HUMAN_LOG}" "${capture_output}" < "${stream}" &
+    else
+        tee -a "${HUMAN_LOG}" < "${stream}" &
+    fi
     tee_pid=$!
     if "$@" >"${stream}" 2>&1; then
         rc=0
@@ -2310,6 +2319,11 @@ mod_gentle_ai() {
     # environment is restored right after the call.
     local gh_token configurator_rc=0
     local prev_github_token="${GITHUB_TOKEN:-}" prev_gh_token="${GH_TOKEN:-}"
+    local configurator_output="${TMP_DIR}/gentle-ai-configurator.out"
+    local configurator_retry=0 configurator_rate_limit_exhausted=0
+    local configurator_signature="" configurator_backoff=""
+    local configurator_tty=0
+    local -a configurator_backoffs=(15 45)
     gh_token="$(github_api_token)"
     if [[ -n "${gh_token}" ]]; then
         export GITHUB_TOKEN="${gh_token}" GH_TOKEN="${gh_token}"
@@ -2321,17 +2335,58 @@ mod_gentle_ai() {
     fi
 
     if [[ -t 0 && -t 1 && "${NONINTERACTIVE}" -eq 0 ]]; then
-        if (( DRY_RUN == 1 )); then
-            dry_run_note "gentle-ai" "gentle-ai install --scope global"
-        else
-            log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
-            gentle-ai install --scope global || configurator_rc=1
-        fi
+        configurator_tty=1
+        log_event "INFO" "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)" 0
     else
         local agents_csv; agents_csv="$(IFS=,; printf '%s' "${detected_agents[*]}")"
         log_event "INFO" "gentle-ai" "configurator_noninteractive" \
             "No TTY; installing gentle-ai for detected agents" 0 "agents=${agents_csv}"
-        run_cmd "gentle-ai" gentle-ai install --scope global --agents "${agents_csv}" || configurator_rc=1
+    fi
+
+    if (( DRY_RUN == 1 )); then
+        if (( configurator_tty == 1 )); then
+            dry_run_note "gentle-ai" "gentle-ai install --scope global"
+        else
+            run_cmd "gentle-ai" --capture-output "${configurator_output}" \
+                gentle-ai install --scope global --agents "${agents_csv}" || configurator_rc=$?
+        fi
+    else
+        while :; do
+            configurator_rc=0
+            if (( configurator_tty == 1 )); then
+                # The selector must see the real TTY; teeing it would hide or buffer its prompts.
+                gentle-ai install --scope global || configurator_rc=$?
+                configurator_signature="interactive TTY failure (output not captured)"
+            else
+                : > "${configurator_output}"
+                run_cmd "gentle-ai" --capture-output "${configurator_output}" \
+                    gentle-ai install --scope global --agents "${agents_csv}" || configurator_rc=$?
+                configurator_signature=""
+                if (( configurator_rc != 0 )) \
+                    && grep -Eiq 'HTTP 403.*GitHub API|GitHub API.*HTTP 403' "${configurator_output}"; then
+                    configurator_signature="HTTP 403 + GitHub API download path"
+                fi
+            fi
+
+            (( configurator_rc == 0 )) && break
+            [[ -n "${configurator_signature}" ]] || break
+            if (( configurator_retry >= ${#configurator_backoffs[@]} )); then
+                configurator_rate_limit_exhausted=1
+                break
+            fi
+            configurator_retry=$(( configurator_retry + 1 ))
+            configurator_backoff="${configurator_backoffs[$(( configurator_retry - 1 ))]}"
+            log_event "INFO" "gentle-ai" "configurator_retry" \
+                "Retrying gentle-ai configurator after rate-limit signature (attempt ${configurator_retry}/2; waiting ${configurator_backoff}s)" 0 \
+                "attempt=${configurator_retry};signature=${configurator_signature};backoff_seconds=${configurator_backoff}"
+            if ! sleep "${configurator_backoff}"; then
+                log_event "ERROR" "gentle-ai" "configurator_retry_sleep_failed" \
+                    "Could not wait before retrying the gentle-ai configurator" 1 \
+                    "attempt=${configurator_retry};backoff_seconds=${configurator_backoff}"
+                configurator_rc=1
+                break
+            fi
+        done
     fi
 
     # The credential lives in this process's environment only for that call.
@@ -2341,7 +2396,11 @@ mod_gentle_ai() {
     fi
 
     if (( configurator_rc != 0 )); then
-        log_event "ERROR" "gentle-ai" "configurator_failed" "gentle-ai install failed" 1
+        local configurator_failure="gentle-ai install failed"
+        if (( configurator_rate_limit_exhausted == 1 )); then
+            configurator_failure="gentle-ai install failed: anonymous GitHub API quota exhausted; remedies: run 'gh auth login', or export GITHUB_TOKEN/GH_TOKEN"
+        fi
+        log_event "ERROR" "gentle-ai" "configurator_failed" "${configurator_failure}" 1
         return 1
     fi
     log_event "INFO" "gentle-ai" "configurator_done" "gentle-ai install completed" 0

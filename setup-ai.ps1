@@ -405,7 +405,8 @@ function Invoke-Step {
         [switch]$Optional,
         [int[]]$ExpectedExitCodes = @(),
         [switch]$Verify,
-        [string]$Step = ''
+        [string]$Step = '',
+        [string]$CaptureOutput = ''
     )
     # Step identity for the step_result record: an explicit label when the helper has
     # one, otherwise the action source with whitespace collapsed.
@@ -417,7 +418,12 @@ function Invoke-Step {
     Write-Host ""
     try {
         $global:LASTEXITCODE = 0
-        & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Out-Host
+        if ($CaptureOutput) {
+            [IO.File]::WriteAllText($CaptureOutput, [string]::Empty)
+            & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Tee-Object -FilePath $CaptureOutput -Append | Out-Host
+        } else {
+            & $Action 2>&1 | Tee-Object -FilePath $HumanLog -Append | Out-Host
+        }
         $nativeExitCode = $global:LASTEXITCODE
         if ($nativeExitCode -ne 0) {
             if ($ExpectedExitCodes -contains $nativeExitCode) {
@@ -1594,17 +1600,72 @@ function Mod-GentleAi {
     # interactive selector (run directly - Invoke-Step pipes output and would
     # hide the prompts); otherwise we run it non-interactively over the detected
     # agents so CI/pipes never hang. A failure fails the module.
-    if (-not $Yes -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected) {
+    $configuratorInteractive = (-not $Yes -and [Environment]::UserInteractive -and -not [Console]::IsInputRedirected -and -not [Console]::IsOutputRedirected)
+    $agentsCsv = ($detectedAgents -join ',')
+    $configuratorOutput = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-gentle-ai-" + [guid]::NewGuid().ToString('N') + ".log")
+    $configuratorRetryDelays = @(15, 45)
+    $configuratorRetryAttempt = 0
+    $configuratorRateLimitExhausted = $false
+    $configuratorRc = 0
+    if ($configuratorInteractive) {
         Write-Log INFO "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)"
-        & gentle-ai install --scope global
-        if ($LASTEXITCODE -ne 0) {
-            Write-Log ERROR "gentle-ai" "configurator_failed" "gentle-ai install exited with code $LASTEXITCODE"
-            throw "gentle-ai install exited with code $LASTEXITCODE"
-        }
     } else {
-        $agentsCsv = ($detectedAgents -join ',')
         Write-Log INFO "gentle-ai" "configurator_noninteractive" "No console; installing gentle-ai for detected agents" 0 "agents=$agentsCsv"
-        Invoke-Step -Phase "gentle-ai" -Action { & gentle-ai install --scope global --agents $agentsCsv }
+    }
+    try {
+        while ($true) {
+            $configuratorRc = 0
+            $configuratorSignature = ''
+            if ($configuratorInteractive) {
+                # The selector must see the real console; capturing it would hide or buffer its prompts.
+                try {
+                    & gentle-ai install --scope global
+                    $configuratorRc = $LASTEXITCODE
+                } catch {
+                    $configuratorRc = if ($LASTEXITCODE) { [int]$LASTEXITCODE } else { 1 }
+                }
+                $configuratorSignature = 'interactive console failure (output not captured)'
+            } else {
+                try {
+                    Invoke-Step -Phase "gentle-ai" -CaptureOutput $configuratorOutput -Action { & gentle-ai install --scope global --agents $agentsCsv }
+                } catch {
+                    $configuratorRc = 1
+                }
+                if ($configuratorRc -ne 0 -and (Test-Path -LiteralPath $configuratorOutput)) {
+                    $configuratorOutputText = Get-Content -Raw -LiteralPath $configuratorOutput
+                    if ($configuratorOutputText -match '(?i)(HTTP 403.*GitHub API|GitHub API.*HTTP 403)') {
+                        $configuratorSignature = 'HTTP 403 + GitHub API download path'
+                    }
+                }
+            }
+
+            if ($configuratorRc -eq 0) { break }
+            if (-not $configuratorSignature) { break }
+            if ($configuratorRetryAttempt -ge $configuratorRetryDelays.Count) {
+                $configuratorRateLimitExhausted = $true
+                break
+            }
+            $configuratorRetryAttempt++
+            $configuratorBackoff = $configuratorRetryDelays[$configuratorRetryAttempt - 1]
+            Write-Log INFO "gentle-ai" "configurator_retry" "Retrying gentle-ai configurator after rate-limit signature (attempt $configuratorRetryAttempt/2; waiting ${configuratorBackoff}s)" 0 "attempt=$configuratorRetryAttempt;signature=$configuratorSignature;backoff_seconds=$configuratorBackoff"
+            Start-Sleep -Seconds $configuratorBackoff
+        }
+    } finally {
+        if (Test-Path -LiteralPath $configuratorOutput) {
+            try {
+                Remove-Item -LiteralPath $configuratorOutput -Force -ErrorAction Stop
+            } catch {
+                Write-Log WARN "gentle-ai" "configurator_output_cleanup_failed" "Could not remove the configurator output capture" 0 "path=$configuratorOutput;error=$($_.Exception.Message)"
+            }
+        }
+    }
+    if ($configuratorRc -ne 0) {
+        $configuratorFailure = "gentle-ai install failed"
+        if ($configuratorRateLimitExhausted) {
+            $configuratorFailure = "gentle-ai install failed: anonymous GitHub API quota exhausted; remedies: run 'gh auth login', or export GITHUB_TOKEN/GH_TOKEN"
+        }
+        Write-Log ERROR "gentle-ai" "configurator_failed" $configuratorFailure 1
+        throw $configuratorFailure
     }
     Write-Log INFO "gentle-ai" "configurator_done" "gentle-ai install completed"
 
