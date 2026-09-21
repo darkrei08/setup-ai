@@ -107,18 +107,22 @@
 6. [done] Local gates on the merged `main`: `bash -n setup-ai.sh`, `node --check bin/setup-ai.mjs`,
    `node bin/setup-ai.mjs --list`, `npm run check:retry-marker`, `git diff --check`, and all four test
    scripts including `tests/pi-startup-check.sh`.
-7. [done, with a repair] One PR per work unit plus merge. Merging the three approved branches left two
+7. [not runnable on this host] Container verification of A and C on the distribution families the project
+   claims. `pwsh` is absent, so the PowerShell parse check has no local route, and **Docker is not
+   installed** (`dockerd` is absent), so neither a distribution container nor the
+   `mcr.microsoft.com/powershell` image could run. Declared pending in the pull requests, never claimed as
+   verified.
+8. [done, with a repair] One PR per work unit plus merge. Merging the three approved branches left two
    tests red on `main` although each passed on its own branch, and no textual conflict showed it:
    `tests/gentle-ai-cli-resolution.sh` died on `STEP_FAILED: unbound variable` because the extracted
    `mod_gentle_ai` reads run-summary state the sandbox did not provide, and
    `tests/configurator-retry-check.sh` asserted on the pre-rename JSONL keys `"event"` and `"message"`.
    Repaired in `dd520e7`, PR #89, merged as `1a11227`, and re-proven by mutation for both.
-8. [done] vekexasia recon and delivery: PR #1 on `pi-codex-image`, PR #36 and issue #37 on
+9. [done] vekexasia recon and delivery: PR #1 on `pi-codex-image`, PR #36 and issue #37 on
    `pi-high-availability`, all verified open. `darkrei08` has no push access upstream, so the merge is
    the maintainer's decision.
-9. [pending, needs a decision] E, the Claude Code and Gemini CLI modules. Tracked as #82 with the
+10. [pending, needs a decision] E, the Claude Code and Gemini CLI modules. Tracked as #82 with the
    recommendation to document the "configured, not installed" boundary rather than add modules.
-
 ## Outcome
 
 - `main` at `1a11227`, containing PRs #86, #87, #88 and the integration repair #89.
@@ -127,7 +131,13 @@
   themselves: the false quota diagnosis in the TTY branch, and the recovered-retry step accounting that
   named a successful step as the failing one. A third class, an `err` object claiming a classification
   no caller supplied, was found by the same route.
-- A fourth defect was found only by the post-merge verification: the integration break described in item 7.
+- A fourth defect was found only by the post-merge verification: the integration break described in item 8.
+- After the repair, the full battery is green again on `1a11227`: eight commands, four test scripts
+  including `tests/pi-startup-check.sh`, and no remaining consumer of the pre-rename JSONL keys in
+  `tests/` or `bin/`. Both integration repairs were re-proven by mutation: making the renamed grep
+  non-matching turns the retry check red with `FAIL: recovered rate-limit attempt lost its command_failed
+  event`, and removing the run-summary state from the sandbox turns the resolver check red again with
+  exit 1.
 
 ## Verification that could not run on this host
 
