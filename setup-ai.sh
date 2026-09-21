@@ -2322,6 +2322,8 @@ mod_gentle_ai() {
     local configurator_output="${TMP_DIR}/gentle-ai-configurator.out"
     local configurator_retry=0 configurator_rate_limit_exhausted=0 configurator_quota_confirmed=0
     local configurator_signature="" configurator_backoff="" configurator_retry_message=""
+    local configurator_steps_failed="${STEP_FAILED}" configurator_step_fail_step="${STEP_FAIL_STEP}"
+    local configurator_step_fail_rc="${STEP_FAIL_RC}"
     local configurator_tty=0
     local -a configurator_backoffs=(15 45)
     gh_token="$(github_api_token)"
@@ -2369,11 +2371,18 @@ mod_gentle_ai() {
                 fi
             fi
 
-            (( configurator_rc == 0 )) && break
+            if (( configurator_rc == 0 )); then
+                if (( configurator_retry > 0 )); then
+                    STEP_FAILED="${configurator_steps_failed}"
+                    STEP_FAIL_STEP="${configurator_step_fail_step}"
+                    STEP_FAIL_RC="${configurator_step_fail_rc}"
+                fi
+                break
+            fi
             if (( configurator_rc == 130 || configurator_rc == 143 )); then
                 log_event "INFO" "gentle-ai" "configurator_retry_skipped" \
                     "No retry attempted because the gentle-ai configurator run was interrupted" "${configurator_rc}" \
-                    "return_code=${configurator_rc};signature=${configurator_signature}"
+                    "return_code=${configurator_rc};reason=${configurator_signature}"
                 break
             fi
             [[ -n "${configurator_signature}" ]] || break
@@ -2390,7 +2399,7 @@ mod_gentle_ai() {
             fi
             log_event "INFO" "gentle-ai" "configurator_retry" \
                 "${configurator_retry_message} (attempt ${configurator_retry}/2; waiting ${configurator_backoff}s)" 0 \
-                "attempt=${configurator_retry};signature=${configurator_signature};backoff_seconds=${configurator_backoff}"
+                "attempt=${configurator_retry};reason=${configurator_signature};backoff_seconds=${configurator_backoff}"
             if ! sleep "${configurator_backoff}"; then
                 log_event "ERROR" "gentle-ai" "configurator_retry_sleep_failed" \
                     "Could not wait before retrying the gentle-ai configurator" 1 \

@@ -61,6 +61,14 @@ if [[ "${1:-}" == "install" ]]; then
             printf '%s\n' 'Error: download engram binary: fetch latest engram version: GitHub API returned HTTP 403'
             exit 1
             ;;
+        rate-limit-then-neutral)
+            if [[ "${count}" == 1 ]]; then
+                printf '%s\n' 'Error: download engram binary: fetch latest engram version: GitHub API returned HTTP 403'
+            else
+                printf '%s\n' 'generic selector failure'
+            fi
+            exit 1
+            ;;
         *)
             printf '%s\n' 'generic selector failure'
             exit "${FAKE_RC}"
@@ -99,15 +107,26 @@ run_cmd() {
         shift
     done
     if [[ -n "${capture_output}" ]]; then
-        "$@" >"${capture_output}" 2>&1
+        "$@" 2>&1 | tee -a "${HUMAN_LOG}" "${capture_output}" >/dev/null
     else
-        "$@"
+        "$@" 2>&1 | tee -a "${HUMAN_LOG}" >/dev/null
     fi
-    return $?
+    local rc="${PIPESTATUS[0]}"
+    if (( rc != 0 )); then
+        STEP_FAILED=$(( STEP_FAILED + 1 ))
+        STEP_FAIL_STEP="gentle-ai test"
+        STEP_FAIL_RC="${rc}"
+    fi
+    return "${rc}"
 }
+STEP_FAILED=0
+STEP_FAIL_STEP=""
+STEP_FAIL_RC=0
 source "${FUNCTION_FILE}"
 mod_gentle_ai
-printf '%s\n' "$?" > "${RESULT_FILE}"
+rc=$?
+printf '%s\n' "${rc}" > "${RESULT_FILE}"
+printf '%s\n' "${STEP_FAILED}" > "${CASE_DIR}/steps-failed"
 SCRIPT
     chmod +x "${case_dir}/harness.sh"
     printf '%s\n' "${case_dir}"
@@ -142,6 +161,10 @@ grep -Fq 'interactive gentle-ai selector exited non-zero (rc=7)' "${TTY_CASE}/hu
     || fail "generic interactive failure produced the quota message"
 ! grep -Fq 'after rate-limit signature' "${TTY_CASE}/human.log" \
     || fail "generic interactive retry claimed a rate-limit signature"
+grep -Fq 'reason=interactive selector failure (output not captured)' "${TTY_CASE}/human.log" \
+    || fail "interactive retry did not log its reason field"
+! grep -Fq 'signature=interactive selector failure' "${TTY_CASE}/human.log" \
+    || fail "interactive retry still logged its reason as a signature"
 [[ "$(<"${TTY_CASE}/count")" == 3 ]] || fail "generic interactive failure did not use the bounded retry count"
 [[ "$(wc -l < "${TTY_CASE}/sleep")" -eq 2 ]] || fail "generic interactive failure did not use both bounded backoffs"
 printf 'PASS: generic interactive failure stays neutral\n'
@@ -161,12 +184,27 @@ printf 'PASS: rc 130 skips sleep and retry\n'
 RATE_LIMIT_SUCCESS_CASE="$(run_case rate-limit-recovered 1 no rate-limit-once)"
 [[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/result")" == 0 ]] || fail "rate-limit recovery did not complete the module"
 [[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/count")" == 2 ]] || fail "rate-limit recovery did not make exactly one retry"
+[[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/steps-failed")" == 0 ]] || fail "recovered rate-limit attempt remained in failed step accounting"
 [[ "$(wc -l < "${RATE_LIMIT_SUCCESS_CASE}/sleep")" -eq 1 ]] || fail "rate-limit recovery did not use one backoff"
 [[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/sleep")" == 15 ]] || fail "rate-limit recovery did not back off for 15 seconds"
 [[ "$(grep -Fc '|configurator_retry|' "${RATE_LIMIT_SUCCESS_CASE}/human.log")" -eq 1 ]] || fail "rate-limit recovery did not log exactly one retry"
 grep -Fq 'backoff_seconds=15' "${RATE_LIMIT_SUCCESS_CASE}/human.log" \
     || fail "rate-limit recovery did not log the 15-second backoff"
+grep -Fq 'reason=HTTP 403 + GitHub API download path' "${RATE_LIMIT_SUCCESS_CASE}/human.log" \
+    || fail "rate-limit retry did not log its reason field"
 printf 'PASS: transient HTTP 403 retries once and recovers\n'
+
+RATE_LIMIT_THEN_NEUTRAL_CASE="$(run_case rate-limit-then-neutral 1 no rate-limit-then-neutral)"
+[[ "$(<"${RATE_LIMIT_THEN_NEUTRAL_CASE}/result")" == 1 ]] || fail "stale rate-limit output made the neutral failure recover"
+[[ "$(<"${RATE_LIMIT_THEN_NEUTRAL_CASE}/count")" == 2 ]] || fail "neutral failure after rate-limit was retried more than once"
+[[ "$(wc -l < "${RATE_LIMIT_THEN_NEUTRAL_CASE}/sleep")" -eq 1 ]] || fail "neutral failure after rate-limit used the wrong retry count"
+[[ "$(<"${RATE_LIMIT_THEN_NEUTRAL_CASE}/sleep")" == 15 ]] || fail "neutral failure after rate-limit used the wrong backoff"
+[[ "$(grep -Fc '|configurator_retry|' "${RATE_LIMIT_THEN_NEUTRAL_CASE}/human.log")" -eq 1 ]] || fail "neutral failure after rate-limit logged the wrong retry count"
+grep -Fq 'no HTTP 403 + GitHub API signature was observed in captured output' "${RATE_LIMIT_THEN_NEUTRAL_CASE}/human.log" \
+    || fail "stale rate-limit output produced the quota diagnosis"
+! grep -Fq 'anonymous GitHub API quota exhausted' "${RATE_LIMIT_THEN_NEUTRAL_CASE}/human.log" \
+    || fail "neutral failure after rate-limit made a quota claim"
+printf 'PASS: per-attempt capture truncation prevents stale quota diagnosis\n'
 
 RATE_LIMIT_EXHAUSTED_CASE="$(run_case rate-limit-exhausted 1 no rate-limit-always)"
 [[ "$(<"${RATE_LIMIT_EXHAUSTED_CASE}/result")" == 1 ]] || fail "exhausted rate-limit did not fail the module"

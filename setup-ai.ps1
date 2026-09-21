@@ -1609,6 +1609,9 @@ function Mod-GentleAi {
     $configuratorQuotaConfirmed = $false
     $configuratorInterrupted = $false
     $configuratorRc = 0
+    $configuratorStepsFailed = $script:StepsFailed
+    $configuratorStepFailStep = $script:StepFailStep
+    $configuratorStepFailReturnCode = $script:StepFailReturnCode
     if ($configuratorInteractive) {
         Write-Log INFO "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)"
     } else {
@@ -1643,10 +1646,17 @@ function Mod-GentleAi {
                 }
             }
 
-            if ($configuratorRc -eq 0) { break }
+            if ($configuratorRc -eq 0) {
+                if ($configuratorRetryAttempt -gt 0) {
+                    $script:StepsFailed = $configuratorStepsFailed
+                    $script:StepFailStep = $configuratorStepFailStep
+                    $script:StepFailReturnCode = $configuratorStepFailReturnCode
+                }
+                break
+            }
             if ($configuratorRc -eq 130 -or $configuratorRc -eq 143) {
                 $configuratorInterrupted = $true
-                Write-Log INFO "gentle-ai" "configurator_retry_skipped" "No retry attempted because the gentle-ai configurator run was interrupted" $configuratorRc "return_code=$configuratorRc;signature=$configuratorSignature"
+                Write-Log INFO "gentle-ai" "configurator_retry_skipped" "No retry attempted because the gentle-ai configurator run was interrupted" $configuratorRc "return_code=$configuratorRc;reason=$configuratorSignature"
                 break
             }
             if (-not $configuratorSignature) { break }
@@ -1661,7 +1671,7 @@ function Mod-GentleAi {
             } else {
                 "Retrying gentle-ai configurator after observed selector failure"
             }
-            Write-Log INFO "gentle-ai" "configurator_retry" "$configuratorRetryMessage (attempt $configuratorRetryAttempt/2; waiting ${configuratorBackoff}s)" 0 "attempt=$configuratorRetryAttempt;signature=$configuratorSignature;backoff_seconds=$configuratorBackoff"
+            Write-Log INFO "gentle-ai" "configurator_retry" "$configuratorRetryMessage (attempt $configuratorRetryAttempt/2; waiting ${configuratorBackoff}s)" 0 "attempt=$configuratorRetryAttempt;reason=$configuratorSignature;backoff_seconds=$configuratorBackoff"
             Start-Sleep -Seconds $configuratorBackoff
         }
     } finally {
