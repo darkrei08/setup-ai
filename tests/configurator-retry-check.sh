@@ -30,6 +30,13 @@ for function_name in json_escape json_log log_event module_succeeded is_selected
 done
 [[ -s "${FUNCTION_FILE}" ]] || fail "could not extract production functions"
 
+bash_retry_sleep_fallback_rc="$(awk '/local configurator_retry_sleep_fallback_rc=/{value=$0; sub(/^.*fallback_rc=/, "", value); sub(/[^0-9].*$/, "", value); print value; exit}' "${SETUP_AI_SH}")"
+ps_retry_sleep_fallback_rc="$(awk '/\$configuratorRetrySleepFallbackReturnCode =/{value=$0; sub(/^.*= /, "", value); sub(/[^0-9].*$/, "", value); print value; exit}' "${ROOT}/setup-ai.ps1")"
+[[ -n "${bash_retry_sleep_fallback_rc}" && -n "${ps_retry_sleep_fallback_rc}" ]] \
+    || fail "retry sleep fallback is not defined on both platforms"
+[[ "${bash_retry_sleep_fallback_rc}" == "${ps_retry_sleep_fallback_rc}" ]] \
+    || fail "retry sleep fallback differs between Bash (${bash_retry_sleep_fallback_rc}) and PowerShell (${ps_retry_sleep_fallback_rc})"
+
 make_case() {
     local name="$1"
     local case_dir="${TEST_DIR}/${name}"
@@ -78,6 +85,11 @@ fi
 exit 2
 SCRIPT
     chmod +x "${case_dir}/bin/gentle-ai"
+    cat > "${case_dir}/bin/later-module" <<'SCRIPT'
+#!/usr/bin/env bash
+exit 7
+SCRIPT
+    chmod +x "${case_dir}/bin/later-module"
     cat > "${case_dir}/bin/sleep" <<'SCRIPT'
 #!/usr/bin/env bash
 if [[ "${FAKE_SLEEP_RC}" != 0 ]]; then
@@ -125,6 +137,14 @@ case "${SCENARIO}" in
         RUN_INTERRUPTED=1 INTERRUPT_SIGNAL=INT INTERRUPT_RC=130
         log_event ERROR bootstrap run_interrupted "Run interrupted by INT" 130 "signal=INT;module=later"
         write_run_summary 130
+        ;;
+    run-cmd-summary)
+        [[ "${rc}" == 0 ]] || exit 1
+        MODULES_OK=" gentle-ai"
+        SELECTED_MODULES=(gentle-ai later) CURRENT_MODULE=later
+        later_rc=0
+        run_cmd later later-module || later_rc=$?
+        write_run_summary "${later_rc}"
         ;;
 esac
 printf '%s\n' "${rc}" > "${RESULT_FILE}"
@@ -243,8 +263,10 @@ SLEEP_FAILURE_CASE="$(run_case retry-sleep-failed 7 no rate-limit-sleep-fail 9)"
 [[ "$(<"${SLEEP_FAILURE_CASE}/count")" == 1 ]] || fail "sleep failure retried the selector"
 grep -Fq 'configurator_retry_sleep_failed:' "${SLEEP_FAILURE_CASE}/human.log" \
     || fail "sleep failure did not emit its event"
-grep -Fq 'retry backoff sleep failed (rc=9); configurator selector return code=7' "${SLEEP_FAILURE_CASE}/human.log" \
-    || fail "sleep failure did not preserve the selector return code"
+grep -Fq 'sleep_return_code=9' "${SLEEP_FAILURE_CASE}/events.jsonl" \
+    || fail "Bash sleep failure did not preserve the observed sleep return code"
+grep -Fq "retry backoff sleep failed (fallback return code=${bash_retry_sleep_fallback_rc}); configurator selector return code=7" "${SLEEP_FAILURE_CASE}/human.log" \
+    || fail "sleep failure did not use the documented cross-OS fallback"
 ! grep -Fq 'no HTTP 403 + GitHub API signature was observed' "${SLEEP_FAILURE_CASE}/human.log" \
     || fail "sleep failure reported a false missing-signature diagnosis"
 printf 'PASS: retry sleep failure names its cause and preserves selector rc\n'
@@ -284,3 +306,11 @@ assert_steps_failed "${INTERRUPTED_SUMMARY_CASE}" 0
 grep -Fq '"failed_step":"run_interrupted: Run interrupted by INT","return_code":130' "${INTERRUPTED_SUMMARY_CASE}/events.jsonl" \
     || fail "interrupted summary kept the superseded configurator failure identity"
 printf 'PASS: recovered retry leaves interruption identity in the run summary\n'
+
+RUN_CMD_SUMMARY_CASE="$(run_case later-run-cmd-failure 1 no rate-limit-once 0 run-cmd-summary)"
+assert_steps_failed "${RUN_CMD_SUMMARY_CASE}" 1
+grep -Fq '"name":"gentle-ai","status":"success"' "${RUN_CMD_SUMMARY_CASE}/events.jsonl" \
+    || fail "run_cmd summary did not retain the recovered module"
+grep -Fq '"name":"later","status":"failed","failed_step":"later-module ","return_code":7' "${RUN_CMD_SUMMARY_CASE}/events.jsonl" \
+    || fail "run_cmd summary did not identify the later module failure"
+printf 'PASS: recovered retry leaves later run_cmd failure in the run summary\n'

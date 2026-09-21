@@ -1615,6 +1615,8 @@ function Mod-GentleAi {
     $configuratorLastErrorStep = $script:LastErrorStep
     $configuratorLastErrorReturnCode = $script:LastErrorReturnCode
     $configuratorRetrySleepFailed = $false
+    # Start-Sleep throws without exposing a native exit code; keep this fallback in sync with setup-ai.sh.
+    $configuratorRetrySleepFallbackReturnCode = 1
     $configuratorRetrySleepReturnCode = 0
     if ($configuratorInteractive) {
         Write-Log INFO "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)"
@@ -1683,8 +1685,8 @@ function Mod-GentleAi {
                 Start-Sleep -Seconds $configuratorBackoff
             } catch {
                 $configuratorRetrySleepFailed = $true
-                $configuratorRetrySleepReturnCode = 1
-                Write-Log ERROR "gentle-ai" "configurator_retry_sleep_failed" "Could not wait before retrying the gentle-ai configurator" 1 "attempt=$configuratorRetryAttempt;backoff_seconds=$configuratorBackoff;observed_return_code=$configuratorRc"
+                $configuratorRetrySleepReturnCode = $configuratorRetrySleepFallbackReturnCode
+                Write-Log ERROR "gentle-ai" "configurator_retry_sleep_failed" "Could not wait before retrying the gentle-ai configurator" $configuratorRetrySleepReturnCode "attempt=$configuratorRetryAttempt;backoff_seconds=$configuratorBackoff;observed_return_code=$configuratorRc"
                 break
             }
         }
@@ -1699,7 +1701,7 @@ function Mod-GentleAi {
     }
     if ($configuratorRc -ne 0) {
         if ($configuratorRetrySleepFailed) {
-            $configuratorFailure = "gentle-ai install failed: retry backoff sleep failed (rc=$configuratorRetrySleepReturnCode); configurator selector return code=$configuratorRc"
+            $configuratorFailure = "gentle-ai install failed: retry backoff sleep failed (fallback return code=$configuratorRetrySleepReturnCode); configurator selector return code=$configuratorRc"
         } elseif ($configuratorInterrupted) {
             $configuratorFailure = "gentle-ai install interrupted (rc=$configuratorRc); no retry was attempted because the run was interrupted"
         } elseif ($configuratorRateLimitExhausted -and $configuratorQuotaConfirmed) {

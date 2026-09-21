@@ -2331,6 +2331,8 @@ mod_gentle_ai() {
     local configurator_step_fail_rc="${STEP_FAIL_RC}"
     local configurator_last_error_step="${LAST_ERROR_STEP}" configurator_last_error_rc="${LAST_ERROR_RC}"
     local configurator_retry_sleep_failed=0 configurator_retry_sleep_rc=0
+    # PowerShell cannot expose a native exit code from Start-Sleep; both platforms use this fallback.
+    local configurator_retry_sleep_fallback_rc=1
     local configurator_tty=0
     local -a configurator_backoffs=(15 45)
     gh_token="$(github_api_token)"
@@ -2418,10 +2420,10 @@ mod_gentle_ai() {
             if sleep "${configurator_backoff}"; then :; else
                 sleep_rc=$?
                 configurator_retry_sleep_failed=1
-                configurator_retry_sleep_rc="${sleep_rc}"
+                configurator_retry_sleep_rc="${configurator_retry_sleep_fallback_rc}"
                 log_event "ERROR" "gentle-ai" "configurator_retry_sleep_failed" \
-                    "Could not wait before retrying the gentle-ai configurator" "${sleep_rc}" \
-                    "attempt=${configurator_retry};backoff_seconds=${configurator_backoff};observed_return_code=${configurator_rc}"
+                    "Could not wait before retrying the gentle-ai configurator" "${configurator_retry_sleep_rc}" \
+                    "attempt=${configurator_retry};backoff_seconds=${configurator_backoff};observed_return_code=${configurator_rc};sleep_return_code=${sleep_rc}"
                 break
             fi
         done
@@ -2442,7 +2444,7 @@ mod_gentle_ai() {
     if (( configurator_rc != 0 )); then
         local configurator_failure
         if (( configurator_retry_sleep_failed == 1 )); then
-            configurator_failure="gentle-ai install failed: retry backoff sleep failed (rc=${configurator_retry_sleep_rc}); configurator selector return code=${configurator_rc}"
+            configurator_failure="gentle-ai install failed: retry backoff sleep failed (fallback return code=${configurator_retry_sleep_rc}); configurator selector return code=${configurator_rc}"
         elif (( configurator_rc == 130 || configurator_rc == 143 )); then
             configurator_failure="gentle-ai install interrupted (rc=${configurator_rc}); no retry was attempted because the run was interrupted"
         elif (( configurator_rate_limit_exhausted == 1 && configurator_quota_confirmed == 1 )); then
