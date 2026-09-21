@@ -108,10 +108,11 @@
    `node bin/setup-ai.mjs --list`, `npm run check:retry-marker`, `git diff --check`, and all four test
    scripts including `tests/pi-startup-check.sh`.
 7. [not runnable on this host] Container verification of A and C on the distribution families the project
-   claims. `pwsh` is absent, so the PowerShell parse check has no local route, and **Docker is not
-   installed** (`dockerd` is absent), so neither a distribution container nor the
-   `mcr.microsoft.com/powershell` image could run. Declared pending in the pull requests, never claimed as
-   verified.
+   claims. Three separate reasons, one per target: `pwsh` is absent, so the PowerShell parse check has no
+   local route; **Docker is not installed** (`dockerd` is absent), so neither a distribution container nor
+   the `mcr.microsoft.com/powershell` image could run; and the winget path of unit C cannot execute on a
+   Linux host at all, not even in a container, because a Linux Docker host cannot run a Windows container.
+   Declared pending in the pull requests, never claimed as verified.
 8. [done, with a repair] One PR per work unit plus merge. Merging the three approved branches left two
    tests red on `main` although each passed on its own branch, and no textual conflict showed it:
    `tests/gentle-ai-cli-resolution.sh` died on `STEP_FAILED: unbound variable` because the extracted
