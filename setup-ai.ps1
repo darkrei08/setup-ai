@@ -388,6 +388,16 @@ function Test-Interrupted {
 
 function Test-Cmd { param([string]$Name) [bool](Get-Command $Name -ErrorAction SilentlyContinue) }
 
+function Resolve-GentleAiCli {
+    if (Test-Cmd gentle-ai) { return }
+    $directory = Join-Path $env:LOCALAPPDATA "gentle-ai\bin"
+    $binary = Join-Path $directory "gentle-ai.exe"
+    if (Test-Path -LiteralPath $binary -PathType Leaf) {
+        $env:Path = "$directory;$env:Path"
+        Write-Log INFO "gentle-ai" "cli_resolved" "Resolved gentle-ai CLI outside PATH" 0 "directory=$directory"
+    }
+}
+
 # winget updates the registry PATH, not the live process. Re-read it so tools
 # installed this run (node, git, ...) resolve without opening a new terminal.
 function Update-SessionPath {
@@ -1559,12 +1569,14 @@ function Mod-GentleAi {
     # The per-agent selector and the pi harness both require the gentle-ai CLI
     # itself; a legacy standalone gga is NOT enough, so install whenever the
     # gentle-ai CLI is missing even if an old gga is on PATH.
+    Resolve-GentleAiCli
     if (-not (Test-Cmd gentle-ai)) {
         # Vendor's official Windows method (installs to %LOCALAPPDATA%\gentle-ai\bin).
         Invoke-RemoteScript -Url "https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.ps1" -Phase "gentle-ai"
         Update-SessionPath
     }
 
+    Resolve-GentleAiCli
     if (-not (Test-Cmd gentle-ai)) {
         Write-Log ERROR "gentle-ai" "install_missing" "gentle-ai CLI not found on PATH after remote installer"
         throw "gentle-ai CLI not found on PATH after remote installer"

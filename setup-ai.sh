@@ -2233,6 +2233,24 @@ verify_pi_startup() {
     return 1
 }
 
+# Resolve a vendor-installed CLI before and after the installer. The vendor uses
+# /usr/local/bin when it can write there, otherwise the home-local directories.
+resolve_gentle_ai_cli() {
+    local directory
+    if command -v gentle-ai >/dev/null 2>&1; then
+        return 0
+    fi
+    for directory in /usr/local/bin "${HOME}/.local/bin" "${HOME}/go/bin"; do
+        if [[ -x "${directory}/gentle-ai" ]]; then
+            export PATH="${directory}:${PATH}"
+            log_event "INFO" "gentle-ai" "cli_resolved" \
+                "Resolved gentle-ai CLI outside PATH" 0 "directory=${directory}"
+            return 0
+        fi
+    done
+    return 0
+}
+
 # Reinstates the Gentle AI ecosystem configurator. `gentle-ai install` is the
 # per-agent/per-IDE selector (Pi, Claude Code, Cursor, Codex, ...) that also
 # wires each selected agent's MCP servers, so tools appear under /mcp. The
@@ -2243,9 +2261,7 @@ verify_pi_startup() {
 mod_gentle_ai() {
     section "gentle-ai"
 
-    # Installers drop the CLI into a PATH dir; make sure the usual ones resolve
-    # in this live process so the post-install verification can find it.
-    export PATH="${HOME}/.local/bin:${HOME}/go/bin:${PATH}"
+    resolve_gentle_ai_cli
 
     # Repair the harmful quiet-tools switch and the pi settings entry BEFORE anything
     # that can fail: the repair needs nothing from the installer (it only removes the
@@ -2271,6 +2287,8 @@ mod_gentle_ai() {
             run_cmd "gentle-ai" bash "${installer}"
         fi
     fi
+
+    resolve_gentle_ai_cli
 
     # Verify the CLI is present (a binary, not an npm tree - command -v + --version
     # is the correct check). Required for both the selector and the pi harness.
