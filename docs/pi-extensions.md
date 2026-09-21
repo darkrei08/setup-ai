@@ -751,10 +751,10 @@ await agent("Review this change", {
   altre.
 - **Leggere le prove strutturate** — ogni run scrive `logs/setup_<runid>.log`
   (umano), `logs/setup_<runid>.jsonl` (strutturato) e
-  `engineering-report_<runid>.md`. Ogni riga JSONL ha `phase`, `event`, `meta`:
+  `engineering-report_<runid>.md`. Ogni riga JSONL ha `ph`, `ev`, `meta`:
 
   ```bash
-  jq -r 'select(.event|test("remote_sources_enabled|install_scripts_approved|install_scripts_unverified|retry_verified|retry_missing|manifest_applied|workflow_owned_elsewhere")) | "\(.phase)\t\(.event)\t\(.meta // "")"' \
+  jq -r 'select(.ev|test("remote_sources_enabled|install_scripts_approved|install_scripts_unverified|retry_verified|retry_missing|manifest_applied|workflow_owned_elsewhere")) | "\(.ph)\t\(.ev)\t\(.meta // "")"' \
     logs/setup_<runid>.jsonl
   ```
 
@@ -822,7 +822,7 @@ await agent("Review this change", {
   others.
 - **Reading the structured evidence** — every run writes `logs/setup_<runid>.log`
   (human), `logs/setup_<runid>.jsonl` (structured) and
-  `engineering-report_<runid>.md`. Every JSONL line has `phase`, `event`, `meta`;
+  `engineering-report_<runid>.md`. Every JSONL line has `ph`, `ev`, `meta`;
   the `jq` command above prints them for the event names used in this page.
 
 ---
