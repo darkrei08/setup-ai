@@ -275,9 +275,7 @@ function Write-StepResult {
         }
     }
     $level = switch ($Status) { 'failed' { 'ERROR' } 'skipped' { 'WARN' } default { 'INFO' } }
-    $optional = $Status -eq 'skipped'
-    $behavior = if ($optional) { 'continue' } else { 'abort' }
-    Write-Log $level $Phase "step_result" "Step $Status" $ReturnCode "step=$Step;module=$script:CurrentModule;status=$Status" -Optional:$optional -Behavior $behavior
+    Write-Log $level $Phase "step_result" "Step $Status" $ReturnCode "step=$Step;module=$script:CurrentModule;status=$Status"
 }
 
 # Terminal record for the run, written once from the report block, so a failed run
@@ -431,7 +429,7 @@ function Invoke-Step {
         $nativeExitCode = $global:LASTEXITCODE
         if ($nativeExitCode -ne 0) {
             if ($ExpectedExitCodes -contains $nativeExitCode) {
-                Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode -Optional:$Optional -Behavior continue
+                Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" 0
                 Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
                 return $null
             }
@@ -443,7 +441,7 @@ function Invoke-Step {
     } catch {
         $nativeExitCode = $global:LASTEXITCODE
         if ($ExpectedExitCodes -contains $nativeExitCode) {
-            Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode -Optional:$Optional -Behavior continue
+            Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" 0
             Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
             return $null
         }
@@ -456,7 +454,7 @@ function Invoke-Step {
             Write-StepResult -Phase $Phase -Status 'skipped' -ReturnCode $rc -Step $step
             return $false
         }
-        Write-Log ERROR $Phase "step_failed" "$($_.Exception.Message)" $rc -Behavior abort
+        Write-Log ERROR $Phase "step_failed" "$($_.Exception.Message)" $rc -Optional:$false -Behavior abort
         Write-StepResult -Phase $Phase -Status 'failed' -ReturnCode $rc -Step $step
         throw
     }

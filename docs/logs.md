@@ -29,7 +29,10 @@ Every record starts with these keys:
 remains a string, and `summary` keeps its existing object shape. A record with a
 non-zero `rc` always carries `err.rc`. The `optional` and `behavior` keys are
 included only when the caller supplied those classifications; the writers never
-infer them from the log level or a default value.
+infer them from the log level or a default value. `step_result` records
+intentionally carry only `err.rc`, because that summary outcome does not receive
+the command helper's classification. Bash has no expected-exit path; PowerShell
+logs an expected exit at INFO with `rc: 0`, so it has no `err` object.
 
 ```json
 {

@@ -240,15 +240,13 @@ json_log() {
 log_event() {
     local level="$1" phase="$2" event="$3" message="$4"
     local return_code="${5:-0}" meta="${6:-}" extra="${7:-}"
-    local optional="${8:-0}" behavior="${9:-}"
+    local optional="${8-}" behavior="${9-}"
 
     local timestamp
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
     if (( $# >= 9 )); then
         json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}" "${optional}" "${behavior}"
-    elif (( $# >= 8 )); then
-        json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}" "${optional}"
     else
         json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}"
     fi
@@ -324,11 +322,7 @@ module_succeeded() {
 # One machine-readable outcome per executed step, so the summary is counted from the
 # run itself instead of by re-parsing the log. status: installed|verified|skipped|failed.
 record_step() {
-    local phase="$1" status="$2" return_code="$3" step="$4" level="INFO" optional=0 behavior="abort"
-    if [[ "${status}" == "skipped" ]]; then
-        optional=1
-        behavior="continue"
-    fi
+    local phase="$1" status="$2" return_code="$3" step="$4" level="INFO"
     case "${status}" in
         installed) STEP_INSTALLED=$(( STEP_INSTALLED + 1 )) ;;
         verified)  STEP_VERIFIED=$(( STEP_VERIFIED + 1 )) ;;
@@ -348,7 +342,7 @@ record_step() {
             ;;
     esac
     log_event "${level}" "${phase}" "step_result" "Step ${status}" "${return_code}" \
-        "step=${step};module=${CURRENT_MODULE};status=${status}" "" "${optional}" "${behavior}"
+        "step=${step};module=${CURRENT_MODULE};status=${status}"
 }
 
 # Terminal record for the run, emitted once from the exit trap so a failed run
