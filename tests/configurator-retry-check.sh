@@ -49,8 +49,23 @@ fi
 if [[ "${1:-}" == "install" ]]; then
     count=$(( $(<"${FAKE_COUNT_FILE}") + 1 ))
     printf '%s\n' "${count}" > "${FAKE_COUNT_FILE}"
-    printf '%s\n' 'generic selector failure'
-    exit "${FAKE_RC}"
+    case "${FAKE_MODE}" in
+        rate-limit-once)
+            if [[ "${count}" == 1 ]]; then
+                printf '%s\n' 'Error: download engram binary: fetch latest engram version: GitHub API returned HTTP 403'
+                exit 1
+            fi
+            exit 0
+            ;;
+        rate-limit-always)
+            printf '%s\n' 'Error: download engram binary: fetch latest engram version: GitHub API returned HTTP 403'
+            exit 1
+            ;;
+        *)
+            printf '%s\n' 'generic selector failure'
+            exit "${FAKE_RC}"
+            ;;
+    esac
 fi
 exit 2
 SCRIPT
@@ -99,10 +114,10 @@ SCRIPT
 }
 
 run_case() {
-    local name="$1" rc="$2" tty="$3"
+    local name="$1" rc="$2" tty="$3" mode="$4"
     local case_dir
     case_dir="$(make_case "${name}")"
-    export CASE_DIR="${case_dir}" FAKE_RC="${rc}"
+    export CASE_DIR="${case_dir}" FAKE_RC="${rc}" FAKE_MODE="${mode}"
     export FAKE_COUNT_FILE="${case_dir}/count" FAKE_SLEEP_FILE="${case_dir}/sleep"
     export RESULT_FILE="${case_dir}/result" HUMAN_LOG="${case_dir}/human.log"
     export TMP_DIR="${case_dir}/tmp" HOME="${case_dir}/home" PI_AGENT_DIR="${case_dir}/agent"
@@ -119,7 +134,7 @@ run_case() {
     printf '%s\n' "${case_dir}"
 }
 
-TTY_CASE="$(run_case interactive-generic 7 yes)"
+TTY_CASE="$(run_case interactive-generic 7 yes generic)"
 [[ "$(<"${TTY_CASE}/result")" == 1 ]] || fail "generic interactive failure did not fail the module"
 grep -Fq 'interactive gentle-ai selector exited non-zero (rc=7)' "${TTY_CASE}/human.log" \
     || fail "generic interactive failure did not report the observed selector failure"
@@ -131,7 +146,7 @@ grep -Fq 'interactive gentle-ai selector exited non-zero (rc=7)' "${TTY_CASE}/hu
 [[ "$(wc -l < "${TTY_CASE}/sleep")" -eq 2 ]] || fail "generic interactive failure did not use both bounded backoffs"
 printf 'PASS: generic interactive failure stays neutral\n'
 
-INTERRUPT_CASE="$(run_case interrupted 130 no)"
+INTERRUPT_CASE="$(run_case interrupted 130 no generic)"
 [[ "$(<"${INTERRUPT_CASE}/result")" == 1 ]] || fail "interrupted configurator did not fail the module"
 [[ "$(<"${INTERRUPT_CASE}/count")" == 1 ]] || fail "interrupted configurator was retried"
 [[ ! -e "${INTERRUPT_CASE}/sleep" ]] || fail "interrupted configurator slept before retry"
@@ -142,3 +157,41 @@ grep -Fq 'No retry attempted because the gentle-ai configurator run was interrup
 ! grep -Fq '|configurator_retry|' "${INTERRUPT_CASE}/human.log" \
     || fail "interrupted configurator emitted a retry event"
 printf 'PASS: rc 130 skips sleep and retry\n'
+
+RATE_LIMIT_SUCCESS_CASE="$(run_case rate-limit-recovered 1 no rate-limit-once)"
+[[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/result")" == 0 ]] || fail "rate-limit recovery did not complete the module"
+[[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/count")" == 2 ]] || fail "rate-limit recovery did not make exactly one retry"
+[[ "$(wc -l < "${RATE_LIMIT_SUCCESS_CASE}/sleep")" -eq 1 ]] || fail "rate-limit recovery did not use one backoff"
+[[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/sleep")" == 15 ]] || fail "rate-limit recovery did not back off for 15 seconds"
+[[ "$(grep -Fc '|configurator_retry|' "${RATE_LIMIT_SUCCESS_CASE}/human.log")" -eq 1 ]] || fail "rate-limit recovery did not log exactly one retry"
+grep -Fq 'backoff_seconds=15' "${RATE_LIMIT_SUCCESS_CASE}/human.log" \
+    || fail "rate-limit recovery did not log the 15-second backoff"
+printf 'PASS: transient HTTP 403 retries once and recovers\n'
+
+RATE_LIMIT_EXHAUSTED_CASE="$(run_case rate-limit-exhausted 1 no rate-limit-always)"
+[[ "$(<"${RATE_LIMIT_EXHAUSTED_CASE}/result")" == 1 ]] || fail "exhausted rate-limit did not fail the module"
+[[ "$(<"${RATE_LIMIT_EXHAUSTED_CASE}/count")" == 3 ]] || fail "exhausted rate-limit did not make exactly 3 attempts"
+[[ "$(wc -l < "${RATE_LIMIT_EXHAUSTED_CASE}/sleep")" -eq 2 ]] || fail "exhausted rate-limit did not use both backoffs"
+[[ "$(<"${RATE_LIMIT_EXHAUSTED_CASE}/sleep")" == $'15\n45' ]] || fail "exhausted rate-limit did not use 15 and 45 second backoffs"
+[[ "$(grep -Fc '|configurator_retry|' "${RATE_LIMIT_EXHAUSTED_CASE}/human.log")" -eq 2 ]] || fail "exhausted rate-limit did not log both retries"
+grep -Fq 'anonymous GitHub API quota exhausted' "${RATE_LIMIT_EXHAUSTED_CASE}/human.log" \
+    || fail "exhausted rate-limit did not name the anonymous GitHub API quota"
+grep -Fq "gh auth login" "${RATE_LIMIT_EXHAUSTED_CASE}/human.log" \
+    || fail "exhausted rate-limit did not name the gh auth login remedy"
+grep -Fq 'GITHUB_TOKEN/GH_TOKEN' "${RATE_LIMIT_EXHAUSTED_CASE}/human.log" \
+    || fail "exhausted rate-limit did not name the token remedy"
+printf 'PASS: repeated HTTP 403 exhausts retries with quota remedies\n'
+
+NEUTRAL_CASE="$(run_case nonmatching 7 no generic)"
+[[ "$(<"${NEUTRAL_CASE}/result")" == 1 ]] || fail "nonmatching configurator failure did not fail the module"
+[[ "$(<"${NEUTRAL_CASE}/count")" == 1 ]] || fail "nonmatching configurator failure was retried"
+[[ ! -e "${NEUTRAL_CASE}/sleep" ]] || fail "nonmatching configurator failure slept before retry"
+grep -Fq 'no HTTP 403 + GitHub API signature was observed in captured output' "${NEUTRAL_CASE}/human.log" \
+    || fail "nonmatching configurator failure did not use the neutral message"
+! grep -Fq 'anonymous GitHub API quota exhausted' "${NEUTRAL_CASE}/human.log" \
+    || fail "nonmatching configurator failure made a quota claim"
+! grep -Fq 'gh auth login' "${NEUTRAL_CASE}/human.log" \
+    || fail "nonmatching configurator failure named a quota remedy"
+! grep -Fq 'GITHUB_TOKEN/GH_TOKEN' "${NEUTRAL_CASE}/human.log" \
+    || fail "nonmatching configurator failure named a token remedy"
+printf 'PASS: nonmatching configurator failure stays neutral\n'
