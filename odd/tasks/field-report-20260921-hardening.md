@@ -85,20 +85,70 @@
 - Status: product decision required. Tracked as an issue; no code change until the maintainer decides
   whether the installer should install them.
 
-## Task order
+## Task order and outcome
 
-1. [pending] Open one issue per defect (A-E) following the issue-ops/`#36` contract.
-2. [pending] A: resolve the gentle-ai binary through known install dirs (Bash + PowerShell parity).
-3. [pending] B: bounded retry plus actionable failure for the GitHub API rate limit.
-4. [pending] C: stop logging expected winget exits as warnings.
-5. [pending] D: compact JSONL schema in both writers, plus `docs/logs.md`.
-6. [pending] Local gates: `bash -n setup-ai.sh`, PowerShell parse check, `node --check bin/setup-ai.mjs`,
-   `bin/setup-ai.mjs --list` parity with `MODULE_ORDER`/`$ModuleOrder`/`docs/modules.md`,
-   `npm run check:retry-marker`, `git diff --check`.
-7. [pending] Container verification of A and C on the distribution families the project claims.
-8. [pending] One PR per work unit against `main`, then merge.
-9. [pending] vekexasia recon results: fork plus PR for each accepted defect.
-10. [pending] Report E to the maintainer with a recommendation.
+1. [done] Open one issue per defect. Filed 78 (P0 PATH), 79 (P1 403), 80 (P2 winget), 81 (P3 JSONL),
+   82 (question, claude/gemini), and later 83 (Windows resolver probe), 84 (PowerShell logging divergence),
+   85 (developIssues never loaded).
+2. [done] A, resolve the gentle-ai binary through known install dirs. `6b9417d` + `d1b34f8`,
+   PR #86, merged as `369a11b`.
+3. [done] B, bounded retry plus actionable failure for the GitHub API rate limit. Six commits
+   (`0cef2dc`, `f69badf`, `5ad25c3`, `bba11af`, `52ea0d2`, `f26079c`), PR #87, merged as `fc41c70`.
+   Five corrective rounds, each driven by a blocking review finding.
+4. [rejected] C, the winget WARN. **Not merged.** Verified that the defect was already fixed by
+   `ac5947a` on 2026-09-12, which is an ancestor of `main`, and that the proposed change would have
+   introduced a WARN `step_result` where the baseline had none and moved the counter from verified to
+   skipped. Issue #80 closed as not planned with the full analysis. My own error: the issue attributed
+   the field run to 3.6.5 (`43ad9fa`, 2026-09-19) while the log itself says `"ver":"3.2.0"` and is dated
+   2026-09-10.
+5. [done] D, compact JSONL schema. Three commits (`218e4d5`, `39f9319`, `fbdad2e`), PR #88,
+   merged as `5d94770`. Two corrective rounds removed a fabricated `err` classification that
+   contradicted the documentation written in the same diff.
+6. [done] Local gates on the merged `main`: `bash -n setup-ai.sh`, `node --check bin/setup-ai.mjs`,
+   `node bin/setup-ai.mjs --list`, `npm run check:retry-marker`, `git diff --check`, and all four test
+   scripts including `tests/pi-startup-check.sh`.
+7. [done, with a repair] One PR per work unit plus merge. Merging the three approved branches left two
+   tests red on `main` although each passed on its own branch, and no textual conflict showed it:
+   `tests/gentle-ai-cli-resolution.sh` died on `STEP_FAILED: unbound variable` because the extracted
+   `mod_gentle_ai` reads run-summary state the sandbox did not provide, and
+   `tests/configurator-retry-check.sh` asserted on the pre-rename JSONL keys `"event"` and `"message"`.
+   Repaired in `dd520e7`, PR #89, merged as `1a11227`, and re-proven by mutation for both.
+8. [done] vekexasia recon and delivery: PR #1 on `pi-codex-image`, PR #36 and issue #37 on
+   `pi-high-availability`, all verified open. `darkrei08` has no push access upstream, so the merge is
+   the maintainer's decision.
+9. [pending, needs a decision] E, the Claude Code and Gemini CLI modules. Tracked as #82 with the
+   recommendation to document the "configured, not installed" boundary rather than add modules.
+
+## Outcome
+
+- `main` at `1a11227`, containing PRs #86, #87, #88 and the integration repair #89.
+- Issues #78, #79 and #81 closed by their merge; #80 closed as already fixed; #82, #83, #84 and #85 open.
+- Two defects were found only because the review was adversarial, and both were introduced by the fixes
+  themselves: the false quota diagnosis in the TTY branch, and the recovered-retry step accounting that
+  named a successful step as the failing one. A third class, an `err` object claiming a classification
+  no caller supplied, was found by the same route.
+- A fourth defect was found only by the post-merge verification: the integration break described in item 7.
+
+## Verification that could not run on this host
+
+- The PowerShell parse check: `pwsh` is absent. Declared pending in every pull request.
+- The container matrix: **Docker is not installed** on this host (`dockerd` is absent), so neither the
+  per-distribution runs nor the `mcr.microsoft.com/powershell` parse check could be executed.
+- The live winget path: not runnable on a Linux host, not even in a container.
+- The live GitHub API 403 and the real 15s/45s waits: exercised against fixtures and stubs only.
+
+## Related work outside this repository
+
+- vekexasia: PR #1, PR #36, issue #37.
+- dotenv: `19d95ad`, `1a95ac8`, `e6a414e`, `d9315f3` on `master` (default model, monokai-pro, the reviewer
+  alias moved to `anthropic/claude-opus-5:high`, and the wrong Fable diagnosis corrected in `MODELS.md`).
+  Then `f33e54d` delivered as PR #21, merged as `eba8a6b`.
+- A configuration gap found while resolving an unrelated open review: `/root/.pi/agent/subagents.json` did
+  not exist and the four `review-*` agent profiles declare no model, so the Pi host relay refused to
+  launch any reviewer with `reviewer-config-invalid`. The file now carries explicit `model_profiles` for
+  the four lenses and a `default_model` for the other subagents.
+- The `gga` commit gate on this machine is fail-open: it exits 0 even when its provider fails with
+  `Unexpected server error`, so the pre-commit hook blocks nothing and reviews nothing.
 
 ## Exact edit surfaces
 
