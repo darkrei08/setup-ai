@@ -90,8 +90,13 @@ servers, so the tools show up under `/mcp`. For pi it additionally installs the
 first-class `gentle-pi` harness and `pi-mcp-adapter`, so pi reads gentle-ai in
 its own MCP list. The interactive selector runs only with a real TTY;
 non-interactive/CI runs execute `gentle-ai install --scope global --agents
-<detected>` over the detected agents, so they never hang. Idempotent: safe to
-re-run.
+<detected>` over the detected agents, so they never hang. In
+non-interactive/CI mode, a matching HTTP 403 from the GitHub API gets two
+bounded retries (15s, then 45s); after exhaustion, the module fails and names
+`gh auth login` or `GITHUB_TOKEN`/`GH_TOKEN` as the remedies. In interactive TTY
+mode, any non-zero selector exit gets the same two bounded retries because its
+TTY-owned output cannot be captured to identify the 403 signature. Idempotent:
+safe to re-run.
 
 When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`),
 the read-only checks and the two continuations are in
