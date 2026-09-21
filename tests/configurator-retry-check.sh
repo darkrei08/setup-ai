@@ -218,9 +218,9 @@ RATE_LIMIT_SUCCESS_CASE="$(run_case rate-limit-recovered 1 no rate-limit-once)"
 [[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/result")" == 0 ]] || fail "rate-limit recovery did not complete the module"
 [[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/count")" == 2 ]] || fail "rate-limit recovery did not make exactly one retry"
 [[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/steps-failed")" == 0 ]] || fail "recovered rate-limit attempt remained in failed step accounting"
-grep -Fq '"event":"command_failed"' "${RATE_LIMIT_SUCCESS_CASE}/events.jsonl" \
+grep -Fq '"ev":"command_failed"' "${RATE_LIMIT_SUCCESS_CASE}/events.jsonl" \
     || fail "recovered rate-limit attempt lost its command_failed event"
-grep -Fq '"message":"Step failed"' "${RATE_LIMIT_SUCCESS_CASE}/events.jsonl" \
+grep -Fq '"msg":"Step failed"' "${RATE_LIMIT_SUCCESS_CASE}/events.jsonl" \
     || fail "recovered rate-limit attempt lost its failed step_result event"
 [[ "$(wc -l < "${RATE_LIMIT_SUCCESS_CASE}/sleep")" -eq 1 ]] || fail "rate-limit recovery did not use one backoff"
 [[ "$(<"${RATE_LIMIT_SUCCESS_CASE}/sleep")" == 15 ]] || fail "rate-limit recovery did not back off for 15 seconds"
