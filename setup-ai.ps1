@@ -1612,6 +1612,10 @@ function Mod-GentleAi {
     $configuratorStepsFailed = $script:StepsFailed
     $configuratorStepFailStep = $script:StepFailStep
     $configuratorStepFailReturnCode = $script:StepFailReturnCode
+    $configuratorLastErrorStep = $script:LastErrorStep
+    $configuratorLastErrorReturnCode = $script:LastErrorReturnCode
+    $configuratorRetrySleepFailed = $false
+    $configuratorRetrySleepReturnCode = 0
     if ($configuratorInteractive) {
         Write-Log INFO "gentle-ai" "configurator_start" "Launching gentle-ai install (choose agents/IDEs + MCP)"
     } else {
@@ -1629,7 +1633,7 @@ function Mod-GentleAi {
                 } catch {
                     $configuratorRc = if ($LASTEXITCODE) { [int]$LASTEXITCODE } else { 1 }
                 }
-                $configuratorSignature = 'interactive console failure (output not captured)'
+                $configuratorSignature = 'interactive selector failure (output not captured)'
             } else {
                 try {
                     Invoke-Step -Phase "gentle-ai" -CaptureOutput $configuratorOutput -Action { & gentle-ai install --scope global --agents $agentsCsv }
@@ -1651,6 +1655,9 @@ function Mod-GentleAi {
                     $script:StepsFailed = $configuratorStepsFailed
                     $script:StepFailStep = $configuratorStepFailStep
                     $script:StepFailReturnCode = $configuratorStepFailReturnCode
+                    $script:LastErrorStep = $configuratorLastErrorStep
+                    $script:LastErrorReturnCode = $configuratorLastErrorReturnCode
+                    Write-Log INFO "gentle-ai" "configurator_recovered" "gentle-ai configurator recovered after retry" 0 "attempts=$configuratorRetryAttempt"
                 }
                 break
             }
@@ -1672,7 +1679,14 @@ function Mod-GentleAi {
                 "Retrying gentle-ai configurator after observed selector failure"
             }
             Write-Log INFO "gentle-ai" "configurator_retry" "$configuratorRetryMessage (attempt $configuratorRetryAttempt/2; waiting ${configuratorBackoff}s)" 0 "attempt=$configuratorRetryAttempt;reason=$configuratorSignature;backoff_seconds=$configuratorBackoff"
-            Start-Sleep -Seconds $configuratorBackoff
+            try {
+                Start-Sleep -Seconds $configuratorBackoff
+            } catch {
+                $configuratorRetrySleepFailed = $true
+                $configuratorRetrySleepReturnCode = 1
+                Write-Log ERROR "gentle-ai" "configurator_retry_sleep_failed" "Could not wait before retrying the gentle-ai configurator" 1 "attempt=$configuratorRetryAttempt;backoff_seconds=$configuratorBackoff;observed_return_code=$configuratorRc"
+                break
+            }
         }
     } finally {
         if (Test-Path -LiteralPath $configuratorOutput) {
@@ -1684,8 +1698,9 @@ function Mod-GentleAi {
         }
     }
     if ($configuratorRc -ne 0) {
-        $configuratorFailure = "gentle-ai install failed"
-        if ($configuratorInterrupted) {
+        if ($configuratorRetrySleepFailed) {
+            $configuratorFailure = "gentle-ai install failed: retry backoff sleep failed (rc=$configuratorRetrySleepReturnCode); configurator selector return code=$configuratorRc"
+        } elseif ($configuratorInterrupted) {
             $configuratorFailure = "gentle-ai install interrupted (rc=$configuratorRc); no retry was attempted because the run was interrupted"
         } elseif ($configuratorRateLimitExhausted -and $configuratorQuotaConfirmed) {
             $configuratorFailure = "gentle-ai install failed: anonymous GitHub API quota exhausted; remedies: run 'gh auth login', or export GITHUB_TOKEN/GH_TOKEN"
@@ -1694,7 +1709,7 @@ function Mod-GentleAi {
         } else {
             $configuratorFailure = "gentle-ai install failed: the non-interactive gentle-ai configurator exited non-zero (rc=$configuratorRc); no HTTP 403 + GitHub API signature was observed in captured output"
         }
-        Write-Log ERROR "gentle-ai" "configurator_failed" $configuratorFailure 1
+        Write-Log ERROR "gentle-ai" "configurator_failed" $configuratorFailure $configuratorRc
         throw $configuratorFailure
     }
     Write-Log INFO "gentle-ai" "configurator_done" "gentle-ai install completed"
