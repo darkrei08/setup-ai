@@ -107,12 +107,16 @@
 6. [done] Local gates on the merged `main`: `bash -n setup-ai.sh`, `node --check bin/setup-ai.mjs`,
    `node bin/setup-ai.mjs --list`, `npm run check:retry-marker`, `git diff --check`, and all four test
    scripts including `tests/pi-startup-check.sh`.
-7. [not runnable on this host] Container verification of A and C on the distribution families the project
-   claims. Three separate reasons, one per target: `pwsh` is absent, so the PowerShell parse check has no
-   local route; **Docker is not installed** (`dockerd` is absent), so neither a distribution container nor
-   the `mcr.microsoft.com/powershell` image could run; and the winget path of unit C cannot execute on a
-   Linux host at all, not even in a container, because a Linux Docker host cannot run a Windows container.
-   Declared pending in the pull requests, never claimed as verified.
+7. [done] Container verification of A and C on the distribution families the project claims. `tests/container-matrix.sh`
+   runs the gates in a container per family, on a writable copy inside the container because sourcing
+   `setup-ai.sh` writes its logs next to the script. Result: `node:22-bookworm` (bash gates plus the node
+   launcher and the JSONL test), `debian:13`, `ubuntu:24.04`, `archlinux:latest`, `fedora:latest`
+   (`util-linux-script` provides the `script` command the retry check requires) and
+   `opensuse/leap:latest` all exit 0, and the `mcr.microsoft.com/powershell` image passes the parse check.
+   The PowerShell parse check also passes on this host with PowerShell 7.6.6, both in the required
+   `[ScriptBlock]::Create` form and as a full AST parse with zero errors. Still not runnable anywhere:
+   Windows (a Linux Docker host cannot run a Windows container) and macOS (no container image), so the
+   live winget path remains pending on a Windows host.
 8. [done, with a repair] One PR per work unit plus merge. Merging the three approved branches left two
    tests red on `main` although each passed on its own branch, and no textual conflict showed it:
    `tests/gentle-ai-cli-resolution.sh` died on `STEP_FAILED: unbound variable` because the extracted
@@ -140,13 +144,16 @@
   event`, and removing the run-summary state from the sandbox turns the resolver check red again with
   exit 1.
 
-## Verification that could not run on this host
+## Verification that could not run
 
-- The PowerShell parse check: `pwsh` is absent. Declared pending in every pull request.
-- The container matrix: **Docker is not installed** on this host (`dockerd` is absent), so neither the
-  per-distribution runs nor the `mcr.microsoft.com/powershell` parse check could be executed.
-- The live winget path: not runnable on a Linux host, not even in a container.
+- The live winget path: not runnable on a Linux host, not even in a container, so it stays pending on a
+  Windows host.
+- macOS: no container image exists, so the macOS branch is verified by reading only.
 - The live GitHub API 403 and the real 15s/45s waits: exercised against fixtures and stubs only.
+
+Everything else that was pending is now verified: PowerShell 7.6.6 was installed on this host and the
+parse check passes both locally and in the `mcr.microsoft.com/powershell` image, and the container matrix
+is green across every family the installer claims (see item 7).
 
 ## Related work outside this repository
 
