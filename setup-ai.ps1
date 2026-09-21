@@ -168,15 +168,23 @@ function Write-Log {
     param(
         [ValidateSet('INFO','WARN','ERROR','DEBUG')] [string]$Level,
         [string]$Phase, [string]$Event, [string]$Message, [int]$ReturnCode = 0, [string]$Meta = "",
-        [System.Collections.IDictionary]$Summary = $null
+        [System.Collections.IDictionary]$Summary = $null, [bool]$Optional = $false, [string]$Behavior = ""
     )
     $ts = (Get-Date -AsUTC -Format "yyyy-MM-ddTHH:mm:ssZ")
+    $optionalSupplied = $PSBoundParameters.ContainsKey('Optional')
+    $behaviorSupplied = $PSBoundParameters.ContainsKey('Behavior')
     $obj = [ordered]@{
-        timestamp = $ts; level = $Level; phase = $Phase; event = $Event
-        message = $Message; return_code = $ReturnCode; run_id = $RunId; pid = $PID
+        ts = $ts; lvl = $Level; ph = $Phase; ev = $Event
+        msg = $Message; rc = $ReturnCode; rid = $RunId; pid = $PID
     }
     if ($Meta) { $obj.meta = $Meta }
     if ($Summary) { $obj.summary = $Summary }
+    if ($ReturnCode -ne 0) {
+        $err = [ordered]@{ rc = $ReturnCode }
+        if ($optionalSupplied) { $err.optional = $Optional }
+        if ($behaviorSupplied) { $err.behavior = $Behavior }
+        $obj.err = $err
+    }
     # -Depth 5 keeps the nested summary object (modules/steps) intact; the default of 2
     # would flatten it to type names.
     ($obj | ConvertTo-Json -Compress -Depth 5) | Add-Content -Path $JsonlLog
@@ -437,7 +445,7 @@ function Invoke-Step {
         $nativeExitCode = $global:LASTEXITCODE
         if ($nativeExitCode -ne 0) {
             if ($ExpectedExitCodes -contains $nativeExitCode) {
-                Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode
+                Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" 0
                 Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
                 return $null
             }
@@ -449,7 +457,7 @@ function Invoke-Step {
     } catch {
         $nativeExitCode = $global:LASTEXITCODE
         if ($ExpectedExitCodes -contains $nativeExitCode) {
-            Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode
+            Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" 0
             Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
             return $null
         }
@@ -458,11 +466,11 @@ function Invoke-Step {
         $rc = if ($null -ne $nativeExitCode) { [int]$nativeExitCode } else { 1 }
         if ($rc -eq 0) { $rc = 1 }
         if ($Optional) {
-            Write-Log WARN $Phase "step_failed_optional" "$($_.Exception.Message); continuing" 1
+            Write-Log WARN $Phase "step_failed_optional" "$($_.Exception.Message); continuing" $rc -Optional:$Optional -Behavior continue
             Write-StepResult -Phase $Phase -Status 'skipped' -ReturnCode $rc -Step $step
             return $false
         }
-        Write-Log ERROR $Phase "step_failed" "$($_.Exception.Message)" 1
+        Write-Log ERROR $Phase "step_failed" "$($_.Exception.Message)" $rc -Optional:$false -Behavior abort
         Write-StepResult -Phase $Phase -Status 'failed' -ReturnCode $rc -Step $step
         throw
     }

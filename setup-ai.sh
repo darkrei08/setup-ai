@@ -197,8 +197,11 @@ json_escape() {
 json_log() {
     local timestamp="$1" level="$2" phase="$3" event="$4" message="$5"
     local return_code="${6:-0}" meta="${7:-}" extra="${8:-}"
+    local optional="" behavior="" optional_supplied=0 behavior_supplied=0
+    if (( $# >= 9 )); then optional="${9}"; optional_supplied=1; fi
+    if (( $# >= 10 )); then behavior="${10}"; behavior_supplied=1; fi
 
-    local j_ts j_level j_phase j_event j_message j_meta
+    local j_ts j_level j_phase j_event j_message j_meta j_behavior optional_json
     j_ts="$(json_escape "${timestamp}")"
     j_level="$(json_escape "${level}")"
     j_phase="$(json_escape "${phase}")"
@@ -207,7 +210,7 @@ json_log() {
     j_meta="$(json_escape "${meta}")"
 
     {
-        printf '{"timestamp":"%s","level":"%s","phase":"%s","event":"%s","message":"%s","return_code":%s,"run_id":"%s","pid":%s' \
+        printf '{"ts":"%s","lvl":"%s","ph":"%s","ev":"%s","msg":"%s","rc":%s,"rid":"%s","pid":%s' \
             "${j_ts}" "${j_level}" "${j_phase}" "${j_event}" "${j_message}" \
             "${return_code}" "${RUN_ID}" "$$"
         if [[ -n "${meta}" ]]; then
@@ -217,6 +220,19 @@ json_log() {
             # Pre-serialized object body, used by the terminal run summary record.
             printf ',"summary":%s' "${extra}"
         fi
+        if (( return_code != 0 )); then
+            printf ',"err":{"rc":%s' "${return_code}"
+            if (( optional_supplied == 1 )); then
+                optional_json="false"
+                if [[ "${optional}" == "1" ]]; then optional_json="true"; fi
+                printf ',"optional":%s' "${optional_json}"
+            fi
+            if (( behavior_supplied == 1 )); then
+                j_behavior="$(json_escape "${behavior}")"
+                printf ',"behavior":"%s"' "${j_behavior}"
+            fi
+            printf '}'
+        fi
         printf '}\n'
     } >> "${JSONL_LOG}"
 }
@@ -224,11 +240,16 @@ json_log() {
 log_event() {
     local level="$1" phase="$2" event="$3" message="$4"
     local return_code="${5:-0}" meta="${6:-}" extra="${7:-}"
+    local optional="${8-}" behavior="${9-}"
 
     local timestamp
     timestamp="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
-    json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}"
+    if (( $# >= 9 )); then
+        json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}" "${optional}" "${behavior}"
+    else
+        json_log "${timestamp}" "${level}" "${phase}" "${event}" "${message}" "${return_code}" "${meta}" "${extra}"
+    fi
 
     # First failure wins: later wrapper events (`script_failed`) only announce the failure
     # this one named, so they must not replace the root cause the summary falls back to.
@@ -534,6 +555,7 @@ run_cmd() {
     local start_event="command_start" finish_event="command_success" fail_event="command_failed"
     local start_message="Executing command" finish_message="Command completed"
     local fail_message="Command returned non-zero status" level="ERROR" status="failed" ok_status="installed"
+    local failure_behavior="abort"
     if (( DRY_RUN == 1 )); then
         log_event "INFO" "${phase}" "dry_run_command" "Command not run (dry run)" 0 "${display}"
         printf '  \033[1;35m[dry-run] would run: %s\033[0m\n' "${display}"
@@ -548,6 +570,7 @@ run_cmd() {
         fail_event="optional_command_failed"; start_message="Executing optional command"
         finish_message="Optional command completed"
         fail_message="Optional command failed; continuing"; level="WARN"; status="skipped"
+        failure_behavior="continue"
     fi
     log_event "INFO" "${phase}" "${start_event}" "${start_message}" 0 "${display}"
     printf '  Command: %s\n' "${display}"
@@ -558,7 +581,7 @@ run_cmd() {
     # update PATH. A FIFO lets tee stream output without putting the command in
     # a pipeline subshell, and wait makes logging deterministic before returning.
     if ! mkfifo "${stream}"; then
-        log_event "ERROR" "${phase}" "output_stream_failed" "Could not create the command output stream" 1 "path=${stream}"
+        log_event "ERROR" "${phase}" "output_stream_failed" "Could not create the command output stream" 1 "path=${stream}" "" "${optional}" "${failure_behavior}"
         record_step "${phase}" "failed" 1 "${display}"
         return 1
     fi
@@ -587,7 +610,7 @@ run_cmd() {
         record_step "${phase}" "${ok_status}" 0 "${display}"
         return 0
     fi
-    log_event "${level}" "${phase}" "${fail_event}" "${fail_message}" "${rc}" "${display}"
+    log_event "${level}" "${phase}" "${fail_event}" "${fail_message}" "${rc}" "${display}" "" "${optional}" "${failure_behavior}"
     record_step "${phase}" "${status}" "${rc}" "${display}"
     return "${rc}"
 }
@@ -648,6 +671,8 @@ capture_cmd() {
     # stderr that would otherwise corrupt a version readback on Debian's npm 12).
     local capture_id="${RANDOM}"
     local out_file="${TMP_DIR}/capture_${capture_id}.out" err_file="${TMP_DIR}/capture_${capture_id}.err" rc=0 line
+    local failure_behavior="abort"
+    if (( optional == 1 )); then failure_behavior="continue"; fi
     log_event "INFO" "${phase}" "capture_start" "Collecting command output" 0 "${display}"
     "$@" >"${out_file}" 2>"${err_file}" || rc=$?
     cat "${out_file}" "${err_file}" >> "${HUMAN_LOG}"
@@ -663,10 +688,10 @@ capture_cmd() {
             # A tolerated readback is a warning, never an error the run did not take:
             # the caller falls back and the step is counted as skipped.
             log_event "WARN" "${phase}" "optional_capture_failed" \
-                "Optional command failed while collecting output; continuing" "${rc}" "${display}"
+                "Optional command failed while collecting output; continuing" "${rc}" "${display}" "" "${optional}" "${failure_behavior}"
             record_step "${phase}" "skipped" "${rc}" "${display}"
         else
-            log_event "ERROR" "${phase}" "capture_failed" "Command failed while collecting output" "${rc}" "${display}"
+            log_event "ERROR" "${phase}" "capture_failed" "Command failed while collecting output" "${rc}" "${display}" "" "${optional}" "${failure_behavior}"
             record_step "${phase}" "failed" "${rc}" "${display}"
         fi
         return "${rc}"

@@ -6,16 +6,61 @@ to render spaced event blocks and live child-command output; log files keep
 their stable machine-readable and plain-text formats.
 
 The JSONL ends with one `run_summary` record per run, and every step that goes
-through the installer's command helpers adds a `step_result` record. Both are
-additive: existing event names and payloads are unchanged, and `setup-ai.sh` and
-`setup-ai.ps1` emit the same fields in the same order. The engineering report
-ends with the same summary.
+through the installer's command helpers adds a `step_result` record. Both
+writers emit the same keys in the same order. The engineering report ends with
+the same summary.
+
+Every record starts with these keys:
 
 ```json
 {
-  "event": "run_summary",
-  "run_id": "20260913T150742Z",
-  "return_code": 0,
+  "ts": "2026-09-13T15:07:48Z",
+  "lvl": "INFO",
+  "ph": "bootstrap",
+  "ev": "run_summary",
+  "msg": "Run summary: outcome=success;duration_seconds=6",
+  "rc": 0,
+  "rid": "20260913T150742Z",
+  "pid": 4242
+}
+```
+
+`meta`, `summary`, and `err` are optional and are appended in that order. `meta`
+remains a string, and `summary` keeps its existing object shape. A record with a
+non-zero `rc` always carries `err.rc`. The `optional` and `behavior` keys are
+included only when the caller supplied those classifications; the writers never
+infer them from the log level or a default value. `step_result` records
+intentionally carry only `err.rc`, because that summary outcome does not receive
+the command helper's classification. Bash has no expected-exit path; PowerShell
+logs an expected exit at INFO with `rc: 0`, so it has no `err` object.
+
+```json
+{
+  "ts": "2026-09-13T15:07:44Z",
+  "lvl": "WARN",
+  "ph": "node",
+  "ev": "optional_command_failed",
+  "msg": "Optional command failed; continuing",
+  "rc": 7,
+  "rid": "20260913T150742Z",
+  "pid": 4242,
+  "meta": "npm cache verify ",
+  "err": { "rc": 7, "optional": true, "behavior": "continue" }
+}
+```
+
+The terminal `run_summary` record keeps `summary.modules` and `summary.steps`:
+
+```json
+{
+  "ts": "2026-09-13T15:07:48Z",
+  "lvl": "INFO",
+  "ph": "bootstrap",
+  "ev": "run_summary",
+  "msg": "Run summary: outcome=success;duration_seconds=6",
+  "rc": 0,
+  "rid": "20260913T150742Z",
+  "pid": 4242,
   "summary": {
     "run_id": "20260913T150742Z",
     "outcome": "success",
@@ -49,8 +94,23 @@ ends with the same summary.
 
 ## Reading a run without paging the log
 
+Run this from the repository root after an installer run. It selects the newest
+JSONL artifact, so it works against a fresh log without replacing a placeholder:
+
 ```bash
-node -e 'const s=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n").map(JSON.parse).filter(r=>r.event==="run_summary").pop().summary;console.log(s.outcome, JSON.stringify(s.modules), JSON.stringify(s.steps))' logs/setup_<runid>.jsonl
+node --input-type=module <<'NODE'
+import fs from "node:fs";
+
+const name = fs.readdirSync("logs")
+  .filter((entry) => /^setup_.*\.jsonl$/.test(entry))
+  .sort()
+  .at(-1);
+if (!name) throw new Error("No setup JSONL log found in logs/");
+const records = fs.readFileSync(`logs/${name}`, "utf8")
+  .trim().split("\n").map(JSON.parse);
+const summary = records.filter((record) => record.ev === "run_summary").at(-1).summary;
+console.log(summary.outcome, JSON.stringify(summary.modules), JSON.stringify(summary.steps));
+NODE
 ```
 
 ## Reading the event stream

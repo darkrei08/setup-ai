@@ -30,6 +30,7 @@ npx @darkrei08/setup-ai --uninstall [--yes] [--only ...] [--purge]
 ```
 
 Startup acceptance check: `bash tests/pi-startup-check.sh`.
+JSONL schema check: `bash tests/jsonl-schema.sh`.
 
 Three details worth knowing:
 
