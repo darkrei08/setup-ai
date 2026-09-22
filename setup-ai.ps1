@@ -1441,11 +1441,74 @@ function Remove-StaleQuietToolsSwitch {
     Write-Log INFO "gentle-ai" "stale_quiet_tools_switch_removed" "Removed the GENTLE_PI_QUIET_TOOLS=0 switch an earlier setup-ai persisted: it disables gentle-pi quiet tools, which is what makes pi-pretty register the built-in tool names itself and abort startup" 0 ("removed=" + ($changed -join ','))
 }
 
+function Remove-StaleRpivQuestionExtension {
+    $settings = Join-Path $PiAgentDir "settings.json"
+    if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
+    $bytes = [System.IO.File]::ReadAllBytes($settings)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $utf8 = New-Object System.Text.UTF8Encoding($hasBom)
+    $offset = if ($hasBom) { 3 } else { 0 }
+    $raw = $utf8.GetString($bytes, $offset, $bytes.Length - $offset)
+
+    $hasGentle = $false
+    $rpivEntries = @()
+    try {
+        $parsed = ConvertFrom-Json -InputObject $raw
+        foreach ($entry in @($parsed.packages)) {
+            if ($null -eq $entry) { continue }
+            $isString = $entry -is [string]
+            $source = if ($isString) { $entry } elseif ($null -ne $entry.PSObject.Properties['source']) { [string]$entry.source } else { '' }
+            if ($source -cmatch '^npm:gentle-pi(@.*)?$') { $hasGentle = $true }
+            if ($source -cmatch '^npm:@juicesharp/rpiv-ask-user-question(@.*)?$') { $rpivEntries += @{ Value = $entry; IsString = $isString } }
+        }
+    } catch {
+        Write-Log WARN "gentle-ai" "rpiv_question_conflict_unrepaired" "Could not parse $settings while checking for the stale rpiv ask_user_question extension" 0 "settings=$settings"
+        return
+    }
+    if (-not $hasGentle -or $rpivEntries.Count -eq 0) { return }
+    if ($rpivEntries.Count -ne 1 -or -not $rpivEntries[0].IsString) {
+        Write-Log WARN "gentle-ai" "rpiv_question_conflict_unrepaired" "The stale rpiv ask_user_question extension conflicts with gentle-pi; settings.json was not changed because its package entry is ambiguous" 0 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+        return
+    }
+
+    $entryMatch = [regex]::Matches($raw, '(?m)^([ \t]*)"npm:@juicesharp/rpiv-ask-user-question(?:@[^\"]*)?"([ \t]*)(,?)[ \t]*(\r?)$')
+    if ($entryMatch.Count -ne 1) {
+        Write-Log WARN "gentle-ai" "rpiv_question_conflict_unrepaired" "The stale rpiv ask_user_question extension conflicts with gentle-pi; settings.json was unchanged because its entry could not be removed safely" 0 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+        return
+    }
+    $updated = $raw.Remove($entryMatch[0].Index, $entryMatch[0].Length)
+    if ([string]::IsNullOrEmpty($entryMatch[0].Groups[3].Value)) {
+        $prefix = $updated.Substring(0, $entryMatch[0].Index)
+        $prefix = [regex]::Replace($prefix, '(?m),([ \t]*\r?\n[ \t]*)$', '$1')
+        $updated = $prefix + $updated.Substring($entryMatch[0].Index)
+    }
+    $tmp = "$settings.setup-ai.tmp"
+    $backup = "$settings.setup-ai.bak"
+    try {
+        [System.IO.File]::WriteAllText($tmp, $updated, $utf8)
+        $null = [System.IO.File]::ReadAllText($tmp, $utf8) | ConvertFrom-Json
+        [System.IO.File]::Replace($tmp, $settings, $backup)
+    } catch {
+        Write-Log ERROR "gentle-ai" "rpiv_question_conflict_unrepaired" "Could not remove the stale rpiv ask_user_question extension from ${settings}: $($_.Exception.Message)" 1 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+        throw "Could not repair the stale rpiv ask_user_question extension in $settings"
+    } finally {
+        foreach ($stale in @($tmp, $backup)) {
+            if (Test-Path -LiteralPath $stale) {
+                try { Remove-Item -LiteralPath $stale -Force -ErrorAction Stop }
+                catch { Write-Log WARN "gentle-ai" "quiet_tools_temp_left" "Could not remove a temporary file next to settings.json" 0 "path=$stale" }
+            }
+        }
+    }
+    Write-Log INFO "gentle-ai" "rpiv_question_extension_removed" "Removed the obsolete rpiv ask_user_question extension because gentle-pi now provides the same tool" 0 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+}
+
 # gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools, and pi
 # aborts at startup ("Tool <name> conflicts") when a second installed extension
 # registers one of the same names. pi-tool-display does exactly that, and so does the
 # dropped pi-hashline-edit-pro still registered on machines upgraded from an older
-# install. gentle-pi has no per-registrant switch, so the repair is its object entry
+# install. Newer gentle-pi releases also own ask_user_question, so remove the
+# obsolete standalone rpiv extension when it is still registered beside it.
+# gentle-pi has no per-registrant switch, so the repair is its object entry
 # in settings.json with both of its own registrants excluded. Loading extensions
 # without a model call is impossible, so the collision is detected statically and the
 # entry rewritten as raw text, which leaves the rest of the file's formatting
@@ -1455,6 +1518,8 @@ function Repair-QuietToolsConflict {
 
     $settings = Join-Path $PiAgentDir "settings.json"
     if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
+    Remove-StaleRpivQuestionExtension
+
     # Read the bytes explicitly, so the text can be written back with the same
     # encoding: UTF-8, with a byte-order mark only when the file already has one.
     $bytes = [System.IO.File]::ReadAllBytes($settings)

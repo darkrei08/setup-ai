@@ -2207,11 +2207,83 @@ remove_stale_quiet_tools_switch() {
 # extensions without a model call is impossible, so the collision is detected
 # statically and the entry rewritten as raw text, which leaves the rest of the
 # file's formatting untouched.
+remove_stale_rpiv_question_extension() {
+    local settings="${PI_AGENT_DIR}/settings.json"
+    [[ -f "${settings}" ]] || return 0
+
+    local state="invalid"
+    if ! state="$(node -e '
+        const fs = require("node:fs");
+        let settings;
+        try { settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); }
+        catch { console.log("invalid"); process.exit(0); }
+        const entries = Array.isArray(settings.packages) ? settings.packages : [];
+        const source = (entry) => typeof entry === "string" ? entry : (entry && entry.source) || "";
+        const hasGentle = entries.some((entry) => /^npm:gentle-pi(@.*)?$/.test(source(entry)));
+        const rpiv = entries.filter((entry) => /^npm:@juicesharp\/rpiv-ask-user-question(@.*)?$/.test(source(entry)));
+        if (!hasGentle || rpiv.length === 0) console.log("absent");
+        else if (rpiv.length === 1 && typeof rpiv[0] === "string") console.log("string");
+        else console.log("ambiguous");
+    ' "${settings}" 2>/dev/null)"; then
+        state="invalid"
+    fi
+    [[ "${state}" == "absent" ]] && return 0
+    if [[ "${state}" != "string" ]]; then
+        log_event "WARN" "gentle-ai" "rpiv_question_conflict_unrepaired" \
+            "The stale rpiv ask_user_question extension conflicts with gentle-pi; settings.json was not changed because its package entry is ambiguous" 0 \
+            "settings=${settings};package=npm:@juicesharp/rpiv-ask-user-question"
+        return 0
+    fi
+
+    local tmp="${settings}.setup-ai.tmp" staged=0
+    if cp -p -- "${settings}" "${tmp}" \
+        && awk '
+            function flush_previous() {
+                if (have_previous) print previous
+            }
+            {
+                if ($0 ~ /^[ \t]*"npm:@juicesharp\/rpiv-ask-user-question(@[^"]*)?"[ \t]*,?[ \t]*$/) {
+                    hits++
+                    if ($0 !~ /,[ \t]*$/ && have_previous) sub(/,[ \t]*$/, "", previous)
+                    next
+                }
+                flush_previous()
+                previous=$0
+                have_previous=1
+            }
+            END {
+                flush_previous()
+                exit (hits == 1 ? 0 : 1)
+            }
+        ' "${settings}" > "${tmp}" \
+        && node -e 'JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"))' "${tmp}" 2>/dev/null; then
+        staged=1
+    fi
+    if (( staged == 0 )); then
+        rm -f -- "${tmp}"
+        log_event "WARN" "gentle-ai" "rpiv_question_conflict_unrepaired" \
+            "The stale rpiv ask_user_question extension conflicts with gentle-pi; settings.json was unchanged because its entry could not be removed safely" 0 \
+            "settings=${settings};package=npm:@juicesharp/rpiv-ask-user-question"
+        return 0
+    fi
+    if ! mv -- "${tmp}" "${settings}"; then
+        rm -f -- "${tmp}"
+        log_event "ERROR" "gentle-ai" "rpiv_question_conflict_unrepaired" \
+            "Could not remove the stale rpiv ask_user_question extension from ${settings}" 1 \
+            "settings=${settings};package=npm:@juicesharp/rpiv-ask-user-question"
+        return 1
+    fi
+    log_event "INFO" "gentle-ai" "rpiv_question_extension_removed" \
+        "Removed the obsolete rpiv ask_user_question extension because gentle-pi now provides the same tool" 0 \
+        "settings=${settings};package=npm:@juicesharp/rpiv-ask-user-question"
+}
+
 handle_quiet_tools_conflict() {
     remove_stale_quiet_tools_switch || return 1
 
     local settings="${PI_AGENT_DIR}/settings.json"
     [[ -f "${settings}" ]] || return 0
+    remove_stale_rpiv_question_extension || return 1
 
     local raw=""
     raw="$(<"${settings}")"

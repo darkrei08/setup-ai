@@ -33,7 +33,7 @@ extract_function() {
 }
 
 PRODUCT_FUNCTIONS="${TEST_DIR}/product-functions.sh"
-for function_name in terminate_pi_startup_process_group remove_line_from_file remove_stale_quiet_tools_switch handle_quiet_tools_conflict verify_pi_startup; do
+for function_name in terminate_pi_startup_process_group remove_line_from_file remove_stale_quiet_tools_switch remove_stale_rpiv_question_extension handle_quiet_tools_conflict verify_pi_startup; do
     extract_function "${function_name}" >> "${PRODUCT_FUNCTIONS}"
 done
 
@@ -132,7 +132,8 @@ check_powershell_wiring() {
         && grep -Fq 'throw "pi startup verification failed' "${ROOT}/setup-ai.ps1" \
         && grep -Fq 'Get-Command -Name pi -CommandType Application' "${ROOT}/setup-ai.ps1" \
         && grep -Fq 'Start-Job -ArgumentList $piPath' "${ROOT}/setup-ai.ps1" \
-        && grep -Fq 'ExitCode = 127' "${ROOT}/setup-ai.ps1"
+        && grep -Fq 'ExitCode = 127' "${ROOT}/setup-ai.ps1" \
+        && grep -Fq 'Remove-StaleRpivQuestionExtension' "${ROOT}/setup-ai.ps1"
 }
 
 check_repair_and_neighbor_bytes() {
@@ -167,6 +168,102 @@ check_repair_is_idempotent() {
     handle_quiet_tools_conflict
     rc=$?
     [[ "${rc}" -eq 0 ]] && same_bytes "${before}" "${PI_AGENT_DIR}/settings.json"
+}
+
+check_stale_rpiv_extension_is_removed() {
+    local before="${TEST_DIR}/rpiv.before" rc
+    write_settings <<'JSON'
+{
+  "packages": [
+    "npm:gentle-pi",
+    "npm:@juicesharp/rpiv-ask-user-question",
+    "npm:neighbor"
+  ]
+}
+JSON
+    handle_quiet_tools_conflict
+    rc=$?
+    [[ "${rc}" -eq 0 ]] || return 1
+    node -e '
+        const fs = require("node:fs");
+        const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        if (s.packages.includes("npm:@juicesharp/rpiv-ask-user-question") ||
+            !s.packages.includes("npm:gentle-pi") || !s.packages.includes("npm:neighbor")) process.exit(1);
+    ' "${PI_AGENT_DIR}/settings.json" || return 1
+    grep -Fq 'rpiv_question_extension_removed' "${HUMAN_LOG}" || return 1
+    cp -- "${PI_AGENT_DIR}/settings.json" "${before}"
+    handle_quiet_tools_conflict
+    rc=$?
+    [[ "${rc}" -eq 0 ]] && same_bytes "${before}" "${PI_AGENT_DIR}/settings.json"
+}
+
+check_stale_rpiv_terminal_entry_is_removed() {
+    local before="${TEST_DIR}/rpiv-terminal.before" rc
+    write_settings <<'JSON'
+{
+  "packages": [
+    "npm:gentle-pi",
+    "npm:neighbor",
+    "npm:@juicesharp/rpiv-ask-user-question"
+  ]
+}
+JSON
+    handle_quiet_tools_conflict
+    rc=$?
+    [[ "${rc}" -eq 0 ]] || return 1
+    node -e '
+        const fs = require("node:fs");
+        const s = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+        if (s.packages.includes("npm:@juicesharp/rpiv-ask-user-question") ||
+            !s.packages.includes("npm:gentle-pi") || !s.packages.includes("npm:neighbor")) process.exit(1);
+    ' "${PI_AGENT_DIR}/settings.json" || return 1
+    cp -- "${PI_AGENT_DIR}/settings.json" "${before}"
+    handle_quiet_tools_conflict
+    rc=$?
+    [[ "${rc}" -eq 0 ]] && same_bytes "${before}" "${PI_AGENT_DIR}/settings.json"
+}
+
+check_powershell_stale_rpiv_terminal_entry_is_removed() {
+    if ! command -v pwsh >/dev/null 2>&1; then
+        printf 'SKIP: PowerShell runtime unavailable for terminal-entry parity check\n'
+        return 0
+    fi
+    ROOT="${ROOT}" pwsh -NoProfile -Command - <<'PS'
+$ErrorActionPreference = 'Stop'
+$root = $env:ROOT
+$source = Join-Path $root 'setup-ai.ps1'
+$tokens = $null
+$errors = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($source, [ref]$tokens, [ref]$errors)
+$fn = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Remove-StaleRpivQuestionExtension' }, $true)
+if ($null -eq $fn) { throw 'Remove-StaleRpivQuestionExtension not found' }
+$testDir = Join-Path ([IO.Path]::GetTempPath()) ('setup-ai-rpiv-ps-' + [guid]::NewGuid().ToString('N'))
+$PiAgentDir = $testDir
+function Write-Log { param($Level, $Phase, $Code, $Message, $ExitCode, $Meta) }
+try {
+    New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+    @'
+{
+  "packages": [
+    "npm:gentle-pi",
+    "npm:neighbor",
+    "npm:@juicesharp/rpiv-ask-user-question"
+  ]
+}
+'@ | Set-Content -LiteralPath (Join-Path $testDir 'settings.json') -Encoding utf8
+    . ([scriptblock]::Create($fn.Extent.Text))
+    $settings = Join-Path $testDir 'settings.json'
+    $json = Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json
+    if (@($json.packages) -contains 'npm:@juicesharp/rpiv-ask-user-question') { throw 'rpiv entry survived PowerShell repair' }
+    if (-not (@($json.packages) -contains 'npm:gentle-pi') -or -not (@($json.packages) -contains 'npm:neighbor')) { throw 'neighbor entry was lost' }
+    $before = [IO.File]::ReadAllBytes($settings)
+    Remove-StaleRpivQuestionExtension
+    $after = [IO.File]::ReadAllBytes($settings)
+    if (-not [Linq.Enumerable]::SequenceEqual($before, $after)) { throw 'second PowerShell repair changed settings' }
+} finally {
+    if (Test-Path -LiteralPath $testDir) { Remove-Item -LiteralPath $testDir -Recurse -Force }
+}
+PS
 }
 
 check_no_shadow_is_noop() {
@@ -321,6 +418,9 @@ check "Both installers resolve PI_CODING_AGENT_DIR" check_effective_agent_dir
 check "PowerShell calls startup verification after repair and throws on failure" check_powershell_wiring
 check "Repair changes only the gentle-pi entry and stale switch, preserving mode and neighbors" check_repair_and_neighbor_bytes
 check "Already repaired settings are byte-level no-op" check_repair_is_idempotent
+check "Stale rpiv question extension is removed while neighbors survive" check_stale_rpiv_extension_is_removed
+check "Terminal stale rpiv entry is removed without invalid JSON" check_stale_rpiv_terminal_entry_is_removed
+check "PowerShell terminal stale rpiv entry is removed without invalid JSON" check_powershell_stale_rpiv_terminal_entry_is_removed
 check "Settings without a shadow package are byte-level no-op" check_no_shadow_is_noop
 check "Symlink rc files remain links and targets remain unchanged" check_symlink_is_untouched
 check "Successful pi startup is logged and output reaches HUMAN_LOG" check_startup_success
