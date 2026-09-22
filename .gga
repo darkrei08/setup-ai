@@ -22,14 +22,15 @@
 #   PROVIDER="github:deepseek-r1"
 #   PROVIDER="minimax"
 #   PROVIDER="minimax:MiniMax-M3"
-# NOTE: claude/gemini are not installed on this machine (see `gentle-ai doctor`).
-# Review runs through the OpenCode CLI on the OpenCode Go subscription, the same
-# model this repository is developed with; codex was the earlier choice.
-PROVIDER="opencode:opencode-go/deepseek-v4.1-flash"
-# The reviewer is the opencode agent this machine already runs (gentle-orchestrator:
-# gentle-ai, engram, full tool access), so the review can run its own checks.
-# That agent answers with prose before it states the verdict, which is why the
-# verdict parser is tolerant: a strict parse would block sound reviews on layout.
+# Follow the active Pi provider; GGA_PROVIDER from the local environment overrides it.
+case "${PI_PROVIDER:-openai-codex}" in
+  openai-codex) PROVIDER="codex" ;;
+  anthropic) PROVIDER="claude" ;;
+  google) PROVIDER="gemini" ;;
+  opencode) PROVIDER="opencode${PI_MODEL:+:${PI_MODEL}}" ;;
+  ollama) PROVIDER="ollama:${PI_MODEL:-}" ;;
+  *) PROVIDER="${PI_PROVIDER:-codex}" ;;
+esac
 # The blocking verdict still comes from the review text, and the committer runs the
 # repository's required commands before committing.
 
