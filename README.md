@@ -1,9 +1,9 @@
 # setup-ai
 
 Cross-OS installer for an AI coding toolchain. One command bootstraps
-[pi](https://pi.dev), [Codex](https://github.com/openai/codex),
-[Antigravity](https://antigravity.google), [opencode](https://opencode.ai),
-[herdr](https://herdr.dev),
+[pi](https://pi.dev), [Claude Code](https://claude.ai/code),
+[Codex](https://github.com/openai/codex), [Antigravity](https://antigravity.google),
+[opencode](https://opencode.ai), [herdr](https://herdr.dev),
 [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), the
 [darkrei08/dotenv](https://github.com/darkrei08/dotenv) dotfiles, and the
 [Engineering Excellence](https://github.com/darkrei08/Engineering-Excellence)
@@ -80,7 +80,7 @@ that matches your question.
 | Page | What it covers |
 |---|---|
 | [docs/install-matrix.md](docs/install-matrix.md) | The official install method of every tool, per OS |
-| [docs/modules.md](docs/modules.md) | Module list and order, what each module does, the boundary between installed and configured-only agents, the manual `dotenv` setup |
+| [docs/modules.md](docs/modules.md) | Module list and order, agent/editor installation, configuration targets, and the manual `dotenv` setup |
 | [docs/pi-extensions.md](docs/pi-extensions.md) | Pi package roots, npm 12 remote sources and install-script approval, models, resource selectors |
 | [docs/pi-workflows-guide.md](docs/pi-workflows-guide.md) | `pi-extensible-workflows`: install, `/workflow` picker, roles/aliases, Herdr, Neovim (bilingual) |
 | [docs/rdd-review-troubleshooting.md](docs/rdd-review-troubleshooting.md) | When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`) |

@@ -62,6 +62,7 @@ REPORT_FILE="${LOG_DIR}/engineering-report_${RUN_ID}.md"
 
 PI_STARTUP_PID=""
 PI_STARTUP_WATCHDOG_PID=""
+LAZYVIM_CLONED=0
 
 export RUN_ID
 
@@ -639,20 +640,24 @@ run_optional() {
 # (installed by the base module) calls setsid before exec there.
 run_vendor_installer() {
     local phase="$1" interpreter="$2" script="$3"
-    if command -v setsid >/dev/null 2>&1; then
-        run_cmd "${phase}" setsid --wait "${interpreter}" "${script}"
-    elif command -v python3 >/dev/null 2>&1; then
-        run_cmd "${phase}" python3 -c '
+    local -a run_options=()
+    [[ "${4:-}" == "--optional" ]] && run_options+=(--optional)
+    if command -v python3 >/dev/null 2>&1; then
+        run_cmd "${phase}" "${run_options[@]}" python3 -c '
 import os, sys
 if hasattr(os, "setsid"):
     try:
         os.setsid()
     except OSError:
         pass
+with open(os.devnull, "rb") as stdin:
+    os.dup2(stdin.fileno(), 0)
 os.execvp(sys.argv[1], sys.argv[1:])
 ' "${interpreter}" "${script}"
+    elif command -v setsid >/dev/null 2>&1; then
+        run_cmd "${phase}" "${run_options[@]}" setsid --wait sh -c 'exec "$@" </dev/null' sh "${interpreter}" "${script}"
     else
-        run_cmd "${phase}" "${interpreter}" "${script}"
+        run_cmd "${phase}" "${run_options[@]}" "${interpreter}" "${script}" </dev/null
     fi
 }
 
@@ -774,11 +779,12 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi dotenv pi-packages go ee skills pi-workflows herdr codex antigravity opencode gentle-ai cockpit rotator)
+MODULE_ORDER=(base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit rotator)
 
 module_desc() {
     case "$1" in
         base) printf '%s\n' "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)" ;;
+        lazyvim) printf '%s\n' "Neovim and LazyVim starter (headless sync)" ;;
         node) printf '%s\n' "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" ;;
         bun) printf '%s\n' "Bun runtime" ;;
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
@@ -789,6 +795,7 @@ module_desc() {
         skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
         pi-workflows) printf '%s\n' "pi-extensible-workflows (published release + npm 12 remote sources for pi installs)" ;;
         herdr) printf '%s\n' "herdr terminal multiplexer" ;;
+        claude-code) printf '%s\n' "Anthropic Claude Code CLI" ;;
         gentle-ai) printf '%s\n' "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" ;;
         codex) printf '%s\n' "OpenAI Codex CLI" ;;
         antigravity) printf '%s\n' "Google Antigravity CLI (agy)" ;;
@@ -1344,6 +1351,79 @@ mod_base() {
     esac
 
     require_command python3
+}
+
+# --- lazyvim ----------------------------------------------------------------
+mod_lazyvim() {
+    section "Neovim + LazyVim"
+    local config_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/nvim"
+    local nvim_bin=""
+    local arch
+    capture_cmd arch "lazyvim" uname -m
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "lazyvim" "install Neovim x86_64 tarball when applicable, preserve ${config_dir} or clone LazyVim, then run nvim --headless +Lazy! sync +qa"
+        return 0
+    fi
+
+    if [[ "${OS_FAMILY}" == "linux" ]] && [[ "${arch}" == "x86_64" || "${arch}" == "amd64" ]]; then
+        nvim_bin="/opt/nvim-linux-x86_64/bin"
+        if [[ ! -x "${nvim_bin}/nvim" ]]; then
+            local archive="${TMP_DIR}/nvim-linux-x86_64.tar.gz"
+            run_cmd "lazyvim" curl -fsSL \
+                https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz \
+                -o "${archive}"
+            run_cmd "lazyvim" sudo rm -rf /opt/nvim-linux-x86_64
+            run_cmd "lazyvim" sudo tar -C /opt -xzf "${archive}"
+        fi
+        [[ -x "${nvim_bin}/nvim" ]] || {
+            log_event "ERROR" "lazyvim" "nvim_missing" "Neovim tarball did not install the expected binary" 1 "expected=${nvim_bin}/nvim"
+            return 1
+        }
+        export PATH="${nvim_bin}:${PATH}"
+        log_event "INFO" "lazyvim" "nvim_path_refreshed" \
+            "Using the official Neovim x86_64 binary ahead of the distro package" 0 "dir=${nvim_bin}"
+    else
+        if ! command -v nvim >/dev/null 2>&1; then
+            case "${PM}" in
+                brew) run_cmd "lazyvim" brew install neovim ;;
+                apt-get)
+                    run_cmd "lazyvim" sudo apt-get update
+                    run_cmd "lazyvim" sudo apt-get install -y neovim
+                    ;;
+                dnf) run_cmd "lazyvim" sudo dnf install -y neovim ;;
+                pacman) run_cmd "lazyvim" sudo pacman -Sy --needed --noconfirm neovim ;;
+                zypper)
+                    run_cmd "lazyvim" sudo zypper --non-interactive refresh
+                    run_cmd "lazyvim" sudo zypper --non-interactive install --no-recommends neovim
+                    ;;
+                *)
+                    log_event "ERROR" "lazyvim" "nvim_install_unsupported" \
+                        "No supported package manager can install Neovim on this platform" 1 "package_manager=${PM}"
+                    return 1
+                    ;;
+            esac
+        fi
+        require_command nvim
+        log_event "INFO" "lazyvim" "nvim_fallback" \
+            "Using the platform Neovim package because the Linux x86_64 tarball is unavailable" 0
+    fi
+
+    require_command nvim
+    if [[ -d "${config_dir}" ]]; then
+        log_event "INFO" "lazyvim" "config_present" \
+            "Preserving the existing Neovim configuration" 0 "path=${config_dir}"
+        return 0
+    fi
+    require_command git
+    local staged_config="${TMP_DIR}/nvim"
+    run_cmd "lazyvim" git clone --depth=1 https://github.com/LazyVim/starter "${staged_config}"
+    run_cmd "lazyvim" rm -rf -- "${staged_config}/.git"
+    run_cmd "lazyvim" env XDG_CONFIG_HOME="${TMP_DIR}" nvim --headless "+Lazy! sync" +qa
+    run_cmd "lazyvim" mkdir -p "${config_dir%/*}"
+    run_cmd "lazyvim" mv -- "${staged_config}" "${config_dir}"
+    LAZYVIM_CLONED=1
+    log_event "INFO" "lazyvim" "config_verified" \
+        "LazyVim starter cloned and synchronized headlessly" 0 "path=${config_dir}"
 }
 
 # --- node -------------------------------------------------------------------
@@ -1983,6 +2063,60 @@ mod_herdr() {
         run_cmd "herdr" sh "${installer}"
     fi
     require_command herdr
+}
+
+# --- claude-code ------------------------------------------------------------
+mod_claude_code() {
+    section "Claude Code"
+    export PATH="${HOME}/.local/bin:${PATH}"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "claude-code" "curl https://claude.ai/install.sh | bash (no-prompt vendor helper), then verify claude --version"
+        return 0
+    fi
+    if command -v claude >/dev/null 2>&1; then
+        local claude_version
+        if capture_cmd claude_version "claude-code" claude --version; then
+            log_event "INFO" "claude-code" "already_present" "Claude Code already installed" 0 "version=${claude_version}"
+            return 0
+        fi
+        return 1
+    fi
+    if [[ "${OS_FAMILY}" == "linux" || "${OS_FAMILY}" == "macos" ]]; then
+        local installer="${TMP_DIR}/install-claude.sh"
+        if command -v curl >/dev/null 2>&1 \
+            && run_cmd "claude-code" --optional curl -fsSL https://claude.ai/install.sh -o "${installer}" \
+            && [[ -s "${installer}" ]]; then
+            if run_vendor_installer "claude-code" bash "${installer}" --optional; then
+                :
+            else
+                log_event "WARN" "claude-code" "vendor_installer_failed" \
+                    "Claude Code vendor installer failed; trying npm fallback" 0
+            fi
+        else
+            log_event "WARN" "claude-code" "vendor_installer_unavailable" \
+                "Claude Code vendor installer could not be downloaded; trying npm fallback" 0
+        fi
+    else
+        log_event "ERROR" "claude-code" "unsupported_os" "Claude Code's Unix installer is not supported on this platform" 1 "os=${OS_FAMILY}"
+        return 1
+    fi
+    export PATH="${HOME}/.local/bin:${PATH}"
+    if ! command -v claude >/dev/null 2>&1; then
+        require_command npm
+        log_event "INFO" "claude-code" "npm_fallback" "Installing Claude Code from the npm registry" 0
+        local npm_version npm_major
+        capture_cmd npm_version "claude-code" npm --version
+        npm_major="${npm_version%%.*}"
+        if [[ "${npm_major}" =~ ^[0-9]+$ ]] && (( npm_major >= 12 )); then
+            run_cmd "claude-code" npm install -g @anthropic-ai/claude-code --allow-scripts=@anthropic-ai/claude-code
+        else
+            run_cmd "claude-code" npm install -g @anthropic-ai/claude-code
+        fi
+        export PATH="${HOME}/.local/bin:${PATH}"
+    fi
+    require_command claude
+    capture_cmd claude_version "claude-code" claude --version
+    log_event "INFO" "claude-code" "cli_ready" "Claude Code CLI detected" 0 "version=${claude_version}"
 }
 
 # --- gentle-ai --------------------------------------------------------------
@@ -3076,6 +3210,7 @@ export NVM_DIR="$HOME/.nvm"
 export BUN_INSTALL="$HOME/.bun"
 export GOPATH="$HOME/go"
 
+[ -d "/opt/nvim-linux-x86_64/bin" ] && export PATH="/opt/nvim-linux-x86_64/bin:$PATH"
 export PATH="$BUN_INSTALL/bin:$HOME/.pi/bin:$HOME/.local/bin:$GOPATH/bin:$HOME/.cargo/bin:$PATH"'
 
 configure_shell_env() {
@@ -3094,7 +3229,16 @@ configure_shell_env() {
         fi
         log_event "INFO" "shell" "environment_added" "Shell env added" 0 "file=${shell_config}"
     else
-        log_event "INFO" "shell" "environment_exists" "Shell env already present" 0 "file=${shell_config}"
+        if ! grep -Fq '[ -d "/opt/nvim-linux-x86_64/bin" ] && export PATH="/opt/nvim-linux-x86_64/bin:$PATH"' "${shell_config}" 2>/dev/null; then
+            if (( DRY_RUN == 1 )); then
+                dry_run_note "shell" "append the official Neovim x86_64 PATH precedence to ${shell_config}"
+            else
+                printf '\n[ -d "/opt/nvim-linux-x86_64/bin" ] && export PATH="/opt/nvim-linux-x86_64/bin:$PATH"\n' >> "${shell_config}"
+            fi
+            log_event "INFO" "shell" "nvim_path_added" "Added official Neovim PATH precedence to the existing shell environment" 0 "file=${shell_config}"
+        else
+            log_event "INFO" "shell" "environment_exists" "Shell env already present" 0 "file=${shell_config}"
+        fi
     fi
 }
 
@@ -3116,6 +3260,18 @@ quality_gates() {
     if is_selected pi; then
         require_command pi
         run_cmd "quality" --verify pi --no-extensions --version
+    fi
+    if is_selected claude-code; then
+        require_command claude
+        run_cmd "quality" --verify claude --version
+    fi
+    if is_selected lazyvim; then
+        require_command nvim
+        if (( LAZYVIM_CLONED == 1 )); then
+            run_cmd "quality" --verify nvim --headless "+Lazy! sync" +qa
+        else
+            run_cmd "quality" --verify nvim --version
+        fi
     fi
 
     if is_selected node || is_selected pi-workflows; then
@@ -3558,6 +3714,7 @@ uninstall_print_not_covered() {
         "${PI_AGENT_DIR}" "${DOTENV_DIR}"
     printf '  - cockpit .deb/.rpm installs and macOS brew --cask installs belong to their package manager; only the AppImage is catalogued.\n'
     printf '  - the opencode vendor installer shell-rc line belongs to the vendor, not this catalog.\n'
+    printf "  - Claude Code's vendor installer owns its native launcher and user configuration under %s; setup-ai never removes that auth/config state.\\n" "${HOME}/.claude"
     printf '  - %s/settings.json, %s/skills, %s/auth.json and %s/sessions are never removed.\n' \
         "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}"
 }

@@ -6,6 +6,7 @@ result.
 
 | Tool | binary | macOS | Linux | Windows |
 |---|---|---|---|---|
+| Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh | bash` | same | `irm https://claude.ai/install.ps1 | iex` (npm fallback) |
 | Antigravity | `agy` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | same | `irm https://antigravity.google/cli/install.ps1 \| iex` |
 | Codex | `codex` | `brew install --cask codex` | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` |
 | pi | `pi` | `curl -fsSL https://pi.dev/install.sh \| sh` | same | `irm https://pi.dev/install.ps1 \| iex` |
@@ -15,6 +16,7 @@ result.
 | opencode | `opencode` | `brew install anomalyco/tap/opencode` | `curl -fsSL https://opencode.ai/install \| bash` | `npm i -g opencode-ai` |
 | cockpit-tools *(opt-in GUI)* | app | `brew install --cask cockpit-tools` | `.deb`/`.rpm`/`.AppImage` | `.msi` |
 | tuxevil-rotator *(opt-in)* | `tuxevil-rotator` | `npm i -g tuxevil-rotator` | same | same |
+| LazyVim | Neovim config | clone `https://github.com/LazyVim/starter`, then `nvim --headless "+Lazy! sync" +qa` | x86_64 tarball + same headless sync; distro Neovim on other architectures | package Neovim + same headless sync |
 | Engineering Excellence | skill | `npx skills@latest add darkrei08/Engineering-Excellence --agent <agent>` | same | same |
 
 Back to the [README](../README.md) · Related: [modules](./modules.md).

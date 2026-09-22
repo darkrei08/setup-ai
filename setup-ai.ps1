@@ -107,6 +107,7 @@ if (-not $env:PI_PACKAGES_FILE) { $PiPackagesFile = "" } else { $PiPackagesFile 
 $PiWorkflowsRetryMarker = 'renameWithRetry'
 # Holds the resolved published workflow version for the module and its readbacks.
 $script:SetupAiWorkflowVersion = ''
+$script:LazyVimCloned = $false
 
 # npm 12 blocks a dependency's install scripts until that package is explicitly
 # approved; these are the ones the toolchain depends on. Declared once so the
@@ -537,8 +538,8 @@ function Invoke-RemoteScript {
 # child's console non-interactive, so the vendor script takes its documented
 # default instead of waiting on a keypress.
 function Invoke-RemoteScriptNoPrompt {
-    param([string]$Url, [string]$Phase)
-    Invoke-Step -Phase $Phase -Action {
+    param([string]$Url, [string]$Phase, [switch]$Optional)
+    Invoke-Step -Phase $Phase -Optional:$Optional -Action {
         $script = Invoke-RestMethod -Uri $Url -UseBasicParsing
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-remote-" + [guid]::NewGuid().ToString("N") + ".ps1")
         Set-Content -LiteralPath $tmp -Value $script -Encoding utf8
@@ -1017,13 +1018,14 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','pi-packages','go','ee','skills','pi-workflows','herdr','codex','antigravity','opencode','gentle-ai','cockpit','rotator')
+$ModuleOrder = @('base','node','bun','pi','dotenv','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','rotator')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
     'node'         = 'Node.js v22 + npm@latest (nvm on Unix, winget on Windows)'
     'bun'          = 'Bun runtime'
     'pi'           = 'pi.dev coding agent CLI'
+    'lazyvim'      = 'Neovim and LazyVim starter (headless sync)'
     'pi-packages'  = 'Extra Pi packages from a declarative manifest (pi-packages.txt)'
     'go'           = 'Go toolchain'
     'dotenv'       = 'darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)'
@@ -1031,6 +1033,7 @@ $ModuleDesc = [ordered]@{
     'skills'       = 'Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add'
     'pi-workflows' = 'pi-extensible-workflows (published release + npm 12 remote sources for pi installs)'
     'herdr'        = 'herdr terminal multiplexer'
+    'claude-code'  = 'Anthropic Claude Code CLI'
     'gentle-ai'    = 'gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi'
     'codex'        = 'OpenAI Codex CLI'
     'antigravity'  = 'Google Antigravity CLI (agy)'
@@ -1171,6 +1174,51 @@ function Mod-Go {
 
 function Mod-Dotenv {
     Write-Log WARN "dotenv" "skipped_non_linux" "dotenv/setup_env.sh targets Linux package managers; skipped on Windows"
+}
+
+function Mod-LazyVim {
+    Write-Log INFO "lazyvim" "start" "Neovim + LazyVim"
+    if (-not (Test-Cmd nvim)) {
+        Install-Winget -Id "Neovim.Neovim" -Phase "lazyvim"
+        Update-SessionPath
+    }
+    if (-not (Test-Cmd nvim)) { throw "nvim not found after winget install; lazyvim cannot be installed" }
+    if (-not (Test-Cmd git)) { throw "git not found; lazyvim cannot be installed" }
+    $configRoot = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME "nvim" } else { Join-Path $env:LOCALAPPDATA "nvim" }
+    if (Test-Path -LiteralPath $configRoot -PathType Container) {
+        Write-Log INFO "lazyvim" "config_present" "Preserving the existing Neovim configuration" 0 "path=$configRoot"
+        return
+    }
+    $stagedConfig = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-nvim-" + [guid]::NewGuid().ToString("N"))
+    try {
+        Invoke-Step -Phase "lazyvim" -Action { git clone --depth=1 https://github.com/LazyVim/starter $stagedConfig }
+        Invoke-Step -Phase "lazyvim" -Action { Remove-Item -LiteralPath (Join-Path $stagedConfig ".git") -Recurse -Force }
+        Invoke-Step -Phase "lazyvim" -Action {
+            $previousAppName = $env:NVIM_APPNAME
+            $previousConfigHome = $env:XDG_CONFIG_HOME
+            $env:NVIM_APPNAME = Split-Path -Leaf $stagedConfig
+            $env:XDG_CONFIG_HOME = Split-Path -Parent $stagedConfig
+            try { nvim --headless "+Lazy! sync" +qa } finally {
+                $env:NVIM_APPNAME = $previousAppName
+                $env:XDG_CONFIG_HOME = $previousConfigHome
+            }
+        }
+        Invoke-Step -Phase "lazyvim" -Action { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $configRoot) | Out-Null }
+        Invoke-Step -Phase "lazyvim" -Action { Move-Item -LiteralPath $stagedConfig -Destination $configRoot }
+    } finally {
+        if (Test-Path -LiteralPath $stagedConfig) {
+            try {
+                Remove-Item -LiteralPath $stagedConfig -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-Log WARN "lazyvim" "cleanup_failed" "Could not remove temporary LazyVim staging directory: $($_.Exception.Message)"
+            }
+        }
+    }
+    $script:LazyVimCloned = $true
+    if (-not (Test-Path -LiteralPath $configRoot -PathType Container)) {
+        throw "LazyVim configuration was not created at $configRoot"
+    }
+    Write-Log INFO "lazyvim" "config_verified" "LazyVim starter cloned and synchronized headlessly" 0 "path=$configRoot"
 }
 
 function Mod-Ee {
@@ -1340,6 +1388,36 @@ function Mod-Herdr {
         Write-Log ERROR "herdr" "install_missing" "herdr not found on PATH after remote installer"
         throw "herdr not found on PATH after remote installer"
     }
+}
+
+function Mod-ClaudeCode {
+    Write-Log INFO "claude-code" "start" "Claude Code CLI"
+    if (-not (Test-Cmd claude)) {
+        $vendorInstalled = $false
+        try {
+            $vendorStepOk = Invoke-RemoteScriptNoPrompt -Url "https://claude.ai/install.ps1" -Phase "claude-code" -Optional
+            Update-SessionPath
+            $vendorInstalled = $vendorStepOk -and (Test-Cmd claude)
+        } catch {
+            Write-Log WARN "claude-code" "vendor_installer_failed" "Claude Code vendor installer failed; trying npm fallback" 0 "error=$($_.Exception.Message)"
+        }
+        if (-not $vendorInstalled) {
+            if (-not (Test-Cmd npm)) { throw "claude not found after vendor installer and npm is unavailable" }
+            $allowScripts = @()
+            if (Test-NpmInstallScriptsSupport -Phase "claude-code") {
+                $allowScripts = @('--allow-scripts=@anthropic-ai/claude-code')
+            }
+            Invoke-Step -Phase "claude-code" -Action { npm install -g @anthropic-ai/claude-code @allowScripts }
+            Update-SessionPath
+        }
+        if (-not (Test-Cmd claude)) {
+            Write-Log ERROR "claude-code" "install_missing" "claude not found on PATH after vendor installer and npm fallback"
+            throw "claude not found on PATH after vendor installer and npm fallback"
+        }
+    } else {
+        Write-Log INFO "claude-code" "already_present" "Claude Code already installed"
+    }
+    Invoke-Step -Phase "claude-code" -Verify -Action { claude --version }
 }
 
 # An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
@@ -2186,9 +2264,9 @@ function Mod-Rotator {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
-    'pi' = ${function:Mod-Pi}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'ee' = ${function:Mod-Ee}
+    'pi' = ${function:Mod-Pi}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
-    'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}
+    'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
     'gentle-ai' = ${function:Mod-GentleAi}
     'codex' = ${function:Mod-Codex}; 'antigravity' = ${function:Mod-Antigravity}
     'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}; 'rotator' = ${function:Mod-Rotator}
@@ -2264,6 +2342,18 @@ function Invoke-QualityGates {
     if ($Selected -contains 'pi') {
         if (-not (Test-Cmd pi)) { throw "pi quality gate could not find pi" }
         Invoke-Step -Phase "quality" -Verify -Action { pi --no-extensions --version }
+    }
+    if ($Selected -contains 'claude-code') {
+        if (-not (Test-Cmd claude)) { throw "claude-code quality gate could not find claude" }
+        Invoke-Step -Phase "quality" -Verify -Action { claude --version }
+    }
+    if ($Selected -contains 'lazyvim') {
+        if (-not (Test-Cmd nvim)) { throw "lazyvim quality gate could not find nvim" }
+        if ($script:LazyVimCloned) {
+            Invoke-Step -Phase "quality" -Verify -Action { nvim --headless "+Lazy! sync" +qa }
+        } else {
+            Invoke-Step -Phase "quality" -Verify -Action { nvim --version }
+        }
     }
     if ($Selected -contains 'pi-workflows') {
         $workflowPkg = Join-Path $PiExtDir "node_modules/pi-extensible-workflows/package.json"
