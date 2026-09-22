@@ -36,8 +36,5 @@ for (const needle of [
 ]) {
   if (!ps.includes(needle)) throw new Error(`PowerShell missing ${needle}`);
 }
-if (ps.includes('ai-memory') || mjs.includes('ai-memory')) {
-  throw new Error('unrelated ai-memory module leaked into the issue branch');
-}
 console.log(`PASS: ${bashModules.length} module entries match across Bash, PowerShell, and Node`);
 NODE

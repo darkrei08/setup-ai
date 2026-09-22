@@ -11,6 +11,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).
 
+## [3.6.6] - 2026-09-22
+
+### Added
+
+- Added the `ai-memory` module for the `ai-memory-kit` CLI and templates.
+
+### Changed
+
+- Updated LazyVim to install the official Neovim x86_64 tarball and aligned agent installation updates across platforms.
+
+### Fixed
+
+- Repaired stale `@juicesharp/rpiv-ask-user-question` registrations that conflict with `gentle-pi`, while preserving valid neighboring settings.
+
 ## [3.6.5] - 2026-09-19
 
 ### Fixed
