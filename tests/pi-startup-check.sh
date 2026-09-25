@@ -413,6 +413,27 @@ check_startup_skip() {
     [[ "${rc}" -eq 0 ]] && grep -Fq 'pi_startup_skipped' "${HUMAN_LOG}"
 }
 
+check_ai_memory_uninstall_owned_paths() {
+    local uninstall_home="${TEST_DIR}/ai-memory-home"
+    local aimem_prefix="${uninstall_home}/.local"
+    local aimem_bin="${aimem_prefix}/bin/aimem"
+    local aimem_share="${aimem_prefix}/share/ai-memory-kit"
+    local neighbor="${aimem_prefix}/share/keep-me.txt"
+    local log_file="${TEST_DIR}/ai-memory-uninstall.log"
+    local rc=0
+
+    mkdir -p "${aimem_prefix}/bin" "${aimem_share}"
+    : > "${aimem_bin}"
+    printf '%s\n' 'keep this unrelated neighbor' > "${neighbor}"
+    HOME="${uninstall_home}" AIMEM_PREFIX="${aimem_prefix}" \
+        bash "${SETUP_AI_SH}" --uninstall --yes --only ai-memory > "${log_file}" 2>&1 || rc=$?
+
+    [[ "${rc}" -eq 0 ]] \
+        && [[ ! -e "${aimem_bin}" && ! -L "${aimem_bin}" ]] \
+        && [[ ! -e "${aimem_share}" && ! -L "${aimem_share}" ]] \
+        && grep -Fqx 'keep this unrelated neighbor' "${neighbor}"
+}
+
 check "Bash module calls startup verification after repair and propagates failure" check_bash_wiring
 check "Both installers resolve PI_CODING_AGENT_DIR" check_effective_agent_dir
 check "PowerShell calls startup verification after repair and throws on failure" check_powershell_wiring
@@ -427,6 +448,7 @@ check "Successful pi startup is logged and output reaches HUMAN_LOG" check_start
 check "Failed pi startup logs the first diagnostic, log path, and settings path" check_startup_failure_diagnostic
 check "Startup timeout returns 124 within the bounded window" check_startup_timeout
 check "Missing pi is skipped with INFO" check_startup_skip
+check "ai-memory uninstall removes only its owned paths" check_ai_memory_uninstall_owned_paths
 
 if (( failures > 0 )); then
     printf '%d acceptance check(s) failed\n' "${failures}" >&2

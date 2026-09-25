@@ -5,7 +5,8 @@ Cross-OS installer for an AI coding toolchain. One command bootstraps
 [Codex](https://github.com/openai/codex), [Antigravity](https://antigravity.google),
 [opencode](https://opencode.ai), [herdr](https://herdr.dev),
 [gentle-ai](https://github.com/Gentleman-Programming/gentle-ai), the
-[darkrei08/dotenv](https://github.com/darkrei08/dotenv) dotfiles, and the
+[darkrei08/dotenv](https://github.com/darkrei08/dotenv) dotfiles,
+[ai-memory-kit](https://github.com/darkrei08/ai-memory-kit), and the
 [Engineering Excellence](https://github.com/darkrei08/Engineering-Excellence)
 skill — each via its **official, current** method for your OS.
 
