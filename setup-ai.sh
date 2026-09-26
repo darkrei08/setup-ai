@@ -1184,98 +1184,193 @@ assert_transient_rename_retry() {
 # recognised as the workflow package the pi-workflows module owns. Identity
 # comparisons for the readback check live in the Node/PowerShell helper.
 pi_package_id() {
-    local spec="$1"
-    case "${spec}" in
-        npm:*) spec="${spec#npm:}" ;;
-        git:*) spec="${spec#git:}" ;;
-    esac
-    spec="${spec%%#*}"
-    spec="${spec%.git}"
-    # Strip a trailing @ref/@version, but keep a leading @scope.
-    if [[ "${spec}" == *@* && "${spec%@*}" == *[!/] ]]; then
-        spec="${spec%@*}"
-    fi
-    printf '%s' "${spec##*/}"
+    pi_package_identity "$1"
 }
 
-# Prove pi recorded a package by reading back pi's own registry, not by trusting
-# the install command we just ran.
-assert_pi_package_registered() {
-    local phase="$1" spec="$2"
-    local settings="${PI_AGENT_DIR}/settings.json"
-
-    # A read-back that proves `pi install` recorded the package. In a dry run that
-    # install never ran, so the check is reported instead of ending the module's plan.
-    if (( DRY_RUN == 1 )); then
-        log_event "INFO" "${phase}" "dry_run_skipped" \
-            "pi package read-back needs an installed state; a dry run does not verify it" 0 \
-            "spec=${spec}"
-        return 0
-    fi
-
-    if [[ ! -f "${settings}" ]]; then
-        log_event "ERROR" "${phase}" "settings_missing" \
-            "pi settings.json not found; cannot verify installed packages" 1 "path=${settings}"
-        return 1
-    fi
-    local rc=0
+# All registration checks share Pi's normalized package identity. A malformed
+# registry or entry is unknown, never evidence that an identity was absent.
+pi_package_node() {
     node -e '
+        const crypto = require("node:crypto");
         const fs = require("node:fs");
-        let settings;
-        try {
-            settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-        } catch {
-            // An unreadable or malformed registry cannot prove the registration: fail closed.
-            process.exit(2);
-        }
+        const os = require("node:os");
         const path = require("node:path");
-        // Identity keeps scope and owner: comparing basenames made @scope/pkg match pkg,
-        // and two repos with the same name match each other. Local paths resolve against
-        // the base dir of the registry, because pi records them relative to the agent dir.
+        const mode = process.argv[1];
+        const normalizedPath = value => {
+            const full = path.resolve(value);
+            return process.platform === "win32" ? full.toLowerCase() : full;
+        };
         const identity = (source, baseDir) => {
-            let spec = String(source).trim();
+            if (typeof source !== "string" || !source.trim()) throw new Error("invalid package source");
+            let spec = source.trim();
             if (spec.startsWith("npm:")) {
                 spec = spec.slice(4);
                 const at = spec.lastIndexOf("@");
                 if (at > 0) spec = spec.slice(0, at);
-                return "npm:" + spec;
+                if (!spec) throw new Error("invalid npm package source");
+                return "npm:" + spec.toLowerCase();
             }
             if (spec.startsWith("git:")) {
-                spec = spec.split("#")[0].replace(/\.git$/, "");
+                spec = spec.slice(4).split("#")[0];
                 const at = spec.lastIndexOf("@");
                 if (at > 0) spec = spec.slice(0, at);
-                return "git:" + spec;
+                spec = spec.replace(/\.git$/, "");
+                if (!spec) throw new Error("invalid git package source");
+                return "git:" + spec.toLowerCase();
             }
-            // A leading ~ means the user profile, not a directory named "~" under
-            // the agent dir, and the shell cannot expand it inside a quoted argument.
             if (spec === "~" || spec.startsWith("~/") || spec.startsWith("~\\")) {
-                spec = path.join(process.env.HOME || require("node:os").homedir(), spec.slice(1).replace(/^[\\/]+/, ""));
+                spec = path.join(process.env.HOME || os.homedir(), spec.slice(1).replace(/^[\\/]+/, ""));
             }
-            const resolved = path.resolve(baseDir, spec);
-            return "local:" + (process.platform === "win32" ? resolved.toLowerCase() : resolved);
+            return "local:" + normalizedPath(path.resolve(baseDir, spec));
         };
-        const baseDir = path.dirname(process.argv[1]);
-        const packages = settings.packages ?? [];
-        // Resolve a local want exactly as the recorded entries are resolved:
-        // against the agent dir, where pi records them, never the caller cwd.
-        const want = identity(process.argv[2], baseDir);
-        const found = packages.some((entry) => identity(typeof entry === "string" ? entry : entry?.source, baseDir) === want);
-        process.exit(found ? 0 : 1);
-    ' "${settings}" "${spec}" || rc=$?
-    if (( rc == 2 )); then
-        log_event "ERROR" "${phase}" "settings_unreadable" \
-            "pi settings.json could not be parsed; cannot prove the package state" 1 "path=${settings}"
+        const fail = () => process.exit(2);
+        try {
+            if (mode === "identity") {
+                console.log(identity(process.argv[2], process.argv[3]));
+            } else if (mode === "digest") {
+                console.log(crypto.createHash("sha256").update(process.argv[2]).digest("hex"));
+            } else if (mode === "receipt-json") {
+                const [id, spec, agentDir] = process.argv.slice(2);
+                process.stdout.write(JSON.stringify({ schemaVersion: 1, identity: id, spec, agentDir: normalizedPath(agentDir) }));
+            } else if (mode === "receipt-spec") {
+                const [receiptPath, id, agentDir] = process.argv.slice(2);
+                const receipt = JSON.parse(fs.readFileSync(receiptPath, "utf8"));
+                if (receipt.schemaVersion !== 1 || receipt.identity !== id || typeof receipt.spec !== "string" ||
+                    identity(receipt.spec, agentDir) !== id || receipt.agentDir !== normalizedPath(agentDir)) fail();
+                else process.stdout.write(receipt.spec);
+            } else if (mode === "count") {
+                const [settingsPath, spec] = process.argv.slice(2);
+                let raw;
+                try { raw = fs.readFileSync(settingsPath, "utf8"); }
+                catch (error) { if (error.code === "ENOENT") { console.log("0"); process.exit(0); } throw error; }
+                const settings = JSON.parse(raw);
+                if (!settings || typeof settings !== "object" || Array.isArray(settings)) fail();
+                const packages = settings.packages === undefined ? [] : settings.packages;
+                if (!Array.isArray(packages)) fail();
+                const baseDir = path.dirname(settingsPath), wanted = identity(spec, baseDir);
+                let count = 0;
+                for (const entry of packages) {
+                    const source = typeof entry === "string" ? entry :
+                        entry && typeof entry === "object" && !Array.isArray(entry) ? entry.source : null;
+                    if (typeof source !== "string") fail();
+                    if (identity(source, baseDir) === wanted) count++;
+                }
+                console.log(String(count));
+            } else fail();
+        } catch { fail(); }
+    ' "$@"
+}
+
+pi_package_identity() {
+    pi_package_node identity "$1" "${PI_AGENT_DIR}"
+}
+
+pi_package_registration_count() {
+    pi_package_node count "${PI_AGENT_DIR}/settings.json" "$1"
+}
+
+pi_package_receipt_path() {
+    local identity digest state_root="${XDG_STATE_HOME:-${HOME}/.local/state}"
+    identity="$(pi_package_identity "$1")" || return 1
+    digest="$(pi_package_node digest "${identity}")" || return 1
+    printf '%s/setup-ai/ownership/pi-packages/%s.json' "${state_root}" "${digest}"
+}
+
+pi_package_receipt_location_safe() {
+    local path="$1" state_root="${XDG_STATE_HOME:-${HOME}/.local/state}" dir
+    [[ "${state_root}" == /* ]] || return 1
+    for dir in "${state_root}" "${state_root}/setup-ai" "${state_root}/setup-ai/ownership" "${state_root}/setup-ai/ownership/pi-packages"; do
+        [[ ! -L "${dir}" && ( ! -e "${dir}" || -d "${dir}" ) ]] || return 1
+    done
+    [[ ! -L "${path}" && ( ! -e "${path}" || -f "${path}" ) ]]
+}
+
+pi_package_receipt_status() {
+    local spec="$1" path identity stored
+    path="$(pi_package_receipt_path "${spec}")" || { printf 'unsafe'; return 0; }
+    pi_package_receipt_location_safe "${path}" || { printf 'unsafe'; return 0; }
+    [[ -e "${path}" || -L "${path}" ]] || { printf 'missing'; return 0; }
+    [[ -f "${path}" && ! -L "${path}" ]] || { printf 'invalid'; return 0; }
+    identity="$(pi_package_identity "${spec}")" || { printf 'invalid'; return 0; }
+    if stored="$(pi_package_node receipt-spec "${path}" "${identity}" "${PI_AGENT_DIR}" 2>/dev/null)"; then
+        printf 'valid\n%s' "${stored}"
+    else
+        printf 'invalid'
+    fi
+}
+
+write_pi_package_receipt() {
+    local phase="$1" spec="$2" identity path dir temp json
+    identity="$(pi_package_identity "${spec}")" || return 1
+    path="$(pi_package_receipt_path "${spec}")" || return 1
+    dir="$(dirname -- "${path}")"
+    if ! pi_package_receipt_location_safe "${path}"; then
+        log_event "ERROR" "${phase}" "pi_receipt_path_unsafe" "Pi ownership receipt path is not safe" 1 "path=${path}"
         return 1
     fi
-    if (( rc == 0 )); then
-        log_event "INFO" "${phase}" "package_registered" \
-            "pi registered the package" 0 "spec=${spec}"
+    if ! mkdir -p -- "${dir}" || ! pi_package_receipt_location_safe "${path}"; then
+        log_event "ERROR" "${phase}" "pi_receipt_path_unavailable" "Could not prepare the Pi ownership receipt directory" 1 "path=${dir}"
+        return 1
+    fi
+    if [[ -e "${path}" || -L "${path}" ]]; then
+        log_event "ERROR" "${phase}" "pi_receipt_exists" "Pi ownership receipt already exists; preserving it and leaving the registration in place" 1 "path=${path}"
+        return 1
+    fi
+    temp="$(mktemp "${dir}/.pi-registration.XXXXXX")" || return 1
+    if ! json="$(pi_package_node receipt-json "${identity}" "${spec}" "${PI_AGENT_DIR}")" \
+        || ! printf '%s' "${json}" >"${temp}" \
+        || ! ln -- "${temp}" "${path}"; then
+        rm -f -- "${temp}"
+        log_event "ERROR" "${phase}" "pi_receipt_publish_failed" "Could not publish the Pi ownership receipt atomically without overwriting" 1 "path=${path}"
+        return 1
+    fi
+    rm -f -- "${temp}" || return 1
+    if [[ ! -f "${path}" || -L "${path}" ]] \
+        || [[ "$(pi_package_receipt_status "${spec}")" != valid$'\n'"${spec}" ]]; then
+        log_event "ERROR" "${phase}" "pi_receipt_verify_failed" "Published Pi ownership receipt did not validate" 1 "path=${path}"
+        return 1
+    fi
+}
+
+# Prove exactly one current registration by reading back Pi's own registry.
+assert_pi_package_registered() {
+    local phase="$1" spec="$2" count
+    if (( DRY_RUN == 1 )); then
+        log_event "INFO" "${phase}" "dry_run_skipped" "pi package read-back needs an installed state; a dry run does not verify it" 0 "spec=${spec}"
         return 0
     fi
-    log_event "ERROR" "${phase}" "package_not_registered" \
-        "pi did not register the package in settings.json" 1 \
-        "spec=${spec};settings=${settings}"
+    if ! count="$(pi_package_registration_count "${spec}")"; then
+        log_event "ERROR" "${phase}" "settings_unreadable" "pi settings.json could not be read unambiguously" 1 "path=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+    if [[ "${count}" == 1 ]]; then
+        log_event "INFO" "${phase}" "package_registered" "pi registered the exact package identity" 0 "spec=${spec}"
+        return 0
+    fi
+    local event=package_not_registered message="pi did not register exactly one matching package identity"
+    if [[ "${count}" -gt 1 ]]; then event=package_duplicate; message="pi settings contain duplicate matching package identities"; fi
+    log_event "ERROR" "${phase}" "${event}" "${message}" 1 "spec=${spec};settings=${PI_AGENT_DIR}/settings.json;count=${count}"
     return 1
+}
+
+# Own only a fresh registration proven both before and after this exact install.
+install_pi_package_owned() {
+    local phase="$1" spec="$2" before after
+    if (( DRY_RUN == 1 )); then
+        run_cmd "${phase}" pi install "${spec}"
+        return $?
+    fi
+    if ! before="$(pi_package_registration_count "${spec}")"; then
+        log_event "ERROR" "${phase}" "settings_unreadable" "Cannot prove the Pi package identity was absent before install" 1 "settings=${PI_AGENT_DIR}/settings.json;spec=${spec}"
+        return 1
+    fi
+    run_cmd "${phase}" pi install "${spec}" || return 1
+    assert_pi_package_registered "${phase}" "${spec}" || return 1
+    if [[ "${before}" == 0 ]]; then
+        write_pi_package_receipt "${phase}" "${spec}" || return 1
+    fi
+    after="$(pi_package_registration_count "${spec}")" || return 1
+    [[ "${after}" == 1 ]]
 }
 
 # Resolve the Pi package manifest. Order: explicit override, then the Pi config
@@ -1894,15 +1989,7 @@ mod_pi_workflows() {
     }
     log_event "INFO" "pi-workflows" "version_selected" "Workflow version selected" 0 "version=${PI_WORKFLOW_VERSION}"
 
-    run_cmd "pi-workflows" pi install "npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
-    # Prove what pi recorded instead of trusting the command's exit code: the parity rule
-    # here is the same readback the PowerShell sibling performs right after its install.
-    if ! assert_pi_package_registered "pi-workflows" "npm:pi-extensible-workflows"; then
-        log_event "ERROR" "pi-workflows" "published_package_not_registered" \
-            "pi did not register the published workflow package" 1 \
-            "version=${PI_WORKFLOW_VERSION}"
-        return 1
-    fi
+    install_pi_package_owned "pi-workflows" "npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}" || return 1
 
     if (( DRY_RUN == 1 )); then
         dry_run_note "pi-workflows" "${PI_EXTENSIONS_DIR}"
@@ -2030,8 +2117,7 @@ mod_pi_packages() {
             continue
         fi
 
-        run_cmd "pi-packages" pi install "${line}" || return 1
-        assert_pi_package_registered "pi-packages" "${line}" || return 1
+        install_pi_package_owned "pi-packages" "${line}" || return 1
         installed=$(( installed + 1 ))
     done < "${manifest}"
 
@@ -2712,7 +2798,7 @@ mod_gentle_ai() {
     # gentle-pi harness and the pi-mcp-adapter bridge, then verify the exact
     # target (pi's own settings file), not a walked resolution.
     if command -v pi >/dev/null 2>&1; then
-        run_cmd "gentle-ai" pi install npm:gentle-pi
+        install_pi_package_owned "gentle-ai" npm:gentle-pi || return 1
         # Ensure the project marker exists even for --only gentle-ai before the
         # npm 12 approval/rebuild check (issue #49).
         ensure_npm_remote_sources "${PI_NPM_DIR}"
@@ -2720,11 +2806,10 @@ mod_gentle_ai() {
         # managed Pi root, so its package-local RDD review binary exists even if a
         # later module fails before the final convergence pass runs.
         approve_npm_install_scripts "${PI_NPM_DIR}" "gentle-ai"
-        run_cmd "gentle-ai" pi install npm:pi-mcp-adapter
+        install_pi_package_owned "gentle-ai" npm:pi-mcp-adapter || return 1
         local pi_settings="${PI_AGENT_DIR}/settings.json"
-        if [[ -f "${pi_settings}" ]] \
-            && grep -q '"npm:gentle-pi"' "${pi_settings}" \
-            && grep -q '"npm:pi-mcp-adapter"' "${pi_settings}"; then
+        if assert_pi_package_registered "gentle-ai" npm:gentle-pi \
+            && assert_pi_package_registered "gentle-ai" npm:pi-mcp-adapter; then
             log_event "INFO" "gentle-ai" "pi_enabled" \
                 "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)" 0
         else
@@ -3043,6 +3128,101 @@ mod_cockpit() {
 
 # --- rotator (opt-in: tuxevil-rotator multi-account gateway) -----------------
 
+rotator_npm_receipt_location_safe() {
+    local receipt_dir="$1" receipt_path="$2"
+    rotator_systemd_dirs_safe create "${receipt_dir}" || return 1
+    [[ ! -L "${receipt_path}" && ( ! -e "${receipt_path}" || -f "${receipt_path}" ) ]]
+}
+
+install_rotator_npm_package() {
+    local npm_root_before="" npm_root_after="" package_dir package_json marker_path marker_token receipt_dir receipt_path receipt_json pre_existing=1
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "rotator" "npm install --global tuxevil-rotator and verify its global package metadata"
+        return 0
+    fi
+
+    if command -v npm >/dev/null 2>&1 && npm_root_before="$(npm root -g 2>/dev/null)" && [[ -n "${npm_root_before}" ]]; then
+        package_dir="${npm_root_before%/}/tuxevil-rotator"
+    else
+        npm_root_before=""
+        package_dir=""
+    fi
+    if [[ -n "${package_dir}" && -d "${npm_root_before}" && -r "${npm_root_before}" && -x "${npm_root_before}" ]]; then
+        if [[ -e "${package_dir}" || -L "${package_dir}" ]]; then
+            pre_existing=1
+        else
+            pre_existing=0
+        fi
+    fi
+    run_cmd "rotator" npm install --global tuxevil-rotator
+    require_command tuxevil-rotator
+
+    # Only this run's verified package may receive an ownership receipt.
+    if [[ -z "${npm_root_before}" ]] || (( pre_existing == 1 )); then
+        log_event "WARN" "rotator" "ownership_receipt_skipped" \
+            "Could not prove this run installed a previously absent global package" 0
+        return 0
+    fi
+    if ! npm_root_after="$(npm root -g 2>/dev/null)" || [[ "${npm_root_after}" != "${npm_root_before}" ]]; then
+        log_event "WARN" "rotator" "ownership_receipt_skipped" \
+            "Global npm root changed or could not be verified after installation" 0
+        return 0
+    fi
+
+    package_json="${npm_root_after%/}/tuxevil-rotator/package.json"
+    if [[ ! -f "${package_json}" ]] || ! receipt_json="$(node -e 'const fs=require("node:fs"),path=require("node:path"),p=process.argv[1];const d=fs.lstatSync(path.dirname(p)),s=fs.lstatSync(p);if(!d.isDirectory()||d.isSymbolicLink()||!s.isFile()||s.isSymbolicLink())process.exit(1);const m=JSON.parse(fs.readFileSync(p,"utf8"));if(m.name!=="tuxevil-rotator"||typeof m.version!=="string"||!m.version.trim())process.exit(1);process.stdout.write(JSON.stringify({schemaVersion:2,package:m.name,npmRoot:process.argv[2],packagePath:process.argv[3],version:m.version}));' "${package_json}" "${npm_root_after}" "${package_json}")"; then
+        log_event "WARN" "rotator" "ownership_receipt_skipped" \
+            "Installed package metadata could not be verified at the exact global npm root" 0 \
+            "package=${package_json}"
+        return 0
+    fi
+
+    receipt_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai/ownership"
+    receipt_path="${receipt_dir}/rotator-npm.json"
+    if ! rotator_npm_receipt_location_safe "${receipt_dir}" "${receipt_path}"; then
+        log_event "WARN" "rotator" "ownership_receipt_skipped" \
+            "The package ownership receipt path is unsafe or unavailable" 0 "path=${receipt_path}"
+        return 0
+    fi
+
+    marker_path="${npm_root_after%/}/tuxevil-rotator/.setup-ai-ownership"
+    if ! marker_token="$(node -e '
+        const fs=require("node:fs"), crypto=require("node:crypto"), path=require("node:path"), markerPath=process.argv[1];
+        let fd;
+        try {
+            const dirStat=fs.lstatSync(path.dirname(markerPath)), packageStat=fs.lstatSync(path.join(path.dirname(markerPath),"package.json"));
+            if(!dirStat.isDirectory()||dirStat.isSymbolicLink()||!packageStat.isFile()||packageStat.isSymbolicLink())process.exit(1);
+            const token=crypto.randomUUID().replaceAll("-","");
+            fd=fs.openSync(markerPath,"wx",0o600); fs.writeFileSync(fd,token); fs.fsyncSync(fd); fs.closeSync(fd); fd=undefined;
+            if(fs.readFileSync(markerPath,"utf8")!==token)process.exit(1);
+            process.stdout.write(token);
+        } catch {
+            if(fd!==undefined){try{fs.closeSync(fd)}catch{};try{fs.unlinkSync(markerPath)}catch{}}
+            process.exit(1);
+        }
+    ' "${marker_path}")"; then
+        log_event "WARN" "rotator" "ownership_receipt_skipped" \
+            "Could not create and verify a unique package ownership marker" 0 "path=${marker_path}"
+        return 0
+    fi
+    receipt_json="$(node -e 'const r=JSON.parse(process.argv[1]);r.marker=process.argv[2];process.stdout.write(JSON.stringify(r));' "${receipt_json}" "${marker_token}")"
+
+    if ( umask 077; set -o noclobber; printf '%s\n' "${receipt_json}" > "${receipt_path}" ) 2>/dev/null \
+        && [[ -f "${receipt_path}" && ! -L "${receipt_path}" ]] \
+        && [[ "$(cat -- "${receipt_path}")" == "${receipt_json}" ]]; then
+        log_event "INFO" "rotator" "ownership_receipt_written" \
+            "Verified fresh global package ownership recorded" 0 "package=${package_json}"
+    else
+        if [[ -f "${marker_path}" && ! -L "${marker_path}" ]] \
+            && [[ "$(cat -- "${marker_path}" 2>/dev/null)" == "${marker_token}" ]]; then
+            rm -f -- "${marker_path}" || log_event "ERROR" "rotator" "ownership_marker_cleanup_failed" \
+                "Could not remove the marker after receipt publication failed" 1 "path=${marker_path}"
+        fi
+        log_event "WARN" "rotator" "ownership_receipt_skipped" \
+            "Could not publish and verify the package ownership receipt; the package remains unowned" 0 "path=${receipt_path}"
+    fi
+}
+
 # Register the gateway with the machine's own autostart so it survives a reboot: a
 # systemd --user unit where the machine has one, and nothing anywhere else (macOS and
 # containers fall back to the detached start below). Enabling without --now is
@@ -3055,12 +3235,105 @@ mod_cockpit() {
 # installing a unit nobody can start is worse than failing loudly.
 # The unit bounds its own restart loop: while no account is logged in the gateway
 # exits at once, and Restart=on-failure would respawn it every 5s forever.
+rotator_systemd_unit_path() {
+    printf '%s/systemd/user/tuxevil-rotator.service\n' "${XDG_CONFIG_HOME:-${HOME}/.config}"
+}
+
+rotator_systemd_receipt_path() {
+    printf '%s/setup-ai/ownership/rotator-systemd.json\n' "${XDG_STATE_HOME:-${HOME}/.local/state}"
+}
+
+rotator_systemd_dirs_safe() {
+    node -e '
+        const fs=require("node:fs"),path=require("node:path");
+        const paths=process.argv.slice(2),create=process.argv[1]==="create";
+        function parts(p){if(!path.isAbsolute(p)||path.resolve(p)!==p)throw Error("unsafe path");return [path.parse(p).root,...p.slice(path.parse(p).root.length).split(path.sep).filter(Boolean)];}
+        function check(p,make){let current=parts(p)[0];for(const part of parts(p).slice(1)){current=path.join(current,part);try{const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error("unsafe directory");}catch(e){if(e.code!=="ENOENT")throw e;if(!make)return;fs.mkdirSync(current,{mode:0o700});const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error("unsafe directory");}}}
+        try{for(const p of paths)check(p,false);if(create)for(const p of paths)check(p,true);}catch{process.exit(1);}
+    ' "$@"
+}
+
+rotator_systemd_path_state() {
+    node -e '
+        const fs=require("node:fs"),path=require("node:path"),p=process.argv[1];
+        try{if(!path.isAbsolute(p)||path.resolve(p)!==p)process.exit(2);let current=path.parse(p).root;for(const part of path.dirname(p).slice(current.length).split(path.sep).filter(Boolean)){current=path.join(current,part);try{const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())process.exit(2);}catch(e){if(e.code==="ENOENT"){process.stdout.write("absent");process.exit(0);}throw e;}}try{fs.lstatSync(p);process.stdout.write("present");}catch(e){if(e.code==="ENOENT")process.stdout.write("absent");else throw e;}}catch{process.exit(2);}
+    ' "${1}"
+}
+
+rotator_systemd_receipt_check() {
+    node -e '
+        const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
+        const mode=process.argv[1],receiptPath=process.argv[2],unitPath=process.argv[3];
+        function safeParents(p){if(!path.isAbsolute(p)||path.resolve(p)!==p)throw Error("unsafe path");let current=path.parse(p).root;for(const part of path.dirname(p).slice(current.length).split(path.sep).filter(Boolean)){current=path.join(current,part);const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error("unsafe parent");}}
+        try{
+            safeParents(receiptPath);safeParents(unitPath);
+            const rs=fs.lstatSync(receiptPath);if(!rs.isFile()||rs.isSymbolicLink()||rs.nlink!==1)process.exit(1);
+            const r=JSON.parse(fs.readFileSync(receiptPath,"utf8"));
+            if(!r||Object.keys(r).sort().join(",")!=="fingerprint,schemaVersion,unitPath"||r.schemaVersion!==1||r.unitPath!==unitPath||! /^[0-9a-f]{64}$/.test(r.fingerprint))process.exit(1);
+            if(mode==="metadata")process.exit(0);
+            const us=fs.lstatSync(unitPath);if(!us.isFile()||us.isSymbolicLink()||us.nlink!==1)process.exit(1);
+            const digest=crypto.createHash("sha256").update(fs.readFileSync(unitPath)).digest("hex");
+            if(digest!==r.fingerprint)process.exit(1);
+        }catch{process.exit(1);}
+    ' "$@"
+}
+
+rotator_systemd_create_unit() {
+    node -e '
+        const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
+        const target=process.argv[1],data=Buffer.from(process.argv[2]+"\n");let fd,created;
+        function safeParents(p){let current=path.parse(p).root;for(const part of path.dirname(p).slice(current.length).split(path.sep).filter(Boolean)){current=path.join(current,part);const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error("unsafe parent");}}
+        function removeOwn(){try{const s=fs.lstatSync(target);if(s.isFile()&&!s.isSymbolicLink()&&s.dev===created.dev&&s.ino===created.ino&&fs.readFileSync(target).equals(data))fs.unlinkSync(target);}catch{}}
+        try{if(!path.isAbsolute(target)||path.resolve(target)!==target)throw Error("unsafe path");safeParents(target);fd=fs.openSync(target,"wx",0o644);created=fs.fstatSync(fd);fs.writeFileSync(fd,data);fs.fsyncSync(fd);const s=fs.fstatSync(fd);fs.closeSync(fd);fd=undefined;const onDisk=fs.lstatSync(target);if(!onDisk.isFile()||onDisk.isSymbolicLink()||onDisk.nlink!==1||onDisk.dev!==s.dev||onDisk.ino!==s.ino||!fs.readFileSync(target).equals(data))throw Error("read-back failed");process.stdout.write(`${s.dev}:${s.ino}|${crypto.createHash("sha256").update(data).digest("hex")}`);}catch{if(fd!==undefined)try{fs.closeSync(fd)}catch{};if(created)removeOwn();process.exit(1);}
+    ' "${1}" "${2}"
+}
+
+rotator_systemd_remove_created_unit() {
+    node -e '
+        const fs=require("node:fs"),target=process.argv[1],parts=process.argv[2].split(":"),content=Buffer.from(process.argv[3]+"\n");
+        try{const s=fs.lstatSync(target);if(!s.isFile()||s.isSymbolicLink()||s.nlink!==1||String(s.dev)!==parts[0]||String(s.ino)!==parts[1]||!fs.readFileSync(target).equals(content))process.exit(1);fs.unlinkSync(target);}catch{process.exit(1);}
+    ' "${1}" "${2}" "${3}"
+}
+
+rotator_systemd_restore_unit() {
+    node -e '
+        const fs=require("node:fs"),path=require("node:path"),crypto=require("node:crypto");
+        const target=process.argv[1],data=Buffer.from(process.argv[2]+"\n"),fingerprint=process.argv[3];let fd,created;
+        function safeParents(p){let current=path.parse(p).root;for(const part of path.dirname(p).slice(current.length).split(path.sep).filter(Boolean)){current=path.join(current,part);const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error("unsafe parent");}}
+        function removeOwn(){try{const s=fs.lstatSync(target);if(s.isFile()&&!s.isSymbolicLink()&&s.dev===created.dev&&s.ino===created.ino&&fs.readFileSync(target).equals(data))fs.unlinkSync(target);}catch{}}
+        try{if(!path.isAbsolute(target)||path.resolve(target)!==target)throw Error("unsafe path");safeParents(target);fd=fs.openSync(target,"wx",0o644);created=fs.fstatSync(fd);fs.writeFileSync(fd,data);fs.fsyncSync(fd);const s=fs.fstatSync(fd);fs.closeSync(fd);fd=undefined;const onDisk=fs.lstatSync(target);if(!onDisk.isFile()||onDisk.isSymbolicLink()||onDisk.nlink!==1||onDisk.dev!==s.dev||onDisk.ino!==s.ino||!fs.readFileSync(target).equals(data)||crypto.createHash("sha256").update(data).digest("hex")!==fingerprint)throw Error("restore verification failed");}catch{if(fd!==undefined)try{fs.closeSync(fd)}catch{};if(created)removeOwn();process.exit(1);}
+    ' "${1}" "${2}" "${3}"
+}
+
+rotator_systemd_publish_receipt() {
+    node -e '
+        const fs=require("node:fs"),path=require("node:path");
+        const receiptPath=process.argv[1],unitPath=process.argv[2],fingerprint=process.argv[3];
+        const data=JSON.stringify({schemaVersion:1,unitPath,fingerprint})+"\n";let fd,created;
+        function safeParents(p){let current=path.parse(p).root;for(const part of path.dirname(p).slice(current.length).split(path.sep).filter(Boolean)){current=path.join(current,part);const s=fs.lstatSync(current);if(!s.isDirectory()||s.isSymbolicLink())throw Error("unsafe parent");}}
+        function removeOwn(){try{const s=fs.lstatSync(receiptPath);if(s.isFile()&&!s.isSymbolicLink()&&s.dev===created.dev&&s.ino===created.ino&&fs.readFileSync(receiptPath,"utf8")===data)fs.unlinkSync(receiptPath);}catch{}}
+        try{if(!path.isAbsolute(receiptPath)||path.resolve(receiptPath)!==receiptPath||! /^[0-9a-f]{64}$/.test(fingerprint))throw Error("unsafe receipt");safeParents(receiptPath);fd=fs.openSync(receiptPath,"wx",0o600);created=fs.fstatSync(fd);fs.writeFileSync(fd,data);fs.fsyncSync(fd);const s=fs.fstatSync(fd);fs.closeSync(fd);fd=undefined;const onDisk=fs.lstatSync(receiptPath);if(!onDisk.isFile()||onDisk.isSymbolicLink()||onDisk.nlink!==1||onDisk.dev!==s.dev||onDisk.ino!==s.ino||fs.readFileSync(receiptPath,"utf8")!==data)throw Error("receipt read-back failed");}catch{if(fd!==undefined)try{fs.closeSync(fd)}catch{};if(created)removeOwn();process.exit(1);}
+    ' "${1}" "${2}" "${3}"
+}
+
+rotator_systemd_state() {
+    local unit="$1" receipt="$2" unit_state receipt_state
+    unit_state="$(rotator_systemd_path_state "${unit}")" || { printf 'protected\n'; return 0; }
+    receipt_state="$(rotator_systemd_path_state "${receipt}")" || { printf 'protected\n'; return 0; }
+    if [[ "${unit_state}" == present ]]; then
+        if rotator_systemd_receipt_check match "${receipt}" "${unit}"; then printf 'owned\n'; else printf 'protected\n'; fi
+    elif [[ "${receipt_state}" == absent ]]; then
+        printf 'absent\n'
+    else
+        printf 'protected\n'
+    fi
+}
+
 ensure_rotator_unit() {
-    # XDG_CONFIG_HOME is not set on every distro or session, so the standard default
-    # stays the fallback; the user manager reads the same path.
     local unit_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
     local unit="${unit_dir}/tuxevil-rotator.service"
-    local bin_path
+    local receipt_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai/ownership"
+    local receipt="${receipt_dir}/rotator-systemd.json" bin_path unit_content create_result identity fingerprint unit_state receipt_state
 
     if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
         log_event "INFO" "rotator" "service_skipped" \
@@ -3068,26 +3341,74 @@ ensure_rotator_unit() {
         return 0
     fi
     bin_path="$(command -v tuxevil-rotator)"
+    if [[ "${bin_path}" == *$'\n'* || "${bin_path}" == *$'\r'* || "${bin_path}" == *'"'* || "${bin_path}" == *$'\\'* ]]; then
+        log_event "ERROR" "rotator" "service_path_unsafe" "Executable path cannot be represented safely in the systemd unit" 1
+        return 1
+    fi
     if (( DRY_RUN == 1 )); then
-        dry_run_note "rotator" "${unit_dir} + ${unit}"
+        dry_run_note "rotator" "create ${unit} exclusively and record ${receipt} after read-back"
         return 0
     fi
-    mkdir -p "${unit_dir}"
-    # Rewritten on every run so a moved binary or a stale unit converges here.
-    cat >"${unit}" <<UNIT
-[Unit]
+    if ! rotator_systemd_dirs_safe check "${unit_dir}" "${receipt_dir}"; then
+        log_event "ERROR" "rotator" "service_path_unsafe" "systemd unit or ownership receipt path is unsafe" 1 "unit=${unit};receipt=${receipt}"
+        return 1
+    fi
+    unit_state="$(rotator_systemd_path_state "${unit}")" || unit_state=unsafe
+    receipt_state="$(rotator_systemd_path_state "${receipt}")" || receipt_state=unsafe
+    if [[ "${unit_state}" == present ]]; then
+        if [[ "${receipt_state}" == present ]] && rotator_systemd_receipt_check match "${receipt}" "${unit}"; then
+            if run_cmd "rotator" systemctl --user enable tuxevil-rotator.service; then
+                log_event "INFO" "rotator" "service_enabled" \
+                    "Receipt-owned tuxevil-rotator unit was enabled on retry" 0 "unit=${unit}"
+            else
+                log_event "WARN" "rotator" "service_enable_failed" \
+                    "Receipt-owned systemd unit remains available for a later enable retry" 0 "unit=${unit}"
+            fi
+        fi
+        log_event "WARN" "rotator" "service_preserved" "Existing systemd unit is not overwritten or claimed" 0 "unit=${unit}"
+        return 0
+    fi
+    if [[ "${unit_state}" != absent || "${receipt_state}" != absent ]]; then
+        log_event "WARN" "rotator" "service_preserved" "Unsafe or existing systemd ownership state; no unit was created" 0 "unit=${unit};receipt=${receipt}"
+        return 0
+    fi
+    if ! rotator_systemd_dirs_safe create "${unit_dir}" "${receipt_dir}"; then
+        log_event "ERROR" "rotator" "service_path_unsafe" "Could not safely prepare systemd ownership directories" 1 "unit=${unit};receipt=${receipt}"
+        return 1
+    fi
+    unit_state="$(rotator_systemd_path_state "${unit}")" || unit_state=unsafe
+    receipt_state="$(rotator_systemd_path_state "${receipt}")" || receipt_state=unsafe
+    if [[ "${unit_state}" != absent || "${receipt_state}" != absent ]]; then
+        log_event "WARN" "rotator" "service_preserved" "Unit or receipt appeared before exclusive creation" 0 "unit=${unit};receipt=${receipt}"
+        return 0
+    fi
+
+    unit_content="[Unit]
 Description=tuxevil-rotator multi-account Gemini/Antigravity gateway
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
 [Service]
-ExecStart="${bin_path}" start
+ExecStart=\"${bin_path}\" start
 Restart=on-failure
 RestartSec=5
 
 [Install]
-WantedBy=default.target
-UNIT
+WantedBy=default.target"
+    if ! create_result="$(rotator_systemd_create_unit "${unit}" "${unit_content}")"; then
+        log_event "ERROR" "rotator" "service_create_failed" "Could not exclusively create and verify the systemd unit" 1 "unit=${unit}"
+        return 1
+    fi
+    identity="${create_result%%|*}"
+    fingerprint="${create_result#*|}"
+    if ! rotator_systemd_publish_receipt "${receipt}" "${unit}" "${fingerprint}"; then
+        if rotator_systemd_remove_created_unit "${unit}" "${identity}" "${unit_content}"; then
+            log_event "ERROR" "rotator" "service_receipt_failed" "Ownership receipt publication failed; this call's unit was removed" 1 "unit=${unit};receipt=${receipt}"
+        else
+            log_event "ERROR" "rotator" "service_receipt_failed" "Ownership receipt publication failed; the unit is preserved as a safe blocker" 1 "unit=${unit};receipt=${receipt}"
+        fi
+        return 1
+    fi
     if run_cmd "rotator" systemctl --user enable tuxevil-rotator.service; then
         log_event "INFO" "rotator" "service_enabled" \
             "tuxevil-rotator is enabled as a systemd user service and starts at boot" 0 "unit=${unit}"
@@ -3190,8 +3511,7 @@ mod_rotator() {
     if command -v tuxevil-rotator >/dev/null 2>&1; then
         log_event "INFO" "rotator" "already_present" "tuxevil-rotator already installed" 0
     else
-        run_cmd "rotator" npm install --global tuxevil-rotator
-        require_command tuxevil-rotator
+        install_rotator_npm_package
     fi
     # Register boot persistence first: enabling the unit or the task never starts a
     # second process, so this is safe whether or not the gateway is already up. The
@@ -3245,11 +3565,7 @@ mod_rotator() {
         # and cannot be removed with `pi remove`, which only matches installed packages.
         local extension_source="git:github.com/darkrei08/pi-cockpit-tools-sync"
         local pi_settings="${PI_AGENT_DIR}/settings.json"
-        run_cmd "rotator" pi install "${extension_source}"
-        if [[ ! -f "${pi_settings}" ]] || ! grep -Fq "${extension_source}" "${pi_settings}"; then
-            log_event "ERROR" "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=${pi_settings}"
-            return 1
-        fi
+        install_pi_package_owned "rotator" "${extension_source}" || return 1
         log_event "INFO" "rotator" "pi_extension_verified" "Cockpit sync extension registered in Pi" 0 "path=${pi_settings}"
     else
         log_event "INFO" "rotator" "pi_extension_skipped" "pi not found; cockpit sync extension was not installed" 0
@@ -3483,11 +3799,6 @@ uninstall_catalog() {
     printf 'path|node|/usr/local/bin/node|-|\n'
     printf 'path|node|/usr/local/bin/npm|-|\n'
     printf 'path|bun|%s|d|\n' "${HOME}/.bun"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/bin/pi"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/npm"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/node_modules"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/package.json"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/.npmrc"
     printf 'pi-package|pi-workflows|npm:pi-extensible-workflows|-|\n'
     printf 'pi-package|gentle-ai|npm:gentle-pi|-|\n'
     printf 'pi-package|gentle-ai|npm:pi-mcp-adapter|-|\n'
@@ -3495,8 +3806,8 @@ uninstall_catalog() {
     printf 'env-file-line|gentle-ai|%s|-|GENTLE_PI_QUIET_TOOLS=0\n' \
         "${HOME}/.config/environment.d/50-gentle-pi.conf"
     printf 'pi-package|rotator|git:github.com/darkrei08/pi-cockpit-tools-sync|-|\n'
-    printf 'npm-global|rotator|tuxevil-rotator|-|\n'
     printf 'systemd-unit|rotator|tuxevil-rotator.service|-|\n'
+    printf 'npm-global|rotator|tuxevil-rotator|-|\n'
     printf 'path|rotator|%s|d|\n' "${HOME}/.tuxevil-rotator"
     printf 'appimage|cockpit|%s|-|\n' "${HOME}/.local/bin/cockpit-tools.AppImage"
     printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
@@ -3587,8 +3898,86 @@ uninstall_remove_appimage() {
     fi
 }
 
+uninstall_rotator_npm_receipt_matches() {
+    local expected_absence="${1:-0}" receipt_path="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai/ownership/rotator-npm.json" npm_root
+    [[ -f "${receipt_path}" ]] || return 1
+    command -v npm >/dev/null 2>&1 && command -v node >/dev/null 2>&1 || return 1
+    npm_root="$(npm root -g 2>/dev/null)" || return 1
+    [[ -n "${npm_root}" ]] || return 1
+    node -e '
+        const fs = require("node:fs");
+        const exists = p => { try { fs.lstatSync(p); return true; } catch (e) { if (e.code === "ENOENT") return false; throw e; } };
+        try {
+            const receipt = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            const root = process.argv[2], expectAbsent = process.argv[3] === "1";
+            const base = root.endsWith("/") ? root.slice(0, -1) : root;
+            const packageDir = `${base}/tuxevil-rotator`, packagePath = `${packageDir}/package.json`;
+            const markerPath = `${packageDir}/.setup-ai-ownership`;
+            if (receipt.schemaVersion !== 2 || receipt.package !== "tuxevil-rotator" ||
+                receipt.npmRoot !== root || receipt.packagePath !== packagePath ||
+                typeof receipt.version !== "string" || !receipt.version.trim() ||
+                typeof receipt.marker !== "string" || !/^[0-9a-f]{32}$/.test(receipt.marker)) process.exit(1);
+            const dirExists = exists(packageDir), markerExists = exists(markerPath);
+            if (expectAbsent) { if (dirExists || markerExists) process.exit(1); else process.exit(0); }
+            if (!dirExists || !markerExists) process.exit(1);
+            const dirStat = fs.lstatSync(packageDir), packageStat = fs.lstatSync(packagePath), markerStat = fs.lstatSync(markerPath);
+            if (!dirStat.isDirectory() || dirStat.isSymbolicLink() || !packageStat.isFile() || packageStat.isSymbolicLink() ||
+                !markerStat.isFile() || markerStat.isSymbolicLink() || fs.readFileSync(markerPath, "utf8") !== receipt.marker) process.exit(1);
+            const metadata = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+            if (metadata.name !== receipt.package || metadata.version !== receipt.version) process.exit(1);
+        } catch { process.exit(1); }
+    ' "${receipt_path}" "${npm_root}" "${expected_absence}"
+}
+
+uninstall_remove_rotator_npm() {
+    local receipt_path="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai/ownership/rotator-npm.json" receipt_before receipt_after
+    if (( UNINSTALL_YES == 0 && DRY_RUN == 0 )); then
+        printf 'Removal needs --yes; global tuxevil-rotator package left in place.\n'
+        return 0
+    fi
+    if (( ${ROTATOR_SYSTEMD_UNINSTALL_BLOCKED:-0} != 0 )); then
+        printf 'blocked (systemd ownership not verified): tuxevil-rotator npm package\n' >&2
+        return 1
+    fi
+    if (( ${ROTATOR_SYSTEMD_UNINSTALL_CHECKED:-0} == 0 )); then
+        if ! uninstall_remove_systemd_unit tuxevil-rotator.service; then return 1; fi
+    fi
+    if (( ${ROTATOR_SYSTEMD_UNINSTALL_BLOCKED:-0} != 0 )); then return 1; fi
+    if ! uninstall_rotator_npm_receipt_matches; then
+        printf 'skipped (not receipt-owned): tuxevil-rotator\n'
+        return 0
+    fi
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove receipt-owned global package: tuxevil-rotator\n'
+        return 0
+    fi
+
+    receipt_before="$(cat "${receipt_path}")" || return 1
+    if ! uninstall_rotator_npm_receipt_matches || [[ "$(cat "${receipt_path}")" != "${receipt_before}" ]]; then
+        printf 'skipped (ownership receipt or package changed): tuxevil-rotator\n'
+        return 0
+    fi
+    run_cmd "uninstall" npm uninstall --global tuxevil-rotator || return 1
+    if ! uninstall_rotator_npm_receipt_matches 1; then
+        log_event "ERROR" "uninstall" "rotator_npm_unverified" \
+            "npm uninstall did not leave the receipt-owned package absent from the same global root" 1
+        return 1
+    fi
+    receipt_after="$(cat "${receipt_path}")" || return 1
+    if [[ "${receipt_after}" != "${receipt_before}" ]] || ! rm -f -- "${receipt_path}"; then
+        log_event "ERROR" "uninstall" "rotator_npm_receipt_remove_failed" \
+            "The package is absent but its unchanged ownership receipt could not be removed" 1
+        return 1
+    fi
+    printf 'removed receipt-owned global package: tuxevil-rotator\n'
+}
+
 uninstall_remove_npm_global() {
     local target="$1" npm_root
+    if [[ "${target}" == "tuxevil-rotator" ]]; then
+        uninstall_remove_rotator_npm
+        return $?
+    fi
     if ! command -v npm >/dev/null 2>&1; then
         log_event "WARN" "uninstall" "npm_missing" \
             "npm is unavailable; global package left behind" 0 "package=${target}"
@@ -3613,48 +4002,276 @@ uninstall_remove_npm_global() {
     printf 'removed: %s\n' "${target}"
 }
 
-uninstall_remove_pi_package() {
-    local target="$1" settings="${PI_AGENT_DIR}/settings.json"
-    if ! command -v pi >/dev/null 2>&1; then
-        log_event "WARN" "uninstall" "pi_missing" \
-            "pi is unavailable; settings.json package entry left behind" 0 "package=${target};settings=${settings}"
-        printf 'skipped (pi unavailable): %s\n' "${target}"
+uninstall_pi_package_state() {
+    local target="$1" count receipt
+    if ! count="$(pi_package_registration_count "${target}")"; then
+        printf 'protected: Pi settings unreadable or ambiguous'
         return 0
     fi
-    # One presence check for the whole catalog: never re-implement the settings.json
-    # lookup here, or the two answers drift.
-    if ! uninstall_entry_present "pi-package" "${target}" ""; then
-        printf 'skipped (not present): %s\n' "${target}"
+    receipt="$(pi_package_receipt_status "${target}")" || receipt=invalid
+    if [[ "${count}" -gt 1 ]]; then
+        printf 'protected: duplicate exact registrations'
+    elif [[ "${count}" == 0 ]]; then
+        if [[ "${receipt}" == missing ]]; then printf 'absent'
+        else printf 'protected: stale or invalid receipt preserved'; fi
+    elif [[ "${receipt}" == valid$'\n'* ]]; then
+        printf 'receipt-backed: exact registration; removable with --yes'
+    else
+        printf 'protected: registered without a matching receipt'
+    fi
+}
+
+uninstall_restore_pi_registration() {
+    local phase="$1" spec="$2" count
+    count="$(pi_package_registration_count "${spec}")" || return 1
+    [[ "${count}" == 1 ]] && return 0
+    [[ "${count}" == 0 ]] || return 1
+    run_cmd "${phase}" pi install "${spec}" || return 1
+    count="$(pi_package_registration_count "${spec}")" || return 1
+    [[ "${count}" == 1 ]]
+}
+
+uninstall_restore_pi_receipt() {
+    local path="$1" contents="$2" dir temp
+    if [[ -e "${path}" || -L "${path}" ]]; then
+        [[ -f "${path}" && ! -L "${path}" && "$(cat -- "${path}" 2>/dev/null)" == "${contents}" ]]
+        return $?
+    fi
+    dir="$(dirname -- "${path}")"
+    [[ -d "${dir}" && ! -L "${dir}" ]] || return 1
+    temp="$(mktemp "${dir}/.pi-registration-restore.XXXXXX")" || return 1
+    if ! printf '%s' "${contents}" >"${temp}" || ! ln -- "${temp}" "${path}"; then
+        rm -f -- "${temp}"
+        return 1
+    fi
+    rm -f -- "${temp}" || return 1
+    [[ -f "${path}" && ! -L "${path}" && "$(cat -- "${path}" 2>/dev/null)" == "${contents}" ]]
+}
+
+uninstall_remove_pi_package() {
+    local target="$1" count receipt path receipt_before receipt_after receipt_spec
+    if ! count="$(pi_package_registration_count "${target}")"; then
+        printf 'blocked (Pi settings unreadable or ambiguous): %s\n' "${target}" >&2
+        return 1
+    fi
+    receipt="$(pi_package_receipt_status "${target}")" || receipt=invalid
+    if [[ "${count}" -gt 1 || ( "${count}" == 0 && "${receipt}" != missing ) || ( "${receipt}" != missing && "${receipt}" != valid$'\n'* ) ]]; then
+        printf 'blocked (Pi registration or receipt is ambiguous/mismatched): %s\n' "${target}" >&2
+        return 1
+    fi
+    if [[ "${count}" == 0 ]]; then
+        printf 'skipped (registration absent): %s\n' "${target}"
+        return 0
+    fi
+    if [[ "${receipt}" == missing ]]; then
+        printf 'protected (unowned registration): %s\n' "${target}"
+        return 0
+    fi
+    if (( UNINSTALL_YES == 0 && DRY_RUN == 0 )); then
+        printf 'Removal needs --yes; Pi registration left in place: %s\n' "${target}"
         return 0
     fi
     if (( DRY_RUN == 1 )); then
-        printf 'would remove: %s\n' "${target}"
+        printf 'would remove receipt-backed Pi registration: %s\n' "${target}"
         return 0
     fi
-    run_cmd "uninstall" pi remove "${target}" || return 1
-    printf 'removed: %s\n' "${target}"
+    if ! command -v pi >/dev/null 2>&1; then
+        printf 'blocked (pi unavailable; registration and receipt preserved): %s\n' "${target}" >&2
+        return 1
+    fi
+    path="$(pi_package_receipt_path "${target}")" || return 1
+    receipt_spec="${receipt#*$'\n'}"
+    receipt_before="$(cat -- "${path}")" || return 1
+    count="$(pi_package_registration_count "${target}")" || return 1
+    receipt_after="$(pi_package_receipt_status "${target}")" || receipt_after=invalid
+    if [[ "${count}" != 1 || "${receipt_after}" != "${receipt}" || \
+        "$(cat -- "${path}" 2>/dev/null)" != "${receipt_before}" ]]; then
+        printf 'blocked (Pi registration or receipt changed before removal): %s\n' "${target}" >&2
+        return 1
+    fi
+    if ! run_cmd "uninstall" pi remove "${receipt_spec}"; then
+        count="$(pi_package_registration_count "${target}")" || count=unknown
+        if [[ "${count}" == 0 ]] && ! uninstall_restore_pi_registration "uninstall-rollback" "${receipt_spec}"; then
+            log_event "ERROR" "uninstall" "pi_registration_restore_failed" "Could not restore the Pi registration after a failed removal; receipt preserved" 1 "spec=${receipt_spec}"
+        fi
+        printf 'blocked (pi remove failed; registration and receipt preserved): %s\n' "${target}" >&2
+        return 1
+    fi
+    count="$(pi_package_registration_count "${target}")" || count=unknown
+    if [[ "${count}" != 0 ]]; then
+        printf 'blocked (Pi did not verify the registration absent; receipt preserved): %s\n' "${target}" >&2
+        return 1
+    fi
+    receipt_after="$(pi_package_receipt_status "${target}")" || receipt_after=invalid
+    if [[ "${receipt_after}" != "${receipt}" ]] \
+        || [[ "$(cat -- "${path}" 2>/dev/null)" != "${receipt_before}" ]]; then
+        if ! uninstall_restore_pi_receipt "${path}" "${receipt_before}"; then
+            log_event "ERROR" "uninstall" "pi_receipt_restore_failed" "Could not preserve the Pi ownership receipt after post-remove verification failed" 1 "path=${path}"
+        fi
+        if ! uninstall_restore_pi_registration "uninstall-rollback" "${receipt_spec}"; then
+            log_event "ERROR" "uninstall" "pi_registration_restore_failed" "Could not restore the Pi registration after receipt verification failed" 1 "spec=${receipt_spec}"
+        fi
+        printf 'blocked (registration/receipt changed during removal; both preserved where possible): %s\n' "${target}" >&2
+        return 1
+    fi
+    if ! rm -f -- "${path}" || [[ -e "${path}" || -L "${path}" ]]; then
+        if ! uninstall_restore_pi_receipt "${path}" "${receipt_before}"; then
+            log_event "ERROR" "uninstall" "pi_receipt_restore_failed" "Could not restore the Pi ownership receipt after receipt deletion failed" 1 "path=${path}"
+        fi
+        if ! uninstall_restore_pi_registration "uninstall-rollback" "${receipt_spec}"; then
+            log_event "ERROR" "uninstall" "pi_registration_restore_failed" "Could not restore the Pi registration after receipt deletion failed" 1 "spec=${receipt_spec}"
+        fi
+        printf 'blocked (receipt removal failed; registration and receipt preserved where possible): %s\n' "${target}" >&2
+        return 1
+    fi
+    printf 'removed receipt-backed Pi registration: %s\n' "${target}"
+}
+
+uninstall_rotator_systemd_block() {
+    ROTATOR_SYSTEMD_UNINSTALL_BLOCKED=1
+    log_event "ERROR" "uninstall" "rotator_systemd_blocked" "$1" 1 "unit=$(rotator_systemd_unit_path)"
+    printf 'blocked (systemd ownership not verified): tuxevil-rotator.service\n' >&2
+    return 1
 }
 
 uninstall_remove_systemd_unit() {
-    local target="$1" unit="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/$1"
-    if [[ ! -e "${unit}" && ! -L "${unit}" ]]; then
-        printf 'skipped (not present): %s\n' "${target}"
-        return 0
-    fi
-    if (( DRY_RUN == 1 )); then
-        printf 'would remove: %s\n' "${target}"
-        return 0
-    fi
-    if command -v systemctl >/dev/null 2>&1; then
-        run_optional "uninstall" systemctl --user disable --now "${target}"
-    fi
-    if rm -f -- "${unit}"; then
-        printf 'removed: %s\n' "${target}"
-    else
-        log_event "ERROR" "uninstall" "systemd_unit_remove_failed" \
-            "Could not remove catalogued systemd user unit" 1 "unit=${unit}"
+    local target="$1" unit receipt state manager_state receipt_before unit_state receipt_state unit_content fingerprint
+    ROTATOR_SYSTEMD_UNINSTALL_CHECKED=1
+    unit="$(rotator_systemd_unit_path)"
+    receipt="$(rotator_systemd_receipt_path)"
+    if [[ "${target}" != tuxevil-rotator.service ]]; then
+        uninstall_rotator_systemd_block "Refusing non-canonical systemd unit target"
         return 1
     fi
+    state="$(rotator_systemd_state "${unit}" "${receipt}")"
+    case "${state}" in
+        absent)
+            printf 'skipped (not present): %s\n' "${target}"
+            return 0
+            ;;
+        protected)
+            uninstall_rotator_systemd_block "Unit or receipt is unowned, mismatched, stale, or unsafe"
+            return 1
+            ;;
+        owned) ;;
+        *) uninstall_rotator_systemd_block "Could not classify systemd ownership state"; return 1 ;;
+    esac
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove receipt-backed unit: %s\n' "${target}"
+        return 0
+    fi
+    if (( UNINSTALL_YES == 0 )); then
+        ROTATOR_SYSTEMD_UNINSTALL_CHECKED=0
+        printf 'Removal needs --yes; systemd unit left in place: %s\n' "${target}"
+        return 0
+    fi
+    if ! receipt_before="$(cat "${receipt}")" \
+        || ! rotator_systemd_receipt_check match "${receipt}" "${unit}" \
+        || [[ "$(cat "${receipt}")" != "${receipt_before}" ]]; then
+        uninstall_rotator_systemd_block "Unit or receipt changed before systemd operations"
+        return 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
+        uninstall_rotator_systemd_block "systemctl --user state is unavailable"
+        return 1
+    fi
+    if ! rotator_systemd_receipt_check match "${receipt}" "${unit}" \
+        || [[ "$(cat "${receipt}")" != "${receipt_before}" ]]; then
+        uninstall_rotator_systemd_block "Unit or receipt changed before stopping the unit"
+        return 1
+    fi
+    if ! systemctl --user stop "${target}"; then
+        uninstall_rotator_systemd_block "Could not stop the receipt-owned user unit"
+        return 1
+    fi
+    if ! rotator_systemd_receipt_check match "${receipt}" "${unit}" \
+        || [[ "$(cat "${receipt}")" != "${receipt_before}" ]]; then
+        uninstall_rotator_systemd_block "Unit or receipt changed before disabling the unit"
+        return 1
+    fi
+    if ! systemctl --user disable "${target}"; then
+        uninstall_rotator_systemd_block "Could not disable the receipt-owned user unit"
+        return 1
+    fi
+    if ! systemctl --user daemon-reload; then
+        uninstall_rotator_systemd_block "systemd daemon state could not be refreshed"
+        return 1
+    fi
+    if ! manager_state="$(systemctl --user show "${target}" --property=LoadState --property=ActiveState --property=UnitFileState --value)" \
+        || [[ "${manager_state}" != $'loaded\ninactive\ndisabled' ]]; then
+        uninstall_rotator_systemd_block "systemd did not confirm an inactive, disabled unit"
+        return 1
+    fi
+    if ! rotator_systemd_receipt_check match "${receipt}" "${unit}" \
+        || [[ "$(cat "${receipt}")" != "${receipt_before}" ]]; then
+        uninstall_rotator_systemd_block "Unit or receipt changed before removal"
+        return 1
+    fi
+    unit_content="$(cat "${unit}")" || { uninstall_rotator_systemd_block "Could not read back the receipt-owned unit"; return 1; }
+    fingerprint="$(node -e 'process.stdout.write(JSON.parse(require("node:fs").readFileSync(process.argv[1],"utf8")).fingerprint)' "${receipt}")" \
+        || { uninstall_rotator_systemd_block "Could not read the unit ownership fingerprint"; return 1; }
+    if ! rm -f -- "${unit}"; then
+        unit_state="$(rotator_systemd_path_state "${unit}")" || unit_state=unsafe
+        if [[ "${unit_state}" == absent ]] && ! rotator_systemd_restore_unit "${unit}" "${unit_content}" "${fingerprint}"; then
+            log_event "ERROR" "uninstall" "rotator_systemd_restore_failed" "Could not restore the unit after a failed removal" 1 "unit=${unit}"
+        fi
+        uninstall_rotator_systemd_block "Could not remove the receipt-owned systemd unit"
+        return 1
+    fi
+    unit_state="$(rotator_systemd_path_state "${unit}")" || unit_state=unsafe
+    if [[ "${unit_state}" != absent ]]; then
+        uninstall_rotator_systemd_block "The systemd unit survived removal"
+        return 1
+    fi
+    if ! systemctl --user daemon-reload; then
+        if ! rotator_systemd_restore_unit "${unit}" "${unit_content}" "${fingerprint}"; then
+            log_event "ERROR" "uninstall" "rotator_systemd_restore_failed" "Could not restore the unit after post-removal daemon reload failed" 1 "unit=${unit}"
+        fi
+        uninstall_rotator_systemd_block "systemd daemon state could not be refreshed after unit removal"
+        return 1
+    fi
+    if ! manager_state="$(systemctl --user show "${target}" --property=LoadState --property=ActiveState --property=UnitFileState --value)" \
+        || [[ "${manager_state}" != $'not-found\ninactive\nnot-found' ]]; then
+        if ! rotator_systemd_restore_unit "${unit}" "${unit_content}" "${fingerprint}"; then
+            log_event "ERROR" "uninstall" "rotator_systemd_restore_failed" "Could not restore the unit after post-removal state verification failed" 1 "unit=${unit}"
+        fi
+        uninstall_rotator_systemd_block "systemd did not confirm the removed unit is unloaded"
+        return 1
+    fi
+    receipt_state="$(rotator_systemd_path_state "${receipt}")" || receipt_state=unsafe
+    if [[ "${receipt_state}" != present ]] \
+        || ! rotator_systemd_receipt_check metadata "${receipt}" "${unit}" \
+        || [[ "$(cat "${receipt}")" != "${receipt_before}" ]]; then
+        if [[ "${unit_state}" == absent ]] && ! rotator_systemd_restore_unit "${unit}" "${unit_content}" "${fingerprint}"; then
+            log_event "ERROR" "uninstall" "rotator_systemd_restore_failed" "Could not restore the unit after an ownership change" 1 "unit=${unit}"
+        fi
+        uninstall_rotator_systemd_block "Receipt changed after verified unit absence"
+        return 1
+    fi
+    if ! rm -f -- "${receipt}"; then
+        receipt_state="$(rotator_systemd_path_state "${receipt}")" || receipt_state=unsafe
+        if [[ "${receipt_state}" == absent ]] && ! rotator_systemd_publish_receipt "${receipt}" "${unit}" "${fingerprint}"; then
+            log_event "ERROR" "uninstall" "rotator_systemd_receipt_restore_failed" "Could not restore the receipt after a failed removal" 1 "receipt=${receipt}"
+        fi
+        unit_state="$(rotator_systemd_path_state "${unit}")" || unit_state=unsafe
+        if [[ "${unit_state}" == absent && "$(rotator_systemd_path_state "${receipt}")" == present && "$(cat "${receipt}")" == "${receipt_before}" ]] \
+            && ! rotator_systemd_restore_unit "${unit}" "${unit_content}" "${fingerprint}"; then
+            log_event "ERROR" "uninstall" "rotator_systemd_restore_failed" "Could not restore the unit after receipt removal failed" 1 "unit=${unit}"
+        fi
+        uninstall_rotator_systemd_block "Could not remove the receipt after verified unit absence"
+        return 1
+    fi
+    receipt_state="$(rotator_systemd_path_state "${receipt}")" || receipt_state=unsafe
+    if [[ "${receipt_state}" != absent ]]; then
+        unit_state="$(rotator_systemd_path_state "${unit}")" || unit_state=unsafe
+        if [[ "${unit_state}" == absent && "$(cat "${receipt}")" == "${receipt_before}" ]] \
+            && ! rotator_systemd_restore_unit "${unit}" "${unit_content}" "${fingerprint}"; then
+            log_event "ERROR" "uninstall" "rotator_systemd_restore_failed" "Could not restore the unit after the receipt survived removal" 1 "unit=${unit}"
+        fi
+        uninstall_rotator_systemd_block "Systemd ownership receipt survived removal"
+        return 1
+    fi
+    printf 'removed receipt-backed unit: %s\n' "${target}"
 }
 
 uninstall_remove_shell_rc_line() {
@@ -3739,20 +4356,27 @@ uninstall_entry_selected() {
 uninstall_entry_present() {
     local kind="$1" target="$2" detail="$3" file npm_root
     case "${kind}" in
-        path|appimage|systemd-unit)
+        path|appimage)
             [[ -e "${target}" || -L "${target}" ]] ;;
+        systemd-unit)
+            local systemd_state
+            systemd_state="$(rotator_systemd_state "$(rotator_systemd_unit_path)" "$(rotator_systemd_receipt_path)")"
+            [[ "${systemd_state}" != absent ]] ;;
         npm-global)
+            if [[ "${target}" == "tuxevil-rotator" ]]; then
+                uninstall_rotator_npm_receipt_matches
+                return $?
+            fi
             if ! command -v npm >/dev/null 2>&1; then
                 return 0
             fi
             npm_root="$(npm root -g 2>/dev/null)" || return 0
             [[ -e "${npm_root}/${target}" || -L "${npm_root}/${target}" ]] ;;
         pi-package)
-            if ! command -v pi >/dev/null 2>&1; then
-                return 0
-            fi
-            [[ -f "${PI_AGENT_DIR}/settings.json" ]] \
-                && grep -Fq "\"${target}\"" "${PI_AGENT_DIR}/settings.json" 2>/dev/null ;;
+            local pi_count receipt_path
+            if ! pi_count="$(pi_package_registration_count "${target}")"; then return 0; fi
+            receipt_path="$(pi_package_receipt_path "${target}")" || return 0
+            [[ "${pi_count}" -gt 0 || -e "${receipt_path}" || -L "${receipt_path}" ]] ;;
         shell-rc-line)
             for file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
                 grep -Fqx -- "${target}" "${file}" 2>/dev/null && return 0
@@ -3768,14 +4392,28 @@ uninstall_entry_present() {
 }
 
 uninstall_print_inventory() {
-    local kind module target flags detail destructive
+    local kind module target flags detail destructive item systemd_state pi_state
     printf '\nUninstall inventory:\n'
     printf '%-18s %-18s %-48s %s\n' 'module' 'kind' 'item' 'destructive'
     while IFS='|' read -r kind module target flags detail; do
         uninstall_entry_selected "${module}" || continue
-        destructive="no"
+        destructive="no" item="${target}"
         [[ "${flags}" == "d" ]] && destructive="yes"
-        printf '%-18s %-18s %-48s %s\n' "${module}" "${kind}" "${target}" "${destructive}"
+        if [[ "${kind}" == "npm-global" && "${target}" == "tuxevil-rotator" ]]; then
+            if uninstall_rotator_npm_receipt_matches; then item="${target} (receipt-backed; removable with --yes)"
+            else item="${target} (protected: no matching receipt/fingerprint)"; fi
+        elif [[ "${kind}" == "pi-package" ]]; then
+            pi_state="$(uninstall_pi_package_state "${target}")" || pi_state='protected: state unknown'
+            item="${target} (${pi_state})"
+        elif [[ "${kind}" == "systemd-unit" && "${target}" == "tuxevil-rotator.service" ]]; then
+            systemd_state="$(rotator_systemd_state "$(rotator_systemd_unit_path)" "$(rotator_systemd_receipt_path)")"
+            case "${systemd_state}" in
+                owned) item="${target} (receipt-backed; removable)" ;;
+                absent) item="${target} (absent)" ;;
+                *) item="${target} (protected: unowned or mismatched)" ;;
+            esac
+        fi
+        printf '%-18s %-18s %-48s %s\n' "${module}" "${kind}" "${item}" "${destructive}"
     done < <(uninstall_catalog)
 }
 
@@ -3785,6 +4423,7 @@ uninstall_print_not_covered() {
     printf '  - dotenv runs upstream setup_env.sh, which rsyncs configuration into %s and installs files elsewhere; that payload belongs to the dotenv repository. The catalog only removes the %s checkout, and only with --purge.\n' \
         "${PI_AGENT_DIR}" "${DOTENV_DIR}"
     printf '  - cockpit .deb/.rpm installs and macOS brew --cask installs belong to their package manager; only the AppImage is catalogued.\n'
+    printf '  - global npm packages are protected except a tuxevil-rotator package whose receipt matches the exact npm root, package metadata, and in-package ownership marker.\n'
     printf '  - the opencode vendor installer shell-rc line belongs to the vendor, not this catalog.\n'
     printf "  - Claude Code's vendor installer owns its native launcher and user configuration under %s; setup-ai never removes that auth/config state.\\n" "${HOME}/.claude"
     printf '  - %s/settings.json, %s/skills, %s/auth.json and %s/sessions are never removed.\n' \
@@ -3800,6 +4439,8 @@ run_uninstall() {
     fi
 
     local kind module target flags detail any_present=0 validation_failed=0 rc=0
+    ROTATOR_SYSTEMD_UNINSTALL_BLOCKED=0
+    ROTATOR_SYSTEMD_UNINSTALL_CHECKED=0
     while IFS='|' read -r kind module target flags detail; do
         uninstall_entry_selected "${module}" || continue
         if [[ "${kind}" == "path" || "${kind}" == "appimage" ]]; then
