@@ -98,7 +98,7 @@ function runScript(passArgs) {
       console.error(`Installer terminated by signal ${signal ?? "unknown"}.`);
       process.exit(1);
     }
-    process.exit(code);
+    process.exitCode = code;
   });
 }
 
@@ -249,9 +249,10 @@ async function main() {
       process.exitCode = 2;
       return;
     }
+    if (has("--all")) uninstallArgs.push(isWin ? "-All" : "--all");
     if (only) uninstallArgs.push(isWin ? "-Only" : "--only", only);
     if (has("--yes") || has("-y")) uninstallArgs.push(isWin ? "-Yes" : "--yes");
-    if (has("--purge") && !isWin) uninstallArgs.push("--purge");
+    if (has("--purge")) uninstallArgs.push(isWin ? "-Purge" : "--purge");
     if (has("--dry-run")) uninstallArgs.push(isWin ? "-DryRun" : "--dry-run");
     if (has("--verbose") || has("-v")) uninstallArgs.push(isWin ? "-Verbose" : "--verbose");
     return runScript(uninstallArgs);

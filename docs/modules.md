@@ -192,8 +192,77 @@ Use `--only` to restrict modules, and `--purge` to remove destructive items such
 without deleting anything. The catalog never touches
 `~/.pi/agent/auth.json` or `~/.pi/agent/sessions/`.
 
-On Windows, `setup-ai.ps1` refuses `-DryRun` and `-Uninstall` with exit 2 and points
-users to `setup-ai.sh`; Windows lifecycle operations are not implemented yet.
+The sole global npm-package exception is `tuxevil-rotator`: it is removable only when
+its schema-v2 setup-ai receipt matches the exact current global npm root, package path,
+name, and version, plus the unique marker inside that package directory. Schema-v1,
+unreceipted, malformed, stale, or changed packages fail closed without receipt upgrade,
+stay protected, and are not listed as removable. On Windows, any same-name scheduled
+task blocks package removal unless setup-ai can verify and remove the sole root-level,
+receipt-owned task; duplicate or nested same-name tasks also block removal. Task-query
+failures remain unknown and fail closed, and inventory distinguishes them from a
+successfully confirmed absence. A failed task removal is reported as unverified rather
+than absent or unowned. Inventory and dry-run never mutate state; confirmed npm removal
+rechecks ownership and deletes the npm receipt only after npm confirms the package
+directory and marker are absent. `--purge` does not widen this exception.
+
+On Linux, the canonical `tuxevil-rotator.service` under the selected systemd user-unit
+directory is owned only when setup-ai found it absent, created it exclusively, read back
+the exact unit text, and wrote the separate
+`$XDG_STATE_HOME/setup-ai/ownership/rotator-systemd.json` receipt with its SHA-256
+fingerprint. Existing, symlinked, modified, stale, malformed, or unsafe unit/receipt
+paths are protected. Inventory and dry-run only inspect and distinguish receipt-backed
+units from protected ones. Actual uninstall handles this unit before the rotator npm
+package; systemctl uncertainty, stop/disable/removal failure, a surviving unit, or any
+ownership mismatch preserves the receipt and blocks npm removal. The receipt is removed
+only after the unit is verified absent. Cleanup touches only this exact unit and receipt,
+never unrelated units, symlinks, wants links, or user data, and `--purge` does not widen
+this boundary.
+
+Pi package registrations have an independent per-identity receipt, separate from the
+rotator npm, systemd, and Windows task receipts. Bash stores these under
+`$XDG_STATE_HOME/setup-ai/ownership/pi-packages/` (defaulting to
+`~/.local/state/setup-ai/ownership/pi-packages/`); PowerShell uses
+`%LOCALAPPDATA%/setup-ai/ownership/pi-packages/`. A receipt is published atomically
+without overwrite only when that exact normalized identity was absent before the
+current successful `pi install` and a read of the exact Pi agent `settings.json` proves
+one matching registration. Scoped/versioned npm specs, git refs, and local paths
+relative to the Pi agent directory normalize to their package identity. Existing,
+upgraded, duplicate, malformed, shared, ambiguous, or mismatched registrations stay
+unowned. Inventory and dry-run are read-only and distinguish receipt-backed exact
+registrations from protected/unowned state. Removal requires both a valid matching
+receipt and exactly one current settings identity; setup-ai verifies that identity is
+absent after `pi remove` before deleting only that registration's receipt. Read,
+parse, removal, or receipt failures preserve the registration and receipt and block a
+success report. Cleanup never deletes the Pi agent root, `settings.json`, `auth.json`,
+`sessions/`, package data, or unrelated registrations; `--purge` does not widen this
+boundary. Pi workflow, gentle-pi, pi-mcp-adapter, rotator cockpit-sync, and eligible
+manifest `pi-packages` registrations use this proof; the workflow package is owned by
+`pi-workflows`, not a duplicate manifest entry.
+
+On Windows, `opencode` has one additional receipt-backed cleanup path for the User
+`OPENCODE_PI_BIN` environment value. Setup-ai records `%LOCALAPPDATA%/setup-ai/ownership/opencode-pi-bin.json`
+only when it fills an absent User value and reads the exact value back. A missing,
+malformed, unsafe, stale, or changed receipt/value remains protected; removal requires
+`-Yes`, rechecks the value, clears only that User variable, verifies it is absent, and
+then removes only its receipt. The current process value, the OpenCode CLI/npm package,
+credentials, and every other environment value remain protected.
+
+LazyVim configuration, agent skill trees, vendor-installed CLIs, cockpit MSI state,
+Pi roots, and every other unreceipted Windows/user resource remain protected because
+setup-ai has no exact creation evidence for them. All other global npm packages and
+Windows winget/system-managed software remain protected. This exception does not change
+any existing path, Pi-package, task, or user-data
+cleanup rule: for example, `~/.tuxevil-rotator` remains destructive and requires the
+existing `--purge` gate, while the npm receipt never authorizes deleting it. Rotator's
+Windows scheduled-task receipt is separate from the npm receipt and remains subject to its
+existing task-specific ownership check. `~/.pi/agent/auth.json` and
+`~/.pi/agent/sessions/` remain protected.
+
+On Windows, `setup-ai.ps1 -DryRun` prints the selected plan without running modules or
+writing logs. `-Uninstall` inventories the selected modules and shell; the rotator npm,
+its separately receipt-backed task, and the receipt-backed OpenCode User environment
+value are the only removal paths. `-Yes` is required to request removal, and `-Purge`
+does not expand these paths.
 
 Back to the [README](../README.md) · Related:
 [install matrix](./install-matrix.md) · [logs](./logs.md) ·

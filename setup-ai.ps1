@@ -21,7 +21,7 @@
    pwsh -File setup-ai.ps1 -Help
    pwsh -File setup-ai.ps1 -Verbose
    pwsh -File setup-ai.ps1 -DryRun
-   pwsh -File setup-ai.ps1 -Uninstall
+   pwsh -File setup-ai.ps1 -Uninstall [-Yes] [-Purge] [-Only csv]
 ==============================================================================
 #>
 
@@ -33,44 +33,18 @@ param(
     [switch]$Yes,
     [switch]$Help,
     [switch]$DryRun,
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    [switch]$Purge
 )
 
 $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
-if ($DryRun -or $Uninstall) {
-    $flag = if ($DryRun) { '-DryRun' } else { '-Uninstall' }
-    Write-Host ""
-    Write-Host "$flag is not implemented on Windows." -ForegroundColor Red
-    Write-Host "setup-ai.ps1 cannot plan a run or remove the Windows install yet, and it will not pretend to: run setup-ai.sh for these flags, or remove the modules by hand (see docs/modules.md)." -ForegroundColor Red
-    Write-Host ""
-    exit 2
-}
-$script:VerboseOutput = ($VerbosePreference -eq 'Continue' -or $env:VERBOSE -eq '1')
-if ($script:VerboseOutput) { $env:DEBUG = '1' }
-
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
-
-# PowerShell 7.3+ turns native nonzero exits into terminating errors, so a
-# failed command cannot be hidden by a later successful command in the same step.
-$PSNativeCommandUseErrorActionPreference = $true
-
-# Render child-process UTF-8 output (npx skills box-drawing, banners) correctly
-# instead of mojibake on the default Windows console codepage.
-try {
-    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-    $OutputEncoding = [System.Text.Encoding]::UTF8
-    if (Get-Command chcp -ErrorAction SilentlyContinue) { chcp 65001 | Out-Null }
-} catch {
-    # Non-fatal: child output may show mojibake, but the run can proceed.
-    Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
-}
 
 $ScriptVersion = "3.6.5"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
-New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $RunId = (Get-Date -AsUTC -Format "yyyyMMddTHHmmssZ")
 $HumanLog = Join-Path $LogDir "setup_$RunId.log"
@@ -907,100 +881,272 @@ function Assert-TransientRenameRetry {
     return $true
 }
 
-# Derive the last path segment of a Pi package source, so a manifest line can be
-# recognised as the workflow package the pi-workflows module owns. Identity
-# comparisons for the readback check live in the Node/PowerShell helper.
-function Get-PiPackageId {
-    param([string]$Spec)
-    $spec = ([string]$Spec).Trim()
-    # Windows counterpart of a POSIX path: a local source recorded by pi may use
-    # backslashes on either side, so the id must not depend on the separator.
-    $spec = $spec.Replace('\', '/')
-    if ($spec.StartsWith('npm:', [StringComparison]::Ordinal)) {
-        $spec = $spec.Substring(4)
-    } elseif ($spec.StartsWith('git:', [StringComparison]::Ordinal)) {
-        $spec = $spec.Substring(4)
-    }
-    $hash = $spec.IndexOf('#')
-    if ($hash -ge 0) { $spec = $spec.Substring(0, $hash) }
-    if ($spec.EndsWith('.git', [StringComparison]::Ordinal)) { $spec = $spec.Substring(0, $spec.Length - 4) }
-    # Strip a trailing @ref/@version, but keep a leading @scope.
-    $at = $spec.LastIndexOf('@')
-    if ($at -gt 0 -and $spec[$at - 1] -ne '/') { $spec = $spec.Substring(0, $at) }
-    $slash = $spec.LastIndexOf('/')
-    if ($slash -ge 0) { $spec = $spec.Substring($slash + 1) }
-    return $spec
-}
-
-# Prove pi recorded a package by reading back pi's own registry, not by trusting
-# the install command we just ran.
+# Pi identities retain npm scope and git owner, strip versions/refs, and resolve
+# local sources against the agent directory. Both installers use this same shape.
 function Get-PiPackageIdentity {
     param([string]$Spec, [string]$BaseDir)
-    $spec = ([string]$Spec).Trim()
-    # Identity keeps scope and owner: comparing basenames made `npm:@scope/pkg`
-    # match `npm:pkg`, and two `git:host/owner/repo` sources with the same repo name
-    # match each other.
+    $spec = ([string]$Spec).Trim().Replace('\', '/')
     if ($spec.StartsWith('npm:', [StringComparison]::Ordinal)) {
         $spec = $spec.Substring(4)
         $at = $spec.LastIndexOf('@')
         if ($at -gt 0) { $spec = $spec.Substring(0, $at) }
-        return "npm:$spec"
+        if (-not $spec) { throw 'Invalid npm package source.' }
+        return "npm:$($spec.ToLowerInvariant())"
     }
     if ($spec.StartsWith('git:', [StringComparison]::Ordinal)) {
         $spec = $spec.Substring(4)
         $hash = $spec.IndexOf('#')
         if ($hash -ge 0) { $spec = $spec.Substring(0, $hash) }
-        if ($spec.EndsWith('.git', [StringComparison]::Ordinal)) { $spec = $spec.Substring(0, $spec.Length - 4) }
         $at = $spec.LastIndexOf('@')
         if ($at -gt 0) { $spec = $spec.Substring(0, $at) }
-        return "git:$spec"
+        if ($spec.EndsWith('.git', [StringComparison]::Ordinal)) { $spec = $spec.Substring(0, $spec.Length - 4) }
+        if (-not $spec) { throw 'Invalid git package source.' }
+        return "git:$($spec.ToLowerInvariant())"
     }
-    # Local sources may be recorded relative to the agent directory.
-    # A leading ~ is the user profile, not a directory named "~" under the agent dir.
     if ($spec -eq '~' -or $spec.StartsWith('~/') -or $spec.StartsWith('~\')) {
         $spec = Join-Path $HOME $spec.Substring(1).TrimStart([char]'\', [char]'/')
     }
-    $full = if ([System.IO.Path]::IsPathRooted($spec)) { [System.IO.Path]::GetFullPath($spec) } else { [System.IO.Path]::GetFullPath((Join-Path $BaseDir $spec)) }
-    return "local:" + $full.ToLowerInvariant()
+    $pathSpec = $spec.Replace('/', [System.IO.Path]::DirectorySeparatorChar)
+    $full = if ([System.IO.Path]::IsPathRooted($pathSpec)) { [System.IO.Path]::GetFullPath($pathSpec) } else { [System.IO.Path]::GetFullPath((Join-Path $BaseDir $pathSpec)) }
+    if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { $full = $full.ToLowerInvariant() }
+    return "local:$full"
+}
+
+function Get-PiPackageRegistrationState {
+    param([string]$Spec)
+    $settingsPath = Join-Path $PiAgentDir 'settings.json'
+    $identity = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
+    if (-not (Test-Path -LiteralPath $settingsPath)) { return [pscustomobject]@{ Known = $true; Count = 0; Identity = $identity } }
+    try {
+        $parsed = Get-Content -Raw -LiteralPath $settingsPath -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($null -eq $parsed -or $parsed -is [array]) { throw 'Invalid Pi settings object.' }
+        $packagesProperty = $parsed.PSObject.Properties['packages']
+        if ($null -eq $packagesProperty) { $entries = @() }
+        elseif ($null -eq $packagesProperty.Value -or $packagesProperty.Value -isnot [array]) { throw 'Invalid Pi packages list.' }
+        else { $entries = @($packagesProperty.Value) }
+        $count = 0
+        foreach ($entry in $entries) {
+            if ($entry -is [string]) { $source = $entry }
+            elseif ($null -ne $entry -and $null -ne $entry.PSObject.Properties['source'] -and $entry.source -is [string]) { $source = $entry.source }
+            else { throw 'Ambiguous Pi package entry.' }
+            if ((Get-PiPackageIdentity -Spec $source -BaseDir $PiAgentDir) -ceq $identity) { $count++ }
+        }
+        return [pscustomobject]@{ Known = $true; Count = $count; Identity = $identity }
+    } catch {
+        return [pscustomobject]@{ Known = $false; Count = -1; Identity = $identity }
+    }
+}
+
+function Get-PiPackageReceiptPath {
+    param([string]$Spec)
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return $null }
+    $identity = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $digest = [Convert]::ToHexString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant() }
+    finally { $sha.Dispose() }
+    return Join-Path (Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'setup-ai') 'ownership') 'pi-packages') "$digest.json"
+}
+
+function Test-PiPackageReceiptLocation {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA) -or -not $Path) { return $false }
+    $root = Join-Path $env:LOCALAPPDATA 'setup-ai'
+    $ownership = Join-Path $root 'ownership'
+    $directory = Join-Path $ownership 'pi-packages'
+    $paths = @($env:LOCALAPPDATA, $root, $ownership, $directory, $Path)
+    if (-not [string]::Equals([System.IO.Path]::GetFullPath($Path), [System.IO.Path]::GetFullPath((Join-Path $directory ([System.IO.Path]::GetFileName($Path)))), [StringComparison]::OrdinalIgnoreCase) -or
+        [System.IO.Path]::GetDirectoryName([System.IO.Path]::GetFullPath($Path)) -cne [System.IO.Path]::GetFullPath($directory)) { return $false }
+    try {
+        foreach ($candidate in $paths) {
+            if (-not (Test-Path -LiteralPath $candidate)) { continue }
+            $attributes = [System.IO.File]::GetAttributes($candidate)
+            if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Get-PiPackageReceiptState {
+    param([string]$Spec)
+    $path = Get-PiPackageReceiptPath -Spec $Spec
+    if (-not $path -or -not (Test-PiPackageReceiptLocation -Path $path)) { return [pscustomobject]@{ Safe = $false; Exists = $false; Valid = $false; Receipt = $null } }
+    if (-not (Test-Path -LiteralPath $path)) { return [pscustomobject]@{ Safe = $true; Exists = $false; Valid = $false; Receipt = $null } }
+    try {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw 'Receipt is not a file.' }
+        $receipt = Get-Content -Raw -LiteralPath $path -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $identity = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
+        $agentDir = [System.IO.Path]::GetFullPath($PiAgentDir)
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { $agentDir = $agentDir.ToLowerInvariant() }
+        $valid = $receipt -is [pscustomobject] -and $receipt.SchemaVersion -eq 1 -and
+            $receipt.Identity -is [string] -and $receipt.Identity -ceq $identity -and
+            $receipt.Spec -is [string] -and (Get-PiPackageIdentity -Spec $receipt.Spec -BaseDir $PiAgentDir) -ceq $identity -and
+            $receipt.AgentDir -is [string] -and $receipt.AgentDir -ceq $agentDir
+        return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = [bool]$valid; Receipt = $(if ($valid) { $receipt } else { $null }) }
+    } catch { return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = $false; Receipt = $null } }
+}
+
+function Write-PiPackageReceipt {
+    param([string]$Spec)
+    $path = Get-PiPackageReceiptPath -Spec $Spec
+    if (-not $path -or -not (Test-PiPackageReceiptLocation -Path $path)) { return $false }
+    $state = Get-PiPackageReceiptState -Spec $Spec
+    if (-not $state.Safe -or $state.Exists) { return $false }
+    $directory = Split-Path -Parent $path
+    try {
+        New-Item -ItemType Directory -Force -Path $directory -ErrorAction Stop | Out-Null
+        if (-not (Test-PiPackageReceiptLocation -Path $path)) { return $false }
+        $identity = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
+        $agentDir = [System.IO.Path]::GetFullPath($PiAgentDir)
+        if ([System.IO.Path]::DirectorySeparatorChar -eq '\') { $agentDir = $agentDir.ToLowerInvariant() }
+        $json = [pscustomobject]@{ SchemaVersion = 1; Identity = $identity; Spec = $Spec; AgentDir = $agentDir } | ConvertTo-Json -Compress
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
+        $tempPath = Join-Path $directory ('.pi-registration.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+        $stream = $null
+        try {
+            $stream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true); $stream.Dispose(); $stream = $null
+            if (-not (Test-PiPackageReceiptLocation -Path $path) -or (Test-Path -LiteralPath $path)) { return $false }
+            [System.IO.File]::Move($tempPath, $path)
+        } finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            if (Test-Path -LiteralPath $tempPath) { [System.IO.File]::Delete($tempPath) }
+        }
+        return (Get-PiPackageReceiptState -Spec $Spec).Valid
+    } catch { return $false }
+}
+
+function Get-PiPackageInventoryStatus {
+    param([string]$Spec)
+    $registration = Get-PiPackageRegistrationState -Spec $Spec
+    if (-not $registration.Known) { return [pscustomobject]@{ State = 'unknown'; Message = 'protected; Pi settings could not be read unambiguously.' } }
+    $receipt = Get-PiPackageReceiptState -Spec $Spec
+    if (-not $receipt.Safe) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; Pi ownership receipt path is unsafe.' } }
+    if ($registration.Count -gt 1) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; duplicate exact Pi registrations exist.' } }
+    if ($registration.Count -eq 0) {
+        if ($receipt.Exists) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; a stale or invalid Pi ownership receipt is preserved.' } }
+        return [pscustomobject]@{ State = 'absent'; Message = 'absent.' }
+    }
+    if ($receipt.Valid) { return [pscustomobject]@{ State = 'receipt-backed'; Message = 'receipt-backed exact registration; removable with -Yes.' } }
+    return [pscustomobject]@{ State = 'protected'; Message = 'protected; registration has no matching valid receipt.' }
 }
 
 function Assert-PiPackageRegistered {
     param([string]$Phase, [string]$Spec)
-    $settings = Join-Path $PiAgentDir "settings.json"
-    $want = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
-
-    if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) {
-        Write-Log ERROR $Phase "settings_missing" "pi settings.json not found; cannot verify installed packages" 1 "path=$settings"
-        throw "pi settings.json not found ($settings)"
+    $state = Get-PiPackageRegistrationState -Spec $Spec
+    if (-not $state.Known) {
+        Write-Log ERROR $Phase 'settings_unreadable' 'pi settings.json could not be read unambiguously' 1 "path=$(Join-Path $PiAgentDir 'settings.json')"
+        throw 'Pi settings state is unknown.'
     }
-    $entries = @()
-    try {
-        $parsed = Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json
-        if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['packages']) { $entries = @($parsed.packages) }
-    } catch {
-        # An unparsable registry cannot prove the registration: fail closed
-            # instead of reporting the package as missing.
-            Write-Log ERROR $Phase "settings_unreadable" "pi settings.json could not be parsed; cannot prove the package state" 1 "path=$settings"
-            throw "pi settings.json could not be parsed ($settings)"
-    }
-    $found = $false
-    foreach ($entry in $entries) {
-        if ($null -eq $entry) { continue }
-        $source = ""
-        if ($entry -is [string]) {
-            $source = $entry
-        } else {
-            $sourceProp = $entry.PSObject.Properties['source']
-            if ($null -ne $sourceProp) { $source = [string]$sourceProp.Value }
-        }
-        if ($source -and ((Get-PiPackageIdentity -Spec $source -BaseDir $PiAgentDir) -ieq $want)) { $found = $true; break }
-    }
-    if ($found) {
-        Write-Log INFO $Phase "package_registered" "pi registered the package" 0 "spec=$Spec"
+    if ($state.Count -eq 1) {
+        Write-Log INFO $Phase 'package_registered' 'Pi registered the exact package identity' 0 "spec=$Spec"
         return
     }
-    Write-Log ERROR $Phase "package_not_registered" "pi did not register the package in settings.json" 1 "spec=$Spec;settings=$settings"
-    throw "pi did not register the package in settings.json ($Spec)"
+    $event = if ($state.Count -gt 1) { 'package_duplicate' } else { 'package_not_registered' }
+    Write-Log ERROR $Phase $event 'Pi did not register exactly one matching package identity' 1 "spec=$Spec;count=$($state.Count)"
+    throw "Pi did not register exactly one package identity ($Spec)."
+}
+
+function Install-PiPackageOwned {
+    param([string]$Phase, [string]$Spec)
+    $before = Get-PiPackageRegistrationState -Spec $Spec
+    if (-not $before.Known) { throw "Cannot prove Pi package was absent before install ($Spec)." }
+    $null = Invoke-Step -Phase $Phase -Action { pi install $Spec }
+    Assert-PiPackageRegistered -Phase $Phase -Spec $Spec
+    if ($before.Count -eq 0 -and -not (Write-PiPackageReceipt -Spec $Spec)) {
+        Write-Log ERROR $Phase 'pi_receipt_publish_failed' 'Pi registration succeeded but its ownership receipt could not be safely published' 1 "spec=$Spec"
+        throw "Pi ownership receipt could not be published ($Spec)."
+    }
+}
+
+function Restore-PiPackageRegistration {
+    param([string]$Phase, [string]$Spec)
+    $state = Get-PiPackageRegistrationState -Spec $Spec
+    if (-not $state.Known) { return $false }
+    if ($state.Count -eq 1) { return $true }
+    if ($state.Count -ne 0) { return $false }
+    try { $null = Invoke-Step -Phase $Phase -Action { pi install $Spec } }
+    catch {
+        Write-Log ERROR $Phase 'pi_registration_restore_failed' 'Could not restore the Pi registration after a failed removal' 1 "spec=$Spec"
+        return $false
+    }
+    $state = Get-PiPackageRegistrationState -Spec $Spec
+    return $state.Known -and $state.Count -eq 1
+}
+
+function Restore-PiPackageReceipt {
+    param([string]$Path, [string]$Contents)
+    if (-not (Test-PiPackageReceiptLocation -Path $Path)) { return $false }
+    if (Test-Path -LiteralPath $Path) {
+        try { return [System.IO.File]::ReadAllText($Path) -ceq $Contents } catch { return $false }
+    }
+    $directory = Split-Path -Parent $Path
+    $tempPath = Join-Path $directory ('.pi-registration-restore.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $stream = $null
+    try {
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($Contents)
+        $stream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true); $stream.Dispose(); $stream = $null
+        if (-not (Test-PiPackageReceiptLocation -Path $Path) -or (Test-Path -LiteralPath $Path)) { return $false }
+        [System.IO.File]::Move($tempPath, $Path)
+        return [System.IO.File]::ReadAllText($Path) -ceq $Contents
+    } catch { return $false }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if (Test-Path -LiteralPath $tempPath) { [System.IO.File]::Delete($tempPath) }
+    }
+}
+
+function Remove-PiPackageRegistration {
+    param([string]$Spec, [switch]$Confirmed, [switch]$DryRun)
+    if (-not $Confirmed -or $DryRun) { return $false }
+    $registration = Get-PiPackageRegistrationState -Spec $Spec
+    $receiptState = Get-PiPackageReceiptState -Spec $Spec
+    if (-not $registration.Known -or -not $receiptState.Safe) { $script:PiPackageRemovalFailed = $true; return $false }
+    if ($registration.Count -gt 1 -or ($registration.Count -eq 0 -and $receiptState.Exists) -or ($receiptState.Exists -and -not $receiptState.Valid)) {
+        $script:PiPackageRemovalFailed = $true
+        return $false
+    }
+    if ($registration.Count -eq 0 -or -not $receiptState.Valid) { return $false }
+    $path = Get-PiPackageReceiptPath -Spec $Spec
+    try { $receiptBefore = [System.IO.File]::ReadAllText($path) } catch { $script:PiPackageRemovalFailed = $true; return $false }
+    $current = Get-PiPackageRegistrationState -Spec $Spec
+    $currentReceipt = Get-PiPackageReceiptState -Spec $Spec
+    if (-not $current.Known -or $current.Count -ne 1 -or -not $currentReceipt.Valid) { $script:PiPackageRemovalFailed = $true; return $false }
+    try { if ([System.IO.File]::ReadAllText($path) -cne $receiptBefore) { $script:PiPackageRemovalFailed = $true; return $false } }
+    catch { $script:PiPackageRemovalFailed = $true; return $false }
+    if (-not (Get-Command pi -ErrorAction SilentlyContinue)) { $script:PiPackageRemovalFailed = $true; return $false }
+    try { Invoke-Step -Phase 'uninstall' -Action { pi remove $currentReceipt.Receipt.Spec } | Out-Null }
+    catch {
+        $script:PiPackageRemovalFailed = $true
+        $afterFailure = Get-PiPackageRegistrationState -Spec $Spec
+        if ($afterFailure.Known -and $afterFailure.Count -eq 0 -and -not (Restore-PiPackageRegistration -Phase 'uninstall-rollback' -Spec $currentReceipt.Receipt.Spec)) {
+            Write-Log ERROR 'uninstall' 'pi_registration_restore_failed' 'Could not restore the Pi registration after a failed remove command' 1 "spec=$Spec"
+        }
+        return $false
+    }
+    $after = Get-PiPackageRegistrationState -Spec $Spec
+    if (-not $after.Known -or $after.Count -ne 0) { $script:PiPackageRemovalFailed = $true; return $false }
+    $finalReceipt = Get-PiPackageReceiptState -Spec $Spec
+    $receiptMatches = $false
+    if ($finalReceipt.Valid) {
+        try { $receiptMatches = [System.IO.File]::ReadAllText($path) -ceq $receiptBefore } catch { $receiptMatches = $false }
+    }
+    if (-not $receiptMatches) {
+        if (-not (Restore-PiPackageReceipt -Path $path -Contents $receiptBefore)) { Write-Log ERROR 'uninstall' 'pi_receipt_restore_failed' 'Could not preserve the original Pi ownership receipt after post-remove verification failed' 1 "path=$path" }
+        if (-not (Restore-PiPackageRegistration -Phase 'uninstall-rollback' -Spec $currentReceipt.Receipt.Spec)) { Write-Log ERROR 'uninstall' 'pi_registration_restore_failed' 'Could not restore the Pi registration after receipt verification failed' 1 "spec=$Spec" }
+        $script:PiPackageRemovalFailed = $true
+        return $false
+    }
+    try {
+        [System.IO.File]::Delete($path)
+        if (Test-Path -LiteralPath $path) { throw 'Receipt remains after deletion.' }
+        return $true
+    } catch {
+        if (-not (Restore-PiPackageReceipt -Path $path -Contents $receiptBefore)) { Write-Log ERROR 'uninstall' 'pi_receipt_restore_failed' 'Could not restore the Pi ownership receipt after receipt deletion failed' 1 "path=$path" }
+        if (-not (Restore-PiPackageRegistration -Phase 'uninstall-rollback' -Spec $currentReceipt.Receipt.Spec)) { Write-Log ERROR 'uninstall' 'pi_registration_restore_failed' 'Could not restore the Pi registration after receipt deletion failed' 1 "spec=$Spec" }
+        $script:PiPackageRemovalFailed = $true
+        return $false
+    }
 }
 
 # Resolve the Pi package manifest. Order: explicit override, then the Pi config
@@ -1012,6 +1158,36 @@ function Get-PiPackagesManifest {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { return $candidate }
     }
     return $null
+}
+
+function Get-PiUninstallSpecs {
+    param([string]$Module)
+    $specs = switch ($Module) {
+        'pi-workflows' { @('npm:pi-extensible-workflows') }
+        'gentle-ai' { @('npm:gentle-pi', 'npm:pi-mcp-adapter') }
+        'rotator' { @('git:github.com/darkrei08/pi-cockpit-tools-sync') }
+        'pi-packages' {
+            $manifest = Get-PiPackagesManifest
+            if (-not $manifest) { @(); break }
+            $workflowIdentity = Get-PiPackageIdentity -Spec 'npm:pi-extensible-workflows' -BaseDir $PiAgentDir
+            $entries = @()
+            foreach ($rawLine in (Get-Content -LiteralPath $manifest -ErrorAction Stop)) {
+                $line = ($rawLine -split '#', 2)[0].Trim()
+                if (-not $line) { continue }
+                if ((Get-PiPackageIdentity -Spec $line -BaseDir $PiAgentDir) -ceq $workflowIdentity) { continue }
+                $entries += $line
+            }
+            $entries
+        }
+        default { @() }
+    }
+    $result = @(); $identities = @()
+    foreach ($spec in @($specs)) {
+        $identity = Get-PiPackageIdentity -Spec $spec -BaseDir $PiAgentDir
+        if ($identities -ccontains $identity) { continue }
+        $identities += $identity; $result += $spec
+    }
+    return ,$result
 }
 
 # ==============================================================================
@@ -1042,6 +1218,73 @@ $ModuleDesc = [ordered]@{
     'rotator'      = 'tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)'
 }
 $ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true }
+# ponytail: static plans can drift from module bodies; move operations into shared metadata if drift becomes costly.
+$ModuleDryRunPlan = [ordered]@{
+    'base' = @(
+        'Use winget to ensure Git, GitHub CLI, Python 3.12, Neovim, jq, ImageMagick, and Go are installed.'
+        'Probe with vswhere for Microsoft.VisualStudio.Component.VC.Tools.x86.x64; if the workload is absent or unverified, run winget install --force for Visual Studio 2022 Build Tools with the VC Tools workload, then verify it and refresh PATH.'
+    )
+    'node' = @(
+        'Use winget to ensure Node.js 22; upgrade only when installed Node.js is below 22.19.'
+        'Refresh PATH, globally install npm@latest, and verify Node.js is at least 22.19.'
+    )
+    'bun' = @('If bun is available, verify bun --version; otherwise run https://bun.sh/install.ps1 and verify bun.')
+    'pi' = @(
+        'Create the Pi extensions, skills, and npm roots plus the npm project marker; write remote-source and allow-scripts policy only when npm 12+ is available.'
+        'If pi is missing, run https://pi.dev/install.ps1, refresh PATH, and verify pi; otherwise keep the installed CLI.'
+    )
+    'dotenv' = @('Skip dotenv/setup_env.sh because it targets Linux package managers; no Windows action is defined.')
+    'lazyvim' = @(
+        'Install Neovim with winget only if nvim is missing; require git.'
+        'If the Neovim config is absent, clone LazyVim starter, remove its .git metadata, run nvim --headless "+Lazy! sync" +qa, and move it into place; preserve an existing config.'
+    )
+    'pi-packages' = @(
+        'Require pi and node on PATH before enabling npm remote sources and resolving the manifest.'
+        'Resolve pi-packages.txt from PI_PACKAGES_FILE, the Pi agent directory, or the installer directory, in that order.'
+        'If a manifest exists, run pi install and verify each listed package; skip pi-extensible-workflows because pi-workflows owns it. If absent, install no extra packages.'
+    )
+    'go' = @('If go is available, verify go version; otherwise install GoLang.Go with winget, refresh PATH, and verify Go.')
+    'ee' = @(
+        'Detect configured agents (fall back to pi) and run npx --yes skills@latest add darkrei08/Engineering-Excellence --skill engineering-excellence --global --agent <agent> --copy --yes for each.'
+        'Verify the Engineering Excellence skill for every targeted agent.'
+    )
+    'skills' = @(
+        'Run npx --yes skills@latest add for herdrdev/herdr (herdr), mattpocock/skills (triage, grill-me, grilling, wayfinder, domain-modeling, prototype, research), pedronauck/skills (typescript-advanced), and humanlayer/skills (show-me), for each detected agent.'
+        'Verify every configured upstream skill for every targeted agent.'
+    )
+    'pi-workflows' = @(
+        'Require pi, npm, and Node.js 22.19+; enable npm remote sources in the managed and extensions roots.'
+        'Use PI_WORKFLOW_VERSION or resolve the release with npm view; install pi-extensible-workflows with pi and npm, then verify its version and retry marker.'
+    )
+    'herdr' = @('If herdr is available, verify herdr --version; otherwise run https://herdr.dev/install.ps1 and verify herdr.')
+    'claude-code' = @(
+        'If claude is missing, try https://claude.ai/install.ps1; if it fails or claude remains missing, use npm install -g @anthropic-ai/claude-code (with --allow-scripts when supported).'
+        'Refresh PATH when installing and verify claude --version; otherwise verify the existing CLI.'
+    )
+    'codex' = @(
+        'If codex is missing, run https://chatgpt.com/codex/install.ps1 with CODEX_NON_INTERACTIVE=1; otherwise keep the existing codex.'
+        'Verify codex is available on PATH after the installer.'
+    )
+    'antigravity' = @('If agy is missing, run https://antigravity.google/cli/install.ps1 and verify agy; otherwise keep the existing CLI.')
+    'opencode' = @(
+        'If opencode is missing, install opencode-ai globally with npm and allow its install script when supported; if npm is available, also run the optional global rebuild.'
+        'Verify opencode --version; if its no-shell launch probe fails, resolve and verify the native launcher before setting user/process OPENCODE_PI_BIN.'
+    )
+    'gentle-ai' = @(
+        'Remove stale GENTLE_PI_QUIET_TOOLS=0; repair Pi settings only when an unambiguous safe edit is available, otherwise warn and leave ambiguous or unmodifiable conflicts unchanged.'
+        'Install gentle-ai from its official script only if missing, then run gentle-ai install --scope global interactively with a TTY or non-interactively for detected agents; forward a GitHub token when available.'
+        'With a TTY, retry nonzero selector failures unless interrupted; without a TTY, retry only when captured output matches the GitHub API HTTP 403 signature (up to two backoffs).'
+        'If pi is available, install gentle-pi and pi-mcp-adapter; when gentle-pi is installed and npm supports approval, approve and rebuild its install script, then verify the review binary and Pi registrations. Repair settings safely again and verify pi startup.'
+    )
+    'cockpit' = @('Query the latest cockpit-tools GitHub release; if an MSI exists, download it and run msiexec /i /qb. If no MSI exists or the optional install fails, report/skip it.')
+    'rotator' = @(
+        'Probe localhost:51200/v1/models; if Node.js is missing or below 20, stop without installing the CLI, registering persistence, or starting the gateway.'
+        'If Node.js is at least 20, install tuxevil-rotator with npm only if missing and verify it is available on PATH.'
+        'Attempt best-effort registration and readback of the logon task with a 5-minute watchdog.'
+        'Only if the initial gateway probe was down, start via the scheduled task when available or fall back to a detached process and poll readiness; if already reachable, skip starting it.'
+        'Install/verify the Pi cockpit-sync extension only when pi is available.'
+    )
+}
 
 # ==============================================================================
 # Modules
@@ -1282,10 +1525,7 @@ function Mod-PiWorkflows {
     }
     if (-not $ver) { throw "Could not resolve pi-extensible-workflows version" }
     Write-Log INFO "pi-workflows" "version" "Version $ver"
-    Invoke-Step -Phase "pi-workflows" -Action { pi install "npm:pi-extensible-workflows@$ver" }
-    # Prove what Pi recorded instead of trusting the command: the quality gate below only
-    # inspects the separate extensions-root copy.
-    Assert-PiPackageRegistered -Phase "pi-workflows" -Spec "npm:pi-extensible-workflows"
+    Install-PiPackageOwned -Phase "pi-workflows" -Spec "npm:pi-extensible-workflows@$ver"
     New-Item -ItemType Directory -Force -Path $PiExtDir | Out-Null
     # Append-only, so the npm 12 remote-source opt-in written above survives.
     Add-LineIfMissing -Path (Join-Path $PiExtDir ".npmrc") -Line "ignore-scripts=false"
@@ -1353,21 +1593,20 @@ function Mod-PiPackages {
 
     $installed = 0
     $skipped = 0
-    $workflowId = Get-PiPackageId -Spec 'npm:pi-extensible-workflows'
+    $workflowId = Get-PiPackageIdentity -Spec 'npm:pi-extensible-workflows' -BaseDir $PiAgentDir
     foreach ($rawLine in (Get-Content -LiteralPath $manifest)) {
         # Strip a trailing comment, then trim surrounding whitespace only; internal
         # whitespace stays invalid input.
         $line = ($rawLine -split '#', 2)[0].Trim()
         if (-not $line) { continue }
 
-        if ((Get-PiPackageId -Spec $line) -eq $workflowId) {
+        if ((Get-PiPackageIdentity -Spec $line -BaseDir $PiAgentDir) -ceq $workflowId) {
             Write-Log WARN "pi-packages" "workflow_owned_elsewhere" "Skipping pi-extensible-workflows; the pi-workflows module owns that package" 0 "spec=$line"
             $skipped++
             continue
         }
 
-        $null = Invoke-Step -Phase "pi-packages" -Action { pi install $line }
-        Assert-PiPackageRegistered -Phase "pi-packages" -Spec $line
+        Install-PiPackageOwned -Phase "pi-packages" -Spec $line
         $installed++
     }
 
@@ -1882,7 +2121,7 @@ function Mod-GentleAi {
     # Guarantee pi reads gentle-ai in its MCP list (/mcp): install the first-class
     # gentle-pi harness + pi-mcp-adapter, then verify the exact target file.
     if (Test-Cmd pi) {
-        Invoke-Step -Phase "gentle-ai" -Action { pi install npm:gentle-pi }
+        Install-PiPackageOwned -Phase "gentle-ai" -Spec 'npm:gentle-pi'
         # Ensure the project marker exists even for -Only gentle-ai before the
         # npm 12 approval/rebuild check (issue #49).
         Enable-NpmRemoteSources -Dir $PiNpmDir
@@ -1890,14 +2129,15 @@ function Mod-GentleAi {
         # managed Pi root, so its package-local RDD review binary exists even if a
         # later module fails before the final convergence pass runs.
         Approve-NpmInstallScripts -Dir $PiNpmDir -Phase "gentle-ai"
-        Invoke-Step -Phase "gentle-ai" -Action { pi install npm:pi-mcp-adapter }
+        Install-PiPackageOwned -Phase "gentle-ai" -Spec 'npm:pi-mcp-adapter'
         $piSettings = Join-Path $PiAgentDir "settings.json"
-        $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
-        if (($piSettingsRaw -match '"npm:gentle-pi"') -and ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
+        try {
+            Assert-PiPackageRegistered -Phase 'gentle-ai' -Spec 'npm:gentle-pi'
+            Assert-PiPackageRegistered -Phase 'gentle-ai' -Spec 'npm:pi-mcp-adapter'
             Write-Log INFO "gentle-ai" "pi_enabled" "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)"
-        } else {
-            Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
-            throw "gentle-pi and/or pi-mcp-adapter not present in pi settings after install"
+        } catch {
+            Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present exactly once in pi settings after install ($piSettings)"
+            throw
         }
     }
 
@@ -1984,6 +2224,107 @@ function Test-OpenCodeSpawn {
     return $ok
 }
 
+function Get-OpenCodeUserEnvironmentValue {
+    param([string]$Name)
+    return [Environment]::GetEnvironmentVariable($Name, 'User')
+}
+
+function Set-OpenCodeUserEnvironmentValue {
+    param([string]$Name, [AllowNull()][string]$Value)
+    [Environment]::SetEnvironmentVariable($Name, $Value, 'User')
+}
+
+function Get-OpenCodeEnvReceiptPath {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return $null }
+    return Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'setup-ai') 'ownership') 'opencode-pi-bin.json'
+}
+
+function Test-OpenCodeEnvReceiptLocation {
+    $root = $env:LOCALAPPDATA; $path = Get-OpenCodeEnvReceiptPath
+    if (-not $root -or -not $path) { return $false }
+    $expected = Join-Path (Join-Path (Join-Path $root 'setup-ai') 'ownership') 'opencode-pi-bin.json'
+    try {
+        if (-not [string]::Equals([System.IO.Path]::GetFullPath($path), [System.IO.Path]::GetFullPath($expected), [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        $paths = @($root, (Join-Path $root 'setup-ai'), (Join-Path (Join-Path $root 'setup-ai') 'ownership'), $path)
+        for ($i = 0; $i -lt $paths.Count; $i++) {
+            if (-not (Test-Path -LiteralPath $paths[$i])) { continue }
+            $item = Get-Item -LiteralPath $paths[$i] -Force -ErrorAction Stop
+            if (($i -lt 3) -ne [bool]$item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Get-OpenCodeEnvReceiptState {
+    $path = Get-OpenCodeEnvReceiptPath
+    if (-not $path -or -not (Test-OpenCodeEnvReceiptLocation)) { return [pscustomobject]@{ Safe = $false; Exists = $false; Valid = $false; Receipt = $null } }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return [pscustomobject]@{ Safe = $true; Exists = $false; Valid = $false; Receipt = $null } }
+    try {
+        $receipt = Get-Content -Raw -LiteralPath $path -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $valid = $receipt -is [pscustomobject] -and $receipt.SchemaVersion -eq 1 -and
+            $receipt.Scope -ceq 'User' -and $receipt.Name -ceq 'OPENCODE_PI_BIN' -and
+            $receipt.Value -is [string] -and -not [string]::IsNullOrWhiteSpace($receipt.Value)
+        return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = [bool]$valid; Receipt = $(if ($valid) { $receipt } else { $null }) }
+    } catch { return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = $false; Receipt = $null } }
+}
+
+function Write-OpenCodeEnvReceipt {
+    param([string]$Value)
+    $path = Get-OpenCodeEnvReceiptPath
+    if (-not $path -or [string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $state = Get-OpenCodeEnvReceiptState
+    if (-not $state.Safe -or $state.Exists) { return $false }
+    $stream = $null
+    try {
+        [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+        if (-not (Test-OpenCodeEnvReceiptLocation)) { return $false }
+        $json = [pscustomobject]@{ SchemaVersion = 1; Scope = 'User'; Name = 'OPENCODE_PI_BIN'; Value = $Value } | ConvertTo-Json -Compress
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes($json)
+        $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true)
+        $stream.Dispose(); $stream = $null
+        $state = Get-OpenCodeEnvReceiptState
+        return $state.Valid -and $state.Receipt.Value -ceq $Value
+    } catch { return $false } finally { if ($null -ne $stream) { $stream.Dispose() } }
+}
+
+function Get-OpenCodeEnvInventoryStatus {
+    $state = Get-OpenCodeEnvReceiptState
+    if (-not $state.Safe) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; OpenCode environment receipt path is unsafe.' } }
+    if (-not $state.Exists) { return [pscustomobject]@{ State = 'absent'; Message = 'absent.' } }
+    if (-not $state.Valid) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; OpenCode environment receipt is missing or invalid.' } }
+    $current = Get-OpenCodeUserEnvironmentValue -Name $state.Receipt.Name
+    if ($current -ceq $state.Receipt.Value) { return [pscustomobject]@{ State = 'receipt-backed'; Message = 'receipt-backed User environment value; removable with -Yes.' } }
+    if ($null -eq $current) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; receipt-backed User environment value is already absent.' } }
+    return [pscustomobject]@{ State = 'protected'; Message = 'protected; User environment value changed after setup-ai recorded it.' }
+}
+
+function Remove-OpenCodeUserEnvironment {
+    param([switch]$Confirmed, [switch]$DryRun)
+    if (-not $Confirmed -or $DryRun) { return $false }
+    $path = Get-OpenCodeEnvReceiptPath
+    if (-not $path) { $script:OpenCodeEnvRemovalFailed = $true; return $false }
+    try { $receiptBefore = [System.IO.File]::ReadAllText($path) } catch { $script:OpenCodeEnvRemovalFailed = $true; return $false }
+    $state = Get-OpenCodeEnvReceiptState
+    if (-not $state.Safe -or -not $state.Valid) { $script:OpenCodeEnvRemovalFailed = $true; return $false }
+    $value = $state.Receipt.Value
+    if ((Get-OpenCodeUserEnvironmentValue -Name $state.Receipt.Name) -cne $value) { return $false }
+    try {
+        if ([System.IO.File]::ReadAllText($path) -cne $receiptBefore) { return $false }
+        Set-OpenCodeUserEnvironmentValue -Name $state.Receipt.Name -Value $null
+        if ($null -ne (Get-OpenCodeUserEnvironmentValue -Name $state.Receipt.Name)) { throw 'User environment readback still contains OPENCODE_PI_BIN.' }
+        if ([System.IO.File]::ReadAllText($path) -cne $receiptBefore) { throw 'receipt changed' }
+        Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+        if (Test-Path -LiteralPath $path) { throw 'receipt still exists' }
+        return $true
+    } catch {
+        $script:OpenCodeEnvRemovalFailed = $true
+        try { Set-OpenCodeUserEnvironmentValue -Name $state.Receipt.Name -Value $value }
+        catch { Write-Host "  ERROR: Could not restore User OPENCODE_PI_BIN after a failed removal: $($_.Exception.Message)" }
+        return $false
+    }
+}
+
 function Set-OpenCodePiBin {
     # What a fresh pi session resolves: explicit override first, else bare PATH.
     $effective = $env:OPENCODE_PI_BIN
@@ -2007,8 +2348,22 @@ function Set-OpenCodePiBin {
         Write-Log WARN "opencode" "spawn_failed" "the resolved opencode launcher is not spawnable without a shell" 0 "bin=$native"
         return
     }
-    [Environment]::SetEnvironmentVariable('OPENCODE_PI_BIN', $native, 'User')
+    $userValueBefore = Get-OpenCodeUserEnvironmentValue -Name 'OPENCODE_PI_BIN'
+    Set-OpenCodeUserEnvironmentValue -Name 'OPENCODE_PI_BIN' -Value $native
+    if ((Get-OpenCodeUserEnvironmentValue -Name 'OPENCODE_PI_BIN') -cne $native) {
+        throw 'OPENCODE_PI_BIN User environment readback did not match the native launcher.'
+    }
     $env:OPENCODE_PI_BIN = $native
+    if ($null -eq $userValueBefore) {
+        $receiptState = Get-OpenCodeEnvReceiptState
+        if ($receiptState.Valid -and $receiptState.Receipt.Value -ceq $native) {
+            Write-Log INFO "opencode" "ownership_receipt_preserved" "Preserved the existing setup-ai OpenCode environment ownership receipt" 0 "bin=$native"
+        } elseif (Write-OpenCodeEnvReceipt -Value $native) {
+            Write-Log INFO "opencode" "ownership_receipt_written" "Recorded fresh ownership of the User OPENCODE_PI_BIN value" 0 "bin=$native"
+        } else {
+            Write-Log WARN "opencode" "ownership_receipt_skipped" "Could not record ownership of OPENCODE_PI_BIN; the User environment value remains protected" 0 "bin=$native"
+        }
+    }
     Write-Log INFO "opencode" "pi_bin_set" "OPENCODE_PI_BIN points opencode-pi at the native launcher" 0 "bin=$native"
 }
 
@@ -2078,6 +2433,169 @@ function Mod-Cockpit {
     }
 }
 
+function Get-RotatorTaskFingerprint {
+    param($Task)
+    try {
+        $get = { param($Object, $Name) if ($null -eq $Object) { return $null }; $property = $Object.PSObject.Properties[$Name]; if ($property) { $property.Value } }
+        $taskName = [string](& $get $Task 'TaskName')
+        $taskPath = [string](& $get $Task 'TaskPath')
+        $description = [string](& $get $Task 'Description')
+        $markerMatch = [regex]::Match($description, '\[setup-ai-rotator-owner:([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\]$')
+        $markerCount = [regex]::Matches($description, '\[setup-ai-rotator-owner:[^\]]+\]').Count
+        $markerGuid = [Guid]::Empty
+        if ($taskName -cne 'tuxevil-rotator' -or $taskPath -cne '\' -or
+            -not $description.StartsWith('tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200 [setup-ai-rotator-owner:', [StringComparison]::Ordinal) -or
+            -not $markerMatch.Success -or $markerCount -ne 1 -or
+            -not [Guid]::TryParseExact($markerMatch.Groups[1].Value, 'D', [ref]$markerGuid)) { return '' }
+
+        $actions = @(& $get $Task 'Actions')
+        $rawTriggers = @(& $get $Task 'Triggers')
+        $settings = & $get $Task 'Settings'
+        $principal = & $get $Task 'Principal'
+        $actionFingerprint = @($actions | ForEach-Object {
+            [ordered]@{ Execute = & $get $_ 'Execute'; Arguments = & $get $_ 'Arguments'; WorkingDirectory = & $get $_ 'WorkingDirectory' }
+        })
+        $triggerFingerprint = @($rawTriggers | ForEach-Object {
+            $repetition = & $get $_ 'Repetition'
+            $cimClass = & $get $_ 'CimClass'
+            [ordered]@{
+                Type = & $get $cimClass 'CimClassName'; Enabled = & $get $_ 'Enabled'; UserId = & $get $_ 'UserId'
+                StartBoundary = & $get $_ 'StartBoundary'; EndBoundary = & $get $_ 'EndBoundary'
+                RepetitionInterval = & $get $repetition 'Interval'; RepetitionDuration = & $get $repetition 'Duration'
+                RepetitionStopAtDurationEnd = & $get $repetition 'StopAtDurationEnd'
+            }
+        })
+        $settingsFingerprint = [ordered]@{}
+        foreach ($name in @('Enabled', 'MultipleInstances', 'ExecutionTimeLimit', 'AllowStartIfOnBatteries', 'DontStopIfGoingOnBatteries', 'StartWhenAvailable', 'WakeToRun', 'DisallowStartIfOnBatteries', 'RunOnlyIfIdle', 'RunOnlyIfNetworkAvailable', 'AllowDemandStart', 'AllowHardTerminate', 'StopIfGoingOnBatteries', 'Priority', 'Hidden', 'RestartCount', 'RestartInterval', 'DeleteExpiredTaskAfter', 'UseUnifiedSchedulingEngine', 'Compatibility', 'Volatile', 'DisallowStartOnRemoteAppSession')) {
+            $settingsFingerprint[$name] = & $get $settings $name
+        }
+        $principalFingerprint = [ordered]@{
+            UserId = & $get $principal 'UserId'; GroupId = & $get $principal 'GroupId'
+            LogonType = & $get $principal 'LogonType'; RunLevel = & $get $principal 'RunLevel'
+            ProcessTokenSidType = & $get $principal 'ProcessTokenSidType'; RequiredPrivileges = & $get $principal 'RequiredPrivileges'
+        }
+        $fingerprint = [ordered]@{
+            TaskName = $taskName; TaskPath = $taskPath; Marker = $markerMatch.Groups[1].Value
+            Description = $description; Actions = $actionFingerprint; Triggers = $triggerFingerprint
+            Principal = $principalFingerprint; Settings = $settingsFingerprint
+        }
+        return ConvertTo-Json -InputObject $fingerprint -Compress -Depth 10
+    } catch { return '' }
+}
+
+function Test-RotatorTaskOwnership {
+    param($Task, $Receipt)
+    try {
+        if ($null -eq $Receipt -or $Receipt.SchemaVersion -ne 1 -or
+            $Receipt.TaskName -cne 'tuxevil-rotator' -or $Receipt.TaskPath -cne '\' -or
+            [string]::IsNullOrWhiteSpace([string]$Receipt.Fingerprint)) { return $false }
+        $markerGuid = [Guid]::Empty
+        if (-not [Guid]::TryParseExact([string]$Receipt.Marker, 'D', [ref]$markerGuid)) { return $false }
+        $description = [string]$Task.Description
+        if (-not $description.EndsWith("[setup-ai-rotator-owner:$($Receipt.Marker)]", [StringComparison]::Ordinal)) { return $false }
+        $fingerprint = Get-RotatorTaskFingerprint -Task $Task
+        return [bool]$fingerprint -and $fingerprint -ceq [string]$Receipt.Fingerprint
+    } catch { return $false }
+}
+
+function Test-RotatorReceiptPathSafe {
+    param([string]$LocalAppData, [string]$ReceiptPath, [object[]]$Attributes)
+    try {
+        if ([string]::IsNullOrWhiteSpace($LocalAppData) -or [string]::IsNullOrWhiteSpace($ReceiptPath) -or $Attributes.Count -ne 4) { return $false }
+        $expected = Join-Path (Join-Path (Join-Path $LocalAppData 'setup-ai') 'ownership') 'rotator-task.json'
+        if (-not [string]::Equals([System.IO.Path]::GetFullPath($expected), [System.IO.Path]::GetFullPath($ReceiptPath), [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        foreach ($attribute in $Attributes) { if ($null -ne $attribute -and $attribute -ne -1 -and ([System.IO.FileAttributes]$attribute -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false } }
+        return $true
+    } catch { return $false }
+}
+
+function Get-RotatorTaskReceiptPath {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return $null }
+    return Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'setup-ai') 'ownership') 'rotator-task.json'
+}
+
+function Test-RotatorReceiptLocation {
+    $root = $env:LOCALAPPDATA; $path = Get-RotatorTaskReceiptPath
+    if (-not $path) { return $false }
+    $paths = @($root, (Join-Path $root 'setup-ai'), (Join-Path (Join-Path $root 'setup-ai') 'ownership'), $path); $attributes = @(-1, -1, -1, -1)
+    try {
+        for ($i = 0; $i -lt 4; $i++) {
+            if (-not (Test-Path -LiteralPath $paths[$i])) { continue }
+            $item = Get-Item -LiteralPath $paths[$i] -Force -ErrorAction Stop
+            if (($i -lt 3) -ne [bool]$item.PSIsContainer) { return $false }; $attributes[$i] = $item.Attributes
+        }
+        return Test-RotatorReceiptPathSafe -LocalAppData $root -ReceiptPath $path -Attributes $attributes
+    } catch { return $false }
+}
+
+function Get-RotatorTaskReceiptState {
+    $path = Get-RotatorTaskReceiptPath
+    if (-not $path -or -not (Test-RotatorReceiptLocation)) { return [pscustomobject]@{ Safe = $false; Exists = $false; Valid = $false; Receipt = $null } }
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return [pscustomobject]@{ Safe = $true; Exists = $false; Valid = $false; Receipt = $null } }
+    try {
+        $receipt = Get-Content -Raw -LiteralPath $path -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop; $guid = [Guid]::Empty
+        $valid = $receipt -is [pscustomobject] -and $receipt.SchemaVersion -eq 1 -and $receipt.TaskName -ceq 'tuxevil-rotator' -and $receipt.TaskPath -ceq '\' -and [Guid]::TryParseExact([string]$receipt.Marker, 'D', [ref]$guid) -and -not [string]::IsNullOrWhiteSpace([string]$receipt.Fingerprint)
+        return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = [bool]$valid; Receipt = $(if ($valid) { $receipt } else { $null }) }
+    } catch { return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = $false; Receipt = $null } }
+}
+
+function Write-RotatorTaskReceipt {
+    param($Receipt)
+    $state = Get-RotatorTaskReceiptState; if (-not $state.Safe -or $state.Exists) { return $false }
+    $path = Get-RotatorTaskReceiptPath; $tempPath = "$path.$([Guid]::NewGuid().ToString('N')).tmp"
+    $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($Receipt | ConvertTo-Json -Compress -Depth 10)); $stream = $null; $createdTemp = $false
+    try {
+        if (-not (Test-RotatorReceiptLocation)) { return $false }
+        $stream = [System.IO.File]::Open($tempPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $createdTemp = $true
+        $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true); $stream.Dispose(); $stream = $null
+        if (-not (Test-RotatorReceiptLocation)) { return $false }
+        [System.IO.File]::Move($tempPath, $path)
+        $createdTemp = $false
+        return $true
+    } catch { return $false } finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+        if ($createdTemp) { [System.IO.File]::Delete($tempPath) }
+    }
+}
+
+function Test-RotatorTaskCleanupGuard { param($Task, $Receipt, [bool]$CreatedByCurrentCall) return $CreatedByCurrentCall -and (Test-RotatorTaskOwnership -Task $Task -Receipt $Receipt) }
+
+function Get-RotatorActionArguments {
+    param([string]$Executable)
+    $shim = $Executable.Replace("'", "''"); $tick = "try { (New-Object Net.Sockets.TcpClient('127.0.0.1', 51200)).Close() } catch { & '$shim' start }"
+    return '-NoProfile -WindowStyle Hidden -Command "' + $tick + '"'
+}
+
+function Test-RotatorTaskActionCurrent {
+    param($Task, [string]$Executable)
+    try {
+        $actions = @($Task.Actions)
+        return $actions.Count -eq 1 -and
+            [string]::Equals([string]$actions[0].Execute, 'powershell.exe', [StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals([string]$actions[0].Arguments, (Get-RotatorActionArguments -Executable $Executable), [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
+function Get-RotatorTaskQueryState {
+    try {
+        $tasks = @(Get-ScheduledTask -ErrorAction Stop | Where-Object { $null -ne $_ -and $_.TaskName -ceq 'tuxevil-rotator' })
+        return [pscustomobject]@{ Known = $true; Tasks = $tasks }
+    } catch {
+        return [pscustomobject]@{ Known = $false; Tasks = @() }
+    }
+}
+
+function Get-OwnedRotatorTask {
+    $receiptState = Get-RotatorTaskReceiptState
+    if (-not $receiptState.Safe -or -not $receiptState.Valid) { return $null }
+    $taskState = Get-RotatorTaskQueryState
+    if (-not $taskState.Known -or $taskState.Tasks.Count -ne 1 -or $taskState.Tasks[0].TaskPath -cne '\') { return $null }
+    $task = $taskState.Tasks[0]
+    if (Test-RotatorTaskOwnership -Task $task -Receipt $receiptState.Receipt) { return $task }
+    return $null
+}
+
 # Resolve the executable a scheduled task must run. npm installs three shims on Windows
 # and PowerShell resolves the .ps1 one, which a task cannot execute directly; the .cmd
 # shim is what the task runs.
@@ -2102,68 +2620,81 @@ function Get-RotatorExecutable {
 # the tick's own probe skips it while a gateway started elsewhere holds the port.
 function Register-RotatorTask {
     $binPath = Get-RotatorExecutable
-    $watchdogMinutes = 5
+    $state = Get-RotatorTaskReceiptState
+    if (-not $state.Safe -or ($state.Exists -and -not $state.Valid)) { Write-Log WARN 'rotator' 'receipt_invalid' 'Unsafe or malformed rotator receipt path; preserving the task'; return $false }
+    $createdByCall = $false
+    $newReceipt = $null
     try {
-        # The tick probes before it starts anything, because a manual or installer-detached
-        # gateway owns the port without owning this task instance, and IgnoreNew alone cannot
-        # keep that one single. A connect to the address the module's own probe uses is the
-        # cheapest test that answers "is a gateway already answering?": it is milliseconds,
-        # while Get-NetTCPConnection costs seconds and loads the NetTCPIP module.
-        #NOTE: a gateway bound to a non-loopback address only would read as free here; the
-        # gateway itself binds 0.0.0.0 (tuxevil-rotator's default) and 127.0.0.1 is what the
-        # module and the Pi extension probe, so this asks the same question they do.
-        # The path lands in a single-quoted string inside the task's command line, so a quote
-        # in it would end that string early; doubling it is PowerShell's own escaping.
-        $shim = $binPath.Replace("'", "''")
-        $tick = "try { (New-Object Net.Sockets.TcpClient('127.0.0.1', 51200)).Close() } catch { & '$shim' start }"
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ('-NoProfile -WindowStyle Hidden -Command "' + $tick + '"')
-        # Logon starts the gateway; the once-trigger's repetition is the watchdog. A
-        # repetition attached to the logon trigger itself never fires: measured on Windows 11,
-        # such a task reports no NextRunTime and only ever runs at logon.
-        $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-        $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $watchdogMinutes)
-        # A zero execution time limit is what keeps a long-running gateway from being killed
-        # at the scheduler's default three days.
-        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-        Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger @($atLogon, $watchdog) -Settings $taskSettings `
-            -Description "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200" -Force | Out-Null
-        # A registration can half-apply, and the promise is about the next logon rather than about
-        # this run, so the task is read back and checked: what it runs, that it still starts at
-        # logon for this user, and the two settings the supervision rests on. This also covers the
-        # trap above, where a repetition attached to the wrong trigger reads back as no watchdog.
-        $registered = Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction Stop
-        $actions = @($registered.Actions)
-        $actionOk = $actions.Count -eq 1 -and $actions[0].Execute -eq $action.Execute -and $actions[0].Arguments -eq $action.Arguments
-        $logonOk = @($registered.Triggers | Where-Object {
-            $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" -and $_.Enabled -and ($_.UserId -split '\\')[-1] -eq $env:USERNAME
-        }).Count -gt 0
-        # Scheduled-task APIs return durations as either TimeSpan values or ISO/XSD strings;
-        # normalize both forms before comparing the trigger we built with its readback.
-        $toDuration = {
-            param($value)
-            if ($value -is [TimeSpan]) { return [TimeSpan]$value }
-            $text = ([string]$value).Trim()
-            if ($text -like "P*") { return [System.Xml.XmlConvert]::ToTimeSpan($text) }
-            return [TimeSpan]::Parse($text, [Globalization.CultureInfo]::InvariantCulture)
-        }
-        $interval = & $toDuration $watchdog.Repetition.Interval
-        $watchdogOk = @($registered.Triggers | Where-Object {
-            $_.Enabled -and $_.Repetition -and $_.Repetition.Interval -and (& $toDuration $_.Repetition.Interval) -eq $interval
-        }).Count -gt 0
-        # A disabled task or trigger is registered and inert, so both are part of the check.
-        $enabledOk = [bool]$registered.Settings.Enabled
-        $instancesOk = $registered.Settings.MultipleInstances -eq "IgnoreNew"
-        $limitOk = [System.Xml.XmlConvert]::ToTimeSpan($registered.Settings.ExecutionTimeLimit) -eq [TimeSpan]::Zero
-        if (-not ($actionOk -and $logonOk -and $watchdogOk -and $enabledOk -and $instancesOk -and $limitOk)) {
-            $flags = "task=tuxevil-rotator;action=$actionOk;logon=$logonOk;watchdog=$watchdogOk;enabled=$enabledOk;ignoreNew=$instancesOk;noTimeLimit=$limitOk"
-            Write-Log WARN "rotator" "task_unverified" "Scheduled task registered without the action, logon trigger, or watchdog settings this module relies on; the gateway may stay down until the next setup-ai run" 0 $flags
+        $existing = Get-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -ErrorAction SilentlyContinue
+        if ($existing) {
+            if (-not $state.Valid -or -not (Test-RotatorTaskOwnership -Task $existing -Receipt $state.Receipt)) {
+                Write-Log WARN 'rotator' 'task_unowned' 'An existing rotator task is not receipt-owned; preserving it and using a detached process' 0 'task=tuxevil-rotator'
+                return $false
+            }
+            if (Test-RotatorTaskActionCurrent -Task $existing -Executable $binPath) {
+                Write-Log INFO 'rotator' 'task_owned' 'Existing setup-ai rotator task is receipt-owned and uses the current executable' 0 'task=tuxevil-rotator'
+                return $true
+            }
+            if (-not (Remove-RotatorOwnedTask)) { return $false }
+            $state = Get-RotatorTaskReceiptState
+            if (-not $state.Safe -or $state.Exists) { return $false }
+        } elseif ($state.Exists) {
+            Write-Log WARN 'rotator' 'receipt_stale' 'A receipt exists without its task; preserving the receipt and refusing registration' 0 'task=tuxevil-rotator'
             return $false
         }
-        Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes by a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m"
+
+        $receiptPath = Get-RotatorTaskReceiptPath
+        if (-not (Test-RotatorReceiptLocation)) { return $false }
+        New-Item -ItemType Directory -Path (Split-Path -Parent $receiptPath) -Force | Out-Null
+        if (-not (Test-RotatorReceiptLocation)) { return $false }
+        $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument (Get-RotatorActionArguments -Executable $binPath)
+        $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+        $watchdogMinutes = 5
+        $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $watchdogMinutes)
+        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
+        $principalUser = "$env:USERDOMAIN\$env:USERNAME"
+        $principal = New-ScheduledTaskPrincipal -UserId $principalUser -LogonType Interactive -RunLevel Limited
+        $marker = [Guid]::NewGuid().ToString('D')
+        $description = "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200 [setup-ai-rotator-owner:$marker]"
+        # Without -Force, a concurrent task makes fresh registration fail rather than overwrite it.
+        $registered = Register-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -Action $action -Trigger @($atLogon, $watchdog) `
+            -Settings $taskSettings -Principal $principal -Description $description -PassThru
+        $createdByCall = $true
+        $newReceipt = [pscustomobject]@{
+            SchemaVersion = 1; TaskName = 'tuxevil-rotator'; TaskPath = '\'; Marker = $marker
+            Fingerprint = Get-RotatorTaskFingerprint -Task $registered
+        }
+        if (-not $newReceipt.Fingerprint) { throw 'Could not fingerprint the newly registered task.' }
+        $registered = Get-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -ErrorAction Stop
+        if (-not (Test-RotatorTaskOwnership -Task $registered -Receipt $newReceipt)) { throw 'Task identity changed before readback validation.' }
+        $actions = @($registered.Actions)
+        $triggers = @($registered.Triggers)
+        $actionOk = $actions.Count -eq 1 -and $actions[0].Execute -eq $action.Execute -and $actions[0].Arguments -eq $action.Arguments
+        $logonOk = @($triggers | Where-Object {
+            $_.CimClass.CimClassName -eq 'MSFT_TaskLogonTrigger' -and $_.Enabled -and ($_.UserId -split '\\')[-1] -eq $env:USERNAME
+        }).Count -eq 1
+        $toDuration = { param($value) if ($value -is [TimeSpan]) { return [TimeSpan]$value }; $text = ([string]$value).Trim(); if ($text -like 'P*') { return [System.Xml.XmlConvert]::ToTimeSpan($text) }; return [TimeSpan]::Parse($text, [Globalization.CultureInfo]::InvariantCulture) }
+        $interval = & $toDuration $watchdog.Repetition.Interval
+        $watchdogOk = @($triggers | Where-Object {
+            $_.CimClass.CimClassName -eq 'MSFT_TaskTimeTrigger' -and $_.Enabled -and $_.Repetition -and $_.Repetition.Interval -and (& $toDuration $_.Repetition.Interval) -eq $interval
+        }).Count -eq 1
+        $settingsOk = [bool]$registered.Settings.Enabled -and $registered.Settings.AllowStartIfOnBatteries -and
+            $registered.Settings.DontStopIfGoingOnBatteries -and $registered.Settings.MultipleInstances -eq 'IgnoreNew' -and
+            [System.Xml.XmlConvert]::ToTimeSpan($registered.Settings.ExecutionTimeLimit) -eq [TimeSpan]::Zero
+        $principalOk = $registered.Principal.UserId -and ($registered.Principal.UserId -split '\\')[-1] -eq $env:USERNAME -and
+            $registered.Principal.LogonType -eq 'Interactive' -and $registered.Principal.RunLevel -eq 'Limited'
+        $identityOk = $registered.TaskName -ceq 'tuxevil-rotator' -and $registered.TaskPath -ceq '\' -and $registered.Description -ceq $description
+        if (-not ($identityOk -and $actionOk -and $logonOk -and $watchdogOk -and $settingsOk -and $principalOk)) { throw 'Scheduled task readback did not match the expected identity, action, triggers, principal, or settings.' }
+        if (-not (Write-RotatorTaskReceipt -Receipt $newReceipt)) { throw 'Could not create the ownership receipt.' }
+        $createdByCall = $false
+        $writtenState = Get-RotatorTaskReceiptState
+        if (-not $writtenState.Safe -or -not $writtenState.Valid -or -not (Test-RotatorTaskOwnership -Task $registered -Receipt $writtenState.Receipt)) { throw 'Ownership receipt readback did not match the registered task.' }
+        Write-Log INFO 'rotator' 'task_registered' "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m"
         return $true
     } catch {
-        Write-Log WARN "rotator" "task_failed" "Scheduled task registration or verification failed; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"
+        if ($createdByCall -and $newReceipt) { [void](Remove-RotatorCreatedTask -Receipt $newReceipt -CreatedByCurrentCall $true) }
+        Write-Log WARN 'rotator' 'task_failed' 'Scheduled task registration or ownership verification failed; the gateway is started as a detached process only' 0 "error=$($_.Exception.Message)"
         return $false
     }
 }
@@ -2173,16 +2704,17 @@ function Register-RotatorTask {
 # anywhere it cannot run, the process is detached from this installer instead.
 function Start-RotatorGateway {
     param([string]$LogFile)
-    if (Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction SilentlyContinue) {
+    $binPath = Get-RotatorExecutable
+    $ownedTask = Get-OwnedRotatorTask
+    if ($ownedTask -and (Test-RotatorTaskActionCurrent -Task $ownedTask -Executable $binPath)) {
         try {
-            Start-ScheduledTask -TaskName "tuxevil-rotator"
-            Write-Log INFO "rotator" "task_started" "tuxevil-rotator started through the logon scheduled task" 0 "task=tuxevil-rotator"
+            Start-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\'
+            Write-Log INFO 'rotator' 'task_started' 'Receipt-owned tuxevil-rotator started through its logon task' 0 'task=tuxevil-rotator'
             return $true
         } catch {
-            Write-Log WARN "rotator" "task_start_failed" "Scheduled task did not start; falling back to a detached process" 0 "error=$($_.Exception.Message)"
+            Write-Log WARN 'rotator' 'task_start_failed' 'Scheduled task did not start; falling back to a detached process' 0 "error=$($_.Exception.Message)"
         }
     }
-    $binPath = Get-RotatorExecutable
     try {
         Start-Process -FilePath $binPath -ArgumentList "start" -WindowStyle Hidden `
             -RedirectStandardOutput $LogFile -RedirectStandardError ([System.IO.Path]::ChangeExtension($LogFile, ".err.log"))
@@ -2191,6 +2723,315 @@ function Start-RotatorGateway {
     } catch {
         Write-Log WARN "rotator" "gateway_spawn_failed" "tuxevil-rotator could not be started in the background" 0 "error=$($_.Exception.Message)"
         return $false
+    }
+}
+
+function Remove-RotatorTaskReceipt {
+    param($ExpectedReceipt)
+    $state = Get-RotatorTaskReceiptState
+    if (-not $state.Safe -or -not $state.Valid) { return $false }
+    $receipt = $state.Receipt
+    if ($receipt.SchemaVersion -ne $ExpectedReceipt.SchemaVersion -or $receipt.TaskName -cne $ExpectedReceipt.TaskName -or
+        $receipt.TaskPath -cne $ExpectedReceipt.TaskPath -or $receipt.Marker -cne $ExpectedReceipt.Marker -or
+        $receipt.Fingerprint -cne $ExpectedReceipt.Fingerprint -or -not (Test-RotatorReceiptLocation)) { return $false }
+    Remove-Item -LiteralPath (Get-RotatorTaskReceiptPath) -Force -ErrorAction Stop
+    return $true
+}
+
+function Remove-RotatorOwnedTask {
+    $state = Get-RotatorTaskReceiptState
+    if (-not $state.Safe -or -not $state.Valid) { return $false }
+    try {
+        $taskState = Get-RotatorTaskQueryState
+        if (-not $taskState.Known -or $taskState.Tasks.Count -ne 1 -or $taskState.Tasks[0].TaskPath -cne '\' -or
+            -not (Test-RotatorTaskOwnership -Task $taskState.Tasks[0] -Receipt $state.Receipt)) { return $false }
+        # ponytail: Task Scheduler has no compare-and-delete; the TOCTOU window remains until an atomic condition is available.
+        $state = Get-RotatorTaskReceiptState
+        $taskState = Get-RotatorTaskQueryState
+        if (-not $state.Safe -or -not $state.Valid -or -not $taskState.Known -or $taskState.Tasks.Count -ne 1 -or
+            $taskState.Tasks[0].TaskPath -cne '\' -or -not (Test-RotatorTaskOwnership -Task $taskState.Tasks[0] -Receipt $state.Receipt)) { return $false }
+        Unregister-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -Confirm:$false -ErrorAction Stop
+        $taskState = Get-RotatorTaskQueryState
+        if (-not $taskState.Known -or $taskState.Tasks.Count -ne 0) { return $false }
+        return Remove-RotatorTaskReceipt -ExpectedReceipt $state.Receipt
+    } catch {
+        Write-Log WARN 'rotator' 'task_remove_failed' 'Receipt-owned rotator task could not be safely removed' 0 "error=$($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Remove-RotatorCreatedTask {
+    param($Receipt, [bool]$CreatedByCurrentCall)
+    if (-not $CreatedByCurrentCall -or -not $Receipt) { return $false }
+    try {
+        $task = Get-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -ErrorAction Stop
+        if (-not (Test-RotatorTaskCleanupGuard -Task $task -Receipt $Receipt -CreatedByCurrentCall $CreatedByCurrentCall)) { return $false }
+        # Revalidate this call's fresh marker and fingerprint immediately before cleanup.
+        $task = Get-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -ErrorAction Stop
+        if (-not (Test-RotatorTaskCleanupGuard -Task $task -Receipt $Receipt -CreatedByCurrentCall $CreatedByCurrentCall)) { return $false }
+        Unregister-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -Confirm:$false -ErrorAction Stop
+        if (Get-ScheduledTask -TaskName 'tuxevil-rotator' -TaskPath '\' -ErrorAction SilentlyContinue) { return $false }
+        return $true
+    } catch { return $false }
+}
+
+function Get-RotatorNpmReceiptPath {
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return $null }
+    return Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'setup-ai') 'ownership') 'rotator-npm.json'
+}
+
+function Test-RotatorNpmReceiptLocation {
+    $root = $env:LOCALAPPDATA; $path = Get-RotatorNpmReceiptPath
+    if (-not $path) { return $false }
+    $paths = @($root, (Join-Path $root 'setup-ai'), (Join-Path (Join-Path $root 'setup-ai') 'ownership'), $path)
+    try {
+        for ($i = 0; $i -lt 4; $i++) {
+            if (-not (Test-Path -LiteralPath $paths[$i])) { continue }
+            $item = Get-Item -LiteralPath $paths[$i] -Force -ErrorAction Stop
+            if (($i -lt 3) -ne [bool]$item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+        }
+        $expected = Join-Path (Join-Path (Join-Path $root 'setup-ai') 'ownership') 'rotator-npm.json'
+        return [string]::Equals([System.IO.Path]::GetFullPath($expected), [System.IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
+}
+
+function Write-RotatorNpmReceipt {
+    param($Receipt)
+    $path = Get-RotatorNpmReceiptPath
+    if (-not $path -or -not (Test-RotatorNpmReceiptLocation)) { return $false }
+    $stream = $null
+    try {
+        [void][System.IO.Directory]::CreateDirectory((Split-Path -Parent $path))
+        if (-not (Test-RotatorNpmReceiptLocation)) { return $false }
+        $bytes = [System.Text.UTF8Encoding]::new($false).GetBytes(($Receipt | ConvertTo-Json -Compress -Depth 4))
+        $stream = [System.IO.File]::Open($path, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        return $true
+    } catch { return $false } finally { if ($null -ne $stream) { $stream.Dispose() } }
+}
+
+function Get-RotatorNpmPathAttributes {
+    param([string]$Path)
+    try { return [System.IO.File]::GetAttributes($Path) }
+    catch [System.IO.FileNotFoundException] { return $null }
+    catch [System.IO.DirectoryNotFoundException] { return $null }
+}
+
+function Get-RotatorNpmReceiptState {
+    param([switch]$AllowMissingPackage)
+    $path = Get-RotatorNpmReceiptPath
+    if (-not $path -or -not (Test-RotatorNpmReceiptLocation) -or -not (Test-Path -LiteralPath $path -PathType Leaf)) { return [pscustomobject]@{ Valid = $false; PackagePresent = $false; Receipt = $null } }
+    try {
+        $receipt = Get-Content -Raw -LiteralPath $path -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($receipt -isnot [pscustomobject] -or $receipt.SchemaVersion -ne 2 -or $receipt.Package -cne 'tuxevil-rotator' -or
+            [string]::IsNullOrWhiteSpace($receipt.NpmRoot) -or [string]::IsNullOrWhiteSpace($receipt.PackagePath) -or
+            $receipt.Version -isnot [string] -or [string]::IsNullOrWhiteSpace($receipt.Version) -or
+            $receipt.Marker -isnot [string] -or $receipt.Marker -cnotmatch '^[0-9a-f]{32}$') { return [pscustomobject]@{ Valid = $false; PackagePresent = $false; Receipt = $null } }
+        if (-not (Test-Cmd npm)) { return [pscustomobject]@{ Valid = $false; PackagePresent = $false; Receipt = $null } }
+        $global:LASTEXITCODE = 0
+        $root = (& npm root -g 2>$null | Out-String).Trim()
+        if ($global:LASTEXITCODE -ne 0 -or $root -cne $receipt.NpmRoot) { return [pscustomobject]@{ Valid = $false; PackagePresent = $false; Receipt = $null } }
+        $packageDir = Join-Path $root 'tuxevil-rotator'
+        $packageJson = Join-Path $packageDir 'package.json'
+        $markerPath = Join-Path $packageDir '.setup-ai-ownership'
+        if ($packageJson -cne $receipt.PackagePath) { return [pscustomobject]@{ Valid = $false; PackagePresent = $false; Receipt = $null } }
+        $directoryAttributes = Get-RotatorNpmPathAttributes $packageDir
+        $markerAttributes = Get-RotatorNpmPathAttributes $markerPath
+        if ($null -eq $directoryAttributes) {
+            if ($AllowMissingPackage -and $null -eq $markerAttributes) { return [pscustomobject]@{ Valid = $true; PackagePresent = $false; Receipt = $receipt } }
+            return [pscustomobject]@{ Valid = $false; PackagePresent = $false; Receipt = $null }
+        }
+        if (($directoryAttributes -band [System.IO.FileAttributes]::Directory) -eq 0 -or
+            ($directoryAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or $null -eq $markerAttributes -or
+            ($markerAttributes -band [System.IO.FileAttributes]::Directory) -ne 0 -or
+            ($markerAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return [pscustomobject]@{ Valid = $false; PackagePresent = $true; Receipt = $null } }
+        $packageAttributes = Get-RotatorNpmPathAttributes $packageJson
+        if ($null -eq $packageAttributes -or ($packageAttributes -band [System.IO.FileAttributes]::Directory) -ne 0 -or
+            ($packageAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return [pscustomobject]@{ Valid = $false; PackagePresent = $true; Receipt = $null } }
+        if ([System.IO.File]::ReadAllText($markerPath) -cne $receipt.Marker) { return [pscustomobject]@{ Valid = $false; PackagePresent = $true; Receipt = $null } }
+        $metadata = Get-Content -Raw -LiteralPath $packageJson -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        if ($metadata.Name -cne $receipt.Package -or $metadata.Version -isnot [string] -or $metadata.Version -cne $receipt.Version) { return [pscustomobject]@{ Valid = $false; PackagePresent = $true; Receipt = $null } }
+        return [pscustomobject]@{ Valid = $true; PackagePresent = $true; Receipt = $receipt }
+    } catch { return [pscustomobject]@{ Valid = $false; PackagePresent = $false; Receipt = $null } }
+}
+
+function Test-RotatorNpmTaskDependency {
+    param([switch]$ReadOnly)
+    $script:RotatorNpmTaskBlocked = $false
+    $taskState = Get-RotatorTaskQueryState
+    if (-not $taskState.Known) { $script:RotatorNpmTaskBlocked = $true; return $false }
+    if ($taskState.Tasks.Count -eq 0) { return $true }
+    if ($taskState.Tasks.Count -ne 1 -or $taskState.Tasks[0].TaskPath -cne '\') { $script:RotatorNpmTaskBlocked = $true; return $false }
+    $receiptState = Get-RotatorTaskReceiptState
+    if (-not $receiptState.Safe -or -not $receiptState.Valid -or
+        -not (Test-RotatorTaskOwnership -Task $taskState.Tasks[0] -Receipt $receiptState.Receipt)) { $script:RotatorNpmTaskBlocked = $true; return $false }
+    if ($ReadOnly) { return $true }
+    if (-not (Remove-RotatorOwnedTask)) { $script:RotatorNpmTaskBlocked = $true; return $false }
+    return $true
+}
+
+function Get-RotatorTaskInventoryStatus {
+    param([switch]$Confirmed, [switch]$DryRun)
+    if ($Confirmed -and -not $DryRun) {
+        if (Remove-RotatorOwnedTask) { return [pscustomobject]@{ Removed = $true; Message = 'removed receipt-backed task.' } }
+        return [pscustomobject]@{ Removed = $false; Message = 'not removed; ownership could not be verified or removal failed.' }
+    }
+    $taskState = Get-RotatorTaskQueryState
+    if (-not $taskState.Known) { return [pscustomobject]@{ Removed = $false; Message = 'state unknown; task query failed and the task is protected.' } }
+    if ($taskState.Tasks.Count -eq 0) { return [pscustomobject]@{ Removed = $false; Message = 'not present (task query succeeded).' } }
+    if ($taskState.Tasks.Count -ne 1 -or $taskState.Tasks[0].TaskPath -cne '\') {
+        return [pscustomobject]@{ Removed = $false; Message = 'protected; duplicate or nested same-name task exists.' }
+    }
+    $receiptState = Get-RotatorTaskReceiptState
+    if ($receiptState.Safe -and $receiptState.Valid -and (Test-RotatorTaskOwnership -Task $taskState.Tasks[0] -Receipt $receiptState.Receipt)) {
+        $message = if ($Confirmed -and $DryRun) { 'would remove receipt-backed task in dry-run.' } else { 'receipt-backed and removable with -Yes.' }
+        return [pscustomobject]@{ Removed = $false; Message = $message }
+    }
+    return [pscustomobject]@{ Removed = $false; Message = 'protected; present task has no matching ownership receipt and fingerprint.' }
+}
+
+function Remove-RotatorNpmPackage {
+    param([switch]$Confirmed, [switch]$DryRun)
+    if (-not $Confirmed -or $DryRun) { return $false }
+    $receiptPath = Get-RotatorNpmReceiptPath
+    if (-not $receiptPath) { return $false }
+    try { $receiptBefore = [System.IO.File]::ReadAllText($receiptPath) } catch { return $false }
+    $state = Get-RotatorNpmReceiptState
+    if (-not $state.Valid -or -not $state.PackagePresent) { return $false }
+    if (-not (Test-RotatorNpmTaskDependency)) { return $false }
+    $receipt = $state.Receipt
+    $current = Get-RotatorNpmReceiptState
+    if (-not $current.Valid -or -not $current.PackagePresent -or $current.Receipt.NpmRoot -cne $receipt.NpmRoot -or
+        $current.Receipt.PackagePath -cne $receipt.PackagePath -or $current.Receipt.Package -cne $receipt.Package -or
+        $current.Receipt.Version -cne $receipt.Version -or $current.Receipt.Marker -cne $receipt.Marker) { return $false }
+    try {
+        if ([System.IO.File]::ReadAllText($receiptPath) -cne $receiptBefore) { return $false }
+    } catch { return $false }
+    if (-not (Test-RotatorNpmTaskDependency)) { return $false }
+    try {
+        $global:LASTEXITCODE = 0
+        npm uninstall --global tuxevil-rotator | Out-Null
+        if ($global:LASTEXITCODE -ne 0) { throw "npm exited with code $global:LASTEXITCODE" }
+    } catch {
+        $script:RotatorNpmRemovalFailed = $true
+        Write-Host "ERROR: Receipt-owned tuxevil-rotator npm uninstall failed; package and receipt were preserved. $($_.Exception.Message)"
+        return $false
+    }
+    $after = Get-RotatorNpmReceiptState -AllowMissingPackage
+    if (-not $after.Valid -or $after.PackagePresent -or $after.Receipt.NpmRoot -cne $receipt.NpmRoot -or
+        $after.Receipt.PackagePath -cne $receipt.PackagePath -or $after.Receipt.Package -cne $receipt.Package -or
+        $after.Receipt.Version -cne $receipt.Version -or $after.Receipt.Marker -cne $receipt.Marker) {
+        $script:RotatorNpmRemovalFailed = $true
+        Write-Host 'ERROR: npm uninstall did not leave the receipt-owned package directory and marker absent from the same global root; receipt preserved.'
+        return $false
+    }
+    try {
+        if ([System.IO.File]::ReadAllText($receiptPath) -cne $receiptBefore) { throw 'receipt changed' }
+        Remove-Item -LiteralPath $receiptPath -Force -ErrorAction Stop
+        if ($null -ne (Get-RotatorNpmPathAttributes $receiptPath)) { throw 'receipt still exists' }
+        return $true
+    } catch {
+        $script:RotatorNpmRemovalFailed = $true
+        Write-Host "ERROR: Package is absent but its ownership receipt could not be removed. $($_.Exception.Message)"
+        return $false
+    }
+}
+
+function Install-RotatorNpmPackage {
+    if (-not (Test-Cmd npm)) { throw "npm not found; tuxevil-rotator cannot be installed" }
+
+    $npmRootBefore = ''
+    try {
+        $npmRootBefore = (& npm root -g 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0) { $npmRootBefore = '' }
+    } catch { $npmRootBefore = '' }
+    $preExisting = $true
+    if ($npmRootBefore) {
+        try { $preExisting = [System.IO.Directory]::GetFileSystemEntries($npmRootBefore, 'tuxevil-rotator').Length -gt 0 } catch { $preExisting = $true }
+    }
+
+    $installed = Invoke-Step -Phase 'rotator' -Action { npm install -g tuxevil-rotator }
+    if (-not $installed) { throw 'tuxevil-rotator npm install failed' }
+    if (-not (Test-Cmd tuxevil-rotator)) {
+        Write-Log ERROR 'rotator' 'install_missing' 'tuxevil-rotator not found on PATH after npm install'
+        throw 'tuxevil-rotator not found on PATH after npm install'
+    }
+    if (-not $npmRootBefore -or $preExisting) {
+        Write-Log WARN 'rotator' 'ownership_receipt_skipped' 'Could not prove this run installed a previously absent global package' 0
+        return
+    }
+
+    $npmRootAfter = ''
+    try {
+        $npmRootAfter = (& npm root -g 2>$null | Out-String).Trim()
+        if ($LASTEXITCODE -ne 0 -or $npmRootAfter -cne $npmRootBefore) { $npmRootAfter = '' }
+    } catch { $npmRootAfter = '' }
+    if (-not $npmRootAfter) {
+        Write-Log WARN 'rotator' 'ownership_receipt_skipped' 'Global npm root changed or could not be verified after installation' 0
+        return
+    }
+
+    $packageDir = Join-Path $npmRootAfter 'tuxevil-rotator'
+    $packageJson = Join-Path $packageDir 'package.json'
+    $directoryAttributes = Get-RotatorNpmPathAttributes $packageDir
+    $packageAttributes = Get-RotatorNpmPathAttributes $packageJson
+    if ($null -eq $directoryAttributes -or ($directoryAttributes -band [System.IO.FileAttributes]::Directory) -eq 0 -or
+        ($directoryAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or $null -eq $packageAttributes -or
+        ($packageAttributes -band [System.IO.FileAttributes]::Directory) -ne 0 -or
+        ($packageAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-Log WARN 'rotator' 'ownership_receipt_skipped' 'Package directory or package.json is not a regular owned path' 0 "package=$packageJson"
+        return
+    }
+    try {
+        $metadata = Get-Content -Raw -LiteralPath $packageJson | ConvertFrom-Json -ErrorAction Stop
+        if ($metadata.Name -cne 'tuxevil-rotator' -or $metadata.Version -isnot [string] -or [string]::IsNullOrWhiteSpace($metadata.Version)) { throw 'package metadata mismatch' }
+    } catch {
+        Write-Log WARN 'rotator' 'ownership_receipt_skipped' 'Installed package metadata could not be verified at the exact global npm root' 0 "package=$packageJson"
+        return
+    }
+
+    $directoryAttributes = Get-RotatorNpmPathAttributes $packageDir
+    $packageAttributes = Get-RotatorNpmPathAttributes $packageJson
+    if ($null -eq $directoryAttributes -or ($directoryAttributes -band [System.IO.FileAttributes]::Directory) -eq 0 -or
+        ($directoryAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or $null -eq $packageAttributes -or
+        ($packageAttributes -band [System.IO.FileAttributes]::Directory) -ne 0 -or
+        ($packageAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        Write-Log WARN 'rotator' 'ownership_receipt_skipped' 'Package directory or package.json changed to an unsafe path' 0 "package=$packageJson"
+        return
+    }
+    $markerPath = Join-Path $packageDir '.setup-ai-ownership'
+    $marker = [Guid]::NewGuid().ToString('N')
+    $markerStream = $null
+    try {
+        $markerStream = [System.IO.File]::Open($markerPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $markerBytes = [System.Text.UTF8Encoding]::new($false).GetBytes($marker)
+        $markerStream.Write($markerBytes, 0, $markerBytes.Length)
+        $markerStream.Flush($true)
+        $markerStream.Dispose(); $markerStream = $null
+        if ([System.IO.File]::ReadAllText($markerPath) -cne $marker) { throw 'marker readback mismatch' }
+    } catch {
+        if ($null -ne $markerStream) { $markerStream.Dispose() }
+        Write-Log WARN 'rotator' 'ownership_receipt_skipped' 'Could not create and verify a unique package ownership marker' 0 "path=$markerPath"
+        return
+    }
+
+    $receipt = [pscustomobject]@{
+        SchemaVersion = 2; Package = $metadata.Name; NpmRoot = $npmRootAfter
+        PackagePath = $packageJson; Version = $metadata.Version; Marker = $marker
+    }
+    if (Write-RotatorNpmReceipt -Receipt $receipt) {
+        Write-Log INFO 'rotator' 'ownership_receipt_written' 'Verified fresh global package ownership recorded' 0 "package=$packageJson"
+    } else {
+        try {
+            $markerAttributes = Get-RotatorNpmPathAttributes $markerPath
+            if ($null -ne $markerAttributes -and ($markerAttributes -band [System.IO.FileAttributes]::Directory) -eq 0 -and
+                ($markerAttributes -band [System.IO.FileAttributes]::ReparsePoint) -eq 0 -and
+                [System.IO.File]::ReadAllText($markerPath) -ceq $marker) {
+                Remove-Item -LiteralPath $markerPath -Force -ErrorAction Stop
+            }
+        } catch { Write-Log ERROR 'rotator' 'ownership_marker_cleanup_failed' 'Could not remove the marker after receipt publication failed' 1 "path=$markerPath" }
+        Write-Log WARN 'rotator' 'ownership_receipt_skipped' 'Could not publish the package ownership receipt; the package remains unowned' 0
     }
 }
 
@@ -2245,12 +3086,7 @@ function Mod-Rotator {
     if (Test-Cmd tuxevil-rotator) {
         Write-Log INFO "rotator" "already_present" "tuxevil-rotator already installed"
     } else {
-        if (-not (Test-Cmd npm)) { throw "npm not found; tuxevil-rotator cannot be installed" }
-        Invoke-Step -Phase "rotator" -Action { npm install -g tuxevil-rotator }
-        if (-not (Test-Cmd tuxevil-rotator)) {
-            Write-Log ERROR "rotator" "install_missing" "tuxevil-rotator not found on PATH after npm install"
-            throw "tuxevil-rotator not found on PATH after npm install"
-        }
+        Install-RotatorNpmPackage
     }
 
     # Register boot persistence first: registering the task never starts a second
@@ -2302,12 +3138,8 @@ function Mod-Rotator {
         # and cannot be removed with `pi remove`, which only matches installed packages.
         $extensionSource = "git:github.com/darkrei08/pi-cockpit-tools-sync"
         $piSettings = Join-Path $PiAgentDir "settings.json"
-        Invoke-Step -Phase "rotator" -Action { pi install $extensionSource }
-        if (-not (Test-Path -LiteralPath $piSettings -PathType Leaf) -or
-            -not (Select-String -LiteralPath $piSettings -SimpleMatch $extensionSource -Quiet)) {
-            Write-Log ERROR "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=$piSettings"
-            throw "Pi did not register cockpit sync extension"
-        }
+        Install-PiPackageOwned -Phase 'rotator' -Spec $extensionSource
+        Assert-PiPackageRegistered -Phase 'rotator' -Spec $extensionSource
         Write-Log INFO "rotator" "pi_extension_verified" "Cockpit sync extension registered in Pi" 0 "path=$piSettings"
     } else {
         Write-Log INFO "rotator" "pi_extension_skipped" "pi not found; cockpit sync extension was not installed"
@@ -2347,7 +3179,7 @@ function Show-List {
         $tag = if ($ModuleOptional.ContainsKey($m)) { "optional" } else { "core    " }
         "{0,-10} {1,-14} {2}" -f "[$tag]", $m, $ModuleDesc[$m] | Write-Host
     }
-    Write-Host "`nUse: -Only csv | -All | -Verbose | (default = core)"
+    Write-Host "`nUse: -Only csv | -All | -DryRun | -Uninstall [-Yes] [-Purge] | -Verbose (default = core)"
 }
 
 function Show-Help {
@@ -2362,30 +3194,52 @@ function Show-Help {
     Show-List
 }
 
+function Write-SelectionError {
+    param([string]$Message)
+    if ($DryRun -or $Uninstall) { Write-Host "ERROR: $Message" -ForegroundColor Red }
+    else { Write-Log ERROR "selection" "invalid_only" $Message 2 }
+    exit 2
+}
+
 function Resolve-Selection {
     $requested = @()
     if ($All) {
         $requested = $ModuleOrder
     } elseif ($OnlySpecified) {
-        if ([string]::IsNullOrWhiteSpace($Only)) {
-            Write-Log ERROR "selection" "invalid_only" "-Only requires a non-empty comma-separated module list." 2
-            exit 2
-        }
+        if ([string]::IsNullOrWhiteSpace($Only)) { Write-SelectionError "-Only requires a non-empty comma-separated module list." }
         foreach ($r in ($Only -split ',')) {
             $r = $r.Trim()
             if (-not $r) { continue }
-            if (-not $ModuleDesc.Contains($r)) { Write-Log ERROR "selection" "invalid_only" "Unknown module: $r" 2; exit 2 }
+            if (-not $ModuleDesc.Contains($r)) { Write-SelectionError "Unknown module: $r" }
             $requested += $r
         }
-        if ($requested.Count -eq 0) {
-            Write-Log ERROR "selection" "invalid_only" "-Only requires a non-empty comma-separated module list." 2
-            exit 2
-        }
+        if ($requested.Count -eq 0) { Write-SelectionError "-Only requires a non-empty comma-separated module list." }
     } else {
         $requested = $ModuleOrder | Where-Object { -not $ModuleOptional.ContainsKey($_) }
     }
     # Order by ModuleOrder so dependencies run first.
     return $ModuleOrder | Where-Object { $requested -contains $_ }
+}
+
+function Resolve-UninstallSelection {
+    $requested = @()
+    if ($All) {
+        $requested = @($ModuleOrder) + 'shell'
+    } elseif ($OnlySpecified) {
+        if ([string]::IsNullOrWhiteSpace($Only)) { Write-SelectionError "-Only requires a non-empty comma-separated module list." }
+        foreach ($r in ($Only -split ',')) {
+            $r = $r.Trim()
+            if (-not $r) { continue }
+            if ($r -cne 'shell' -and -not ($ModuleOrder -ccontains $r)) { Write-SelectionError "Unknown module: $r" }
+            $requested += $r
+        }
+        if ($requested.Count -eq 0) { Write-SelectionError "-Only requires a non-empty comma-separated module list." }
+    } else {
+        $requested = @($ModuleOrder) + 'shell'
+    }
+    $selected = @($ModuleOrder | Where-Object { $requested -contains $_ })
+    if ($requested -contains 'shell') { $selected += 'shell' }
+    return $selected
 }
 
 function Invoke-QualityGates {
@@ -2465,6 +3319,118 @@ function Invoke-QualityGates {
 # Main
 # ==============================================================================
 
+if ($Purge -and -not $Uninstall) {
+    Write-Host "ERROR: -Purge requires -Uninstall." -ForegroundColor Red
+    exit 2
+}
+if ($DryRun -or $Uninstall) {
+    # Lifecycle mode writes no run logs, so the ownership removers get console-only
+    # replacements for the run-log helpers, which need an initialized log run.
+    function Write-Log {
+        param([string]$Level, [string]$Phase, [string]$Event, [string]$Message, [int]$ReturnCode = 0, [string]$Meta = '')
+        if ($Level -eq 'WARN' -or $Level -eq 'ERROR') { Write-Host "  ${Level}: $Message $Meta" }
+    }
+    function Invoke-Step {
+        param([string]$Phase, [scriptblock]$Action)
+        $global:LASTEXITCODE = 0
+        & $Action 2>&1 | Out-Host
+        if ($global:LASTEXITCODE -ne 0) { throw "Native command exited with code $global:LASTEXITCODE" }
+        return $true
+    }
+    $selected = if ($Uninstall) { Resolve-UninstallSelection } else { Resolve-Selection }
+    if ($Uninstall) {
+        Write-Host "Uninstall inventory (Windows):"
+        $removed = 0
+        $script:RotatorNpmRemovalFailed = $false
+        $script:RotatorNpmTaskBlocked = $false
+        $script:OpenCodeEnvRemovalFailed = $false
+        $script:PiPackageRemovalFailed = $false
+        $piRemovalFailureObserved = $false
+        foreach ($m in $selected) {
+            if ($m -eq 'shell') { Write-Host "  shell: not covered - Windows setup does not edit shell startup files."; continue }
+            $piSpecs = @(Get-PiUninstallSpecs -Module $m)
+            if ($piSpecs.Count -gt 0) {
+                if ($m -ne 'rotator' -and $m -ne 'opencode') { Write-Host "  module '$m': only matching receipt-backed Pi registrations are removable; Pi settings, roots, auth, sessions, package data, and unrelated registrations remain protected." }
+                foreach ($piSpec in $piSpecs) {
+                    $piStatus = Get-PiPackageInventoryStatus -Spec $piSpec
+                    if ($Yes -and -not $DryRun) {
+                        $script:PiPackageRemovalFailed = $false
+                        if (Remove-PiPackageRegistration -Spec $piSpec -Confirmed:$Yes -DryRun:$DryRun) {
+                            Write-Host "  removed: Pi package $piSpec"; $removed++
+                        } elseif ($script:PiPackageRemovalFailed) {
+                            Write-Host "  ERROR: Pi package $piSpec removal blocked; registration and receipt are preserved."
+                            $script:PiPackageRemovalFailed = $true
+                            $piRemovalFailureObserved = $true
+                        } else { Write-Host "  Pi package '$piSpec': $($piStatus.Message)" }
+                    } elseif ($DryRun -and $piStatus.State -eq 'receipt-backed') {
+                        Write-Host "  Pi package '$piSpec': would remove receipt-backed exact registration."
+                    } else { Write-Host "  Pi package '$piSpec': $($piStatus.Message)" }
+                }
+            }
+            if ($m -eq 'opencode') {
+                Write-Host "  module 'opencode': only the receipt-backed User OPENCODE_PI_BIN value can be removed; the CLI, npm package, credentials, and other environment values remain protected."
+                $openCodeStatus = Get-OpenCodeEnvInventoryStatus
+                if ($Yes -and -not $DryRun) {
+                    if (Remove-OpenCodeUserEnvironment -Confirmed:$Yes -DryRun:$DryRun) { Write-Host '  removed: User OPENCODE_PI_BIN environment value'; $removed++ }
+                    elseif ($script:OpenCodeEnvRemovalFailed) { Write-Host '  ERROR: User OPENCODE_PI_BIN removal failed; ownership receipt preserved.' }
+                    else { Write-Host "  User OPENCODE_PI_BIN: $($openCodeStatus.Message)" }
+                } elseif ($DryRun -and $openCodeStatus.State -eq 'receipt-backed') {
+                    Write-Host '  User OPENCODE_PI_BIN: would remove receipt-backed value.'
+                } else { Write-Host "  User OPENCODE_PI_BIN: $($openCodeStatus.Message)" }
+                continue
+            }
+            if ($m -ne 'rotator') {
+                if ($piSpecs.Count -eq 0) { Write-Host "  module '$m': not covered - setup-ai does not record ownership; the installation may predate this run." }
+                continue
+            }
+            Write-Host "  module 'rotator': only its receipt-owned task and matching global npm package can be removed; other package/data remain protected."
+            $taskStatus = Get-RotatorTaskInventoryStatus -Confirmed:$Yes -DryRun:$DryRun
+            if ($taskStatus.Removed) { Write-Host '  removed: rotator scheduled task'; $removed++ }
+            else { Write-Host "  rotator task: $($taskStatus.Message)" }
+            if ($Yes -and -not $DryRun) {
+                if (Remove-RotatorNpmPackage -Confirmed:$Yes -DryRun:$DryRun) { Write-Host '  removed: rotator global npm package'; $removed++ }
+                elseif ($script:RotatorNpmTaskBlocked) { Write-Host '  rotator npm package: preserved - task dependency is not proven absent; package and receipt remain protected.' }
+                elseif ($script:RotatorNpmRemovalFailed) { Write-Host '  rotator npm package: removal failed; ownership receipt preserved.' }
+                else { Write-Host '  rotator npm package: preserved - missing or mismatched receipt/fingerprint.' }
+            } else {
+                $npmState = Get-RotatorNpmReceiptState
+                if ($npmState.Valid -and $npmState.PackagePresent) { [void](Test-RotatorNpmTaskDependency -ReadOnly) }
+                if ($npmState.Valid -and $npmState.PackagePresent -and $script:RotatorNpmTaskBlocked) { Write-Host '  rotator npm package: protected - task dependency is not proven removable; package and receipt remain protected.' }
+                elseif ($DryRun -and $npmState.Valid -and $npmState.PackagePresent) { Write-Host '  rotator npm package: would remove receipt-backed tuxevil-rotator.' }
+                elseif ($npmState.Valid -and $npmState.PackagePresent) { Write-Host '  rotator npm package: receipt-backed and removable with -Yes.' }
+                else { Write-Host '  rotator npm package: not covered - missing or mismatched ownership receipt; legacy packages are protected.' }
+            }
+        }
+        if ($Yes -and $removed -gt 0) { Write-Host "Removal requested (-Yes); removed $removed receipt-owned rotator item(s)." }
+        elseif ($Yes -and $DryRun) { Write-Host 'Dry run; no items were removed.' }
+        elseif ($Yes) { Write-Host "Removal requested (-Yes), but no items were removed." }
+        else { Write-Host "Inventory only; pass -Yes to request removal." }
+        if ($Purge) { Write-Host "-Purge does not expand scope; Pi roots/data, rotator data, OpenCode/npm/vendor resources, and all other modules remain protected." }
+        if ($script:RotatorNpmRemovalFailed -or $script:OpenCodeEnvRemovalFailed -or $piRemovalFailureObserved) { exit 1 }
+    } else {
+        Write-Host "Installation plan (dry run):"
+        foreach ($m in $selected) {
+            Write-Host "  ${m}:"
+            foreach ($operation in $ModuleDryRunPlan[$m]) { Write-Host "    - $operation" }
+        }
+        Write-Host "Plan only; no installer, network, package-manager, environment, task, or child-process action was run."
+    }
+    exit 0
+}
+
+$script:VerboseOutput = ($VerbosePreference -eq 'Continue' -or $env:VERBOSE -eq '1')
+if ($script:VerboseOutput) { $env:DEBUG = '1' }
+$PSNativeCommandUseErrorActionPreference = $true
+
+# Render child-process UTF-8 output correctly instead of mojibake on the default codepage.
+try {
+    [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+    $OutputEncoding = [System.Text.Encoding]::UTF8
+    if (Get-Command chcp -ErrorAction SilentlyContinue) { chcp 65001 | Out-Null }
+} catch {
+    Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
+}
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 New-Item -ItemType File -Force -Path $HumanLog | Out-Null
 New-Item -ItemType File -Force -Path $JsonlLog | Out-Null
 
