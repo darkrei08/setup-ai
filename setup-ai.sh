@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.6.6
+# Version: 4.0.0
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -30,7 +30,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.6.6"
+SCRIPT_VERSION="4.0.0"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
