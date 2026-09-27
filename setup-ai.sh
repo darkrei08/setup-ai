@@ -3935,23 +3935,41 @@ uninstall_rotator_npm_receipt_matches() {
     ' "${receipt_path}" "${npm_root}" "${expected_absence}"
 }
 
+uninstall_rotator_npm_systemd_dependency_absent() {
+    local uname_s unit manager_state
+    if ! uname_s="$(uname -s 2>/dev/null)"; then
+        printf 'blocked (systemd manager state unavailable): tuxevil-rotator npm package\n' >&2
+        return 1
+    fi
+    [[ "${uname_s}" == Linux ]] || return 0
+    unit="$(rotator_systemd_unit_path)"
+    if [[ -e "${unit}" || -L "${unit}" ]]; then
+        printf 'blocked (systemd unit present): tuxevil-rotator npm package\n' >&2
+        return 1
+    fi
+    if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
+        printf 'blocked (systemd manager state unavailable): tuxevil-rotator npm package\n' >&2
+        return 1
+    fi
+    if ! manager_state="$(systemctl --user show tuxevil-rotator.service --property=LoadState --property=ActiveState --property=UnitFileState --value 2>/dev/null)" \
+        || [[ "${manager_state}" != $'not-found\ninactive\nnot-found' ]]; then
+        printf 'blocked (systemd manager state uncertain): tuxevil-rotator npm package\n' >&2
+        return 1
+    fi
+}
+
 uninstall_remove_rotator_npm() {
     local receipt_path="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai/ownership/rotator-npm.json" receipt_before receipt_after
     if (( UNINSTALL_YES == 0 && DRY_RUN == 0 )); then
         printf 'Removal needs --yes; global tuxevil-rotator package left in place.\n'
         return 0
     fi
-    if (( ${ROTATOR_SYSTEMD_UNINSTALL_BLOCKED:-0} != 0 )); then
-        printf 'blocked (systemd ownership not verified): tuxevil-rotator npm package\n' >&2
-        return 1
-    fi
-    if (( ${ROTATOR_SYSTEMD_UNINSTALL_CHECKED:-0} == 0 )); then
-        if ! uninstall_remove_systemd_unit tuxevil-rotator.service; then return 1; fi
-    fi
-    if (( ${ROTATOR_SYSTEMD_UNINSTALL_BLOCKED:-0} != 0 )); then return 1; fi
     if ! uninstall_rotator_npm_receipt_matches; then
         printf 'skipped (not receipt-owned): tuxevil-rotator\n'
         return 0
+    fi
+    if ! uninstall_rotator_npm_systemd_dependency_absent; then
+        return 1
     fi
     if (( DRY_RUN == 1 )); then
         printf 'would remove receipt-owned global package: tuxevil-rotator\n'
@@ -3962,6 +3980,9 @@ uninstall_remove_rotator_npm() {
     if ! uninstall_rotator_npm_receipt_matches || [[ "$(cat "${receipt_path}")" != "${receipt_before}" ]]; then
         printf 'skipped (ownership receipt or package changed): tuxevil-rotator\n'
         return 0
+    fi
+    if ! uninstall_rotator_npm_systemd_dependency_absent; then
+        return 1
     fi
     run_cmd "uninstall" npm uninstall --global tuxevil-rotator || return 1
     if ! uninstall_rotator_npm_receipt_matches 1; then
@@ -4134,7 +4155,6 @@ uninstall_remove_pi_package() {
 }
 
 uninstall_rotator_systemd_block() {
-    ROTATOR_SYSTEMD_UNINSTALL_BLOCKED=1
     log_event "ERROR" "uninstall" "rotator_systemd_blocked" "$1" 1 "unit=$(rotator_systemd_unit_path)"
     printf 'blocked (systemd ownership not verified): tuxevil-rotator.service\n' >&2
     return 1
@@ -4142,7 +4162,6 @@ uninstall_rotator_systemd_block() {
 
 uninstall_remove_systemd_unit() {
     local target="$1" unit receipt state manager_state receipt_before unit_state receipt_state unit_content fingerprint
-    ROTATOR_SYSTEMD_UNINSTALL_CHECKED=1
     unit="$(rotator_systemd_unit_path)"
     receipt="$(rotator_systemd_receipt_path)"
     if [[ "${target}" != tuxevil-rotator.service ]]; then
@@ -4167,7 +4186,6 @@ uninstall_remove_systemd_unit() {
         return 0
     fi
     if (( UNINSTALL_YES == 0 )); then
-        ROTATOR_SYSTEMD_UNINSTALL_CHECKED=0
         printf 'Removal needs --yes; systemd unit left in place: %s\n' "${target}"
         return 0
     fi
@@ -4445,8 +4463,6 @@ run_uninstall() {
     fi
 
     local kind module target flags detail any_present=0 validation_failed=0 rc=0
-    ROTATOR_SYSTEMD_UNINSTALL_BLOCKED=0
-    ROTATOR_SYSTEMD_UNINSTALL_CHECKED=0
     while IFS='|' read -r kind module target flags detail; do
         uninstall_entry_selected "${module}" || continue
         if [[ "${kind}" == "path" || "${kind}" == "appimage" ]]; then

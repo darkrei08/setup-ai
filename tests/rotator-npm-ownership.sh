@@ -60,6 +60,26 @@ npm() {
     esac
 }
 
+FAKE_SYSTEMCTL_MODE=absent
+FAKE_SYSTEMCTL_CALLS=0
+FAKE_SYSTEMCTL_LOG="${TMP_DIR}/systemctl-calls.log"
+systemctl() {
+    local IFS=' '
+    FAKE_SYSTEMCTL_CALLS=$((FAKE_SYSTEMCTL_CALLS + 1))
+    printf '%s\n' "$*" >>"${FAKE_SYSTEMCTL_LOG}"
+    case "$*" in
+        '--user show-environment') [[ "${FAKE_SYSTEMCTL_MODE}" != unavailable ]] ;;
+        '--user show tuxevil-rotator.service --property=LoadState --property=ActiveState --property=UnitFileState --value')
+            case "${FAKE_SYSTEMCTL_MODE}" in
+                absent) printf 'not-found\ninactive\nnot-found\n' ;;
+                uncertain) printf 'loaded\ninactive\ndisabled\n' ;;
+                *) return 1 ;;
+            esac
+            ;;
+        *) printf 'unexpected fake systemctl arguments: %s\n' "$*" >&2; return 2 ;;
+    esac
+}
+
 FAKE_NPM_ROOT="${TMP_DIR}/npm-package-dir-symlink"
 XDG_STATE_HOME="${TMP_DIR}/state-package-dir-symlink"
 FAKE_NPM_OUTSIDE_DIR="${TMP_DIR}/npm-package-dir-outside"
@@ -186,10 +206,14 @@ prepare_rotator_state() {
     local name="$1" with_receipt="${2:-1}"
     FAKE_NPM_ROOT="${TMP_DIR}/npm-${name}"
     XDG_STATE_HOME="${TMP_DIR}/state-${name}"
+    XDG_CONFIG_HOME="${TMP_DIR}/config-${name}"
     receipt="${XDG_STATE_HOME}/setup-ai/ownership/rotator-npm.json"
     FAKE_NPM_UNINSTALL_CALLS=0
     FAKE_NPM_FAIL_UNINSTALL=0
     FAKE_NPM_KEEP_PACKAGE=0
+    FAKE_SYSTEMCTL_MODE=absent
+    FAKE_SYSTEMCTL_CALLS=0
+    : >"${FAKE_SYSTEMCTL_LOG}"
     mkdir -p "${FAKE_NPM_ROOT}/tuxevil-rotator" "$(dirname "${receipt}")"
     printf '{"name":"tuxevil-rotator","version":"1.2.3"}\n' >"${FAKE_NPM_ROOT}/tuxevil-rotator/package.json"
     FAKE_OWNER_MARKER=0123456789abcdef0123456789abcdef
@@ -197,7 +221,7 @@ prepare_rotator_state() {
     if [[ "${with_receipt}" == 1 ]]; then
         node -e 'const fs=require("node:fs");const root=process.argv[1],path=process.argv[2],marker=process.argv[3];fs.writeFileSync(path,JSON.stringify({schemaVersion:2,package:"tuxevil-rotator",npmRoot:root,packagePath:`${root}/tuxevil-rotator/package.json`,version:"1.2.3",marker}));' "${FAKE_NPM_ROOT}" "${receipt}" "${FAKE_OWNER_MARKER}"
     fi
-    export FAKE_NPM_ROOT XDG_STATE_HOME
+    export FAKE_NPM_ROOT XDG_STATE_HOME XDG_CONFIG_HOME
 }
 
 prepare_rotator_state v1-receipt
@@ -294,5 +318,56 @@ UNINSTALL_YES=1
 if ! uninstall_remove_npm_global tuxevil-rotator; then fail 'confirmed receipt-backed removal failed'; fi
 [[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 1 && ! -e "${FAKE_NPM_ROOT}/tuxevil-rotator" && ! -e "${FAKE_NPM_ROOT}/tuxevil-rotator/.setup-ai-ownership" && ! -e "${receipt}" ]] || fail 'confirmed removal did not uninstall the exact package and then its receipt'
 grep -Fqx 'uninstall --global tuxevil-rotator' "${FAKE_NPM_LOG}" || fail 'npm uninstall did not receive the exact package argument'
+
+# Linux npm removal is blocked by a present unit without inspecting its ownership receipt.
+prepare_rotator_state systemd-unit-present
+FAKE_SYSTEMD_UNIT="${XDG_CONFIG_HOME}/systemd/user/tuxevil-rotator.service"
+mkdir -p "$(dirname -- "${FAKE_SYSTEMD_UNIT}")"
+printf 'unowned unit\n' >"${FAKE_SYSTEMD_UNIT}"
+FAKE_SYSTEMCTL_MODE=unavailable
+UNINSTALL_YES=1
+if uninstall_remove_npm_global tuxevil-rotator; then fail 'npm removal ignored a present systemd unit'; fi
+[[ "${FAKE_SYSTEMCTL_CALLS}" -eq 0 && "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" && -f "${receipt}" ]] || fail 'present systemd unit did not preserve npm ownership state'
+
+# Missing or uncertain systemd manager state also preserves the package.
+prepare_rotator_state systemd-manager-unavailable
+FAKE_SYSTEMCTL_MODE=unavailable
+UNINSTALL_YES=1
+if uninstall_remove_npm_global tuxevil-rotator; then fail 'npm removal ignored unavailable systemd manager state'; fi
+[[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" && -f "${receipt}" ]] || fail 'unavailable systemd manager state did not preserve npm ownership state'
+
+prepare_rotator_state systemd-manager-uncertain
+FAKE_SYSTEMCTL_MODE=uncertain
+UNINSTALL_YES=1
+if uninstall_remove_npm_global tuxevil-rotator; then fail 'npm removal ignored uncertain systemd manager state'; fi
+[[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" && -f "${receipt}" ]] || fail 'uncertain systemd manager state did not preserve npm ownership state'
+
+# A unit appearing after the first guard must block npm removal at the final check.
+prepare_rotator_state systemd-toctou
+FAKE_SYSTEMD_UNIT="${XDG_CONFIG_HOME}/systemd/user/tuxevil-rotator.service"
+mkdir -p "$(dirname -- "${FAKE_SYSTEMD_UNIT}")"
+FAKE_SYSTEMCTL_MODE=absent
+ROTATOR_NPM_RECEIPT_MATCH_CALLS=0
+receipt_before="$(cat "${receipt}")"
+eval "$(declare -f uninstall_rotator_npm_receipt_matches | sed '1s/uninstall_rotator_npm_receipt_matches/real_uninstall_rotator_npm_receipt_matches/')"
+uninstall_rotator_npm_receipt_matches() {
+    ROTATOR_NPM_RECEIPT_MATCH_CALLS=$((ROTATOR_NPM_RECEIPT_MATCH_CALLS + 1))
+    if [[ "${ROTATOR_NPM_RECEIPT_MATCH_CALLS}" -eq 2 ]]; then
+        printf 'appeared unit\n' >"${FAKE_SYSTEMD_UNIT}"
+    fi
+    real_uninstall_rotator_npm_receipt_matches "$@"
+}
+UNINSTALL_YES=1
+if uninstall_remove_npm_global tuxevil-rotator; then fail 'npm removal ignored a unit appearing after the first systemd guard'; fi
+[[ "${ROTATOR_NPM_RECEIPT_MATCH_CALLS}" -eq 2 &&
+    "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" &&
+    "$(cat "${receipt}")" == "${receipt_before}" && -f "${FAKE_SYSTEMD_UNIT}" ]] ||
+    fail 'TOCTOU systemd appearance did not preserve npm, receipt, and unit state'
+if grep -Eq '^--user (stop|disable|daemon-reload)' "${FAKE_SYSTEMCTL_LOG}"; then
+    fail 'TOCTOU systemd appearance invoked a mutating systemctl operation'
+fi
+unset -f uninstall_rotator_npm_receipt_matches
+eval "$(declare -f real_uninstall_rotator_npm_receipt_matches | sed '1s/real_uninstall_rotator_npm_receipt_matches/uninstall_rotator_npm_receipt_matches/')"
+unset -f real_uninstall_rotator_npm_receipt_matches
 
 printf 'Rotator npm ownership checks passed.\n'

@@ -108,8 +108,6 @@ reset_case() {
     FAKE_RM_KEEP_RECEIPT=0
     FAKE_RECEIPT_RM_CHECK=0
     FAKE_NPM_UNINSTALL_CALLS=0
-    ROTATOR_SYSTEMD_UNINSTALL_BLOCKED=0
-    ROTATOR_SYSTEMD_UNINSTALL_CHECKED=0
     mkdir -p "${TEST_ROOT}/${name}" "${FAKE_NPM_ROOT}"
     : >"${FAKE_SYSTEMCTL_LOG}"
     : >"${FAKE_NPM_LOG}"
@@ -245,45 +243,41 @@ UNINSTALL_PURGE=0
 run_uninstall || fail 'receipt-owned unit and npm package removal failed'
 [[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 1 && ! -e "${FAKE_UNIT_PATH}" && ! -e "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'systemd-owned unit was not cleared before npm removal'
 
-# Stop/disable/daemon uncertainty, unit unlink failure, a surviving unit, and unsafe ownership all block npm.
+# Stop/disable/daemon uncertainty, unit unlink failure, and a surviving unit remain
+# independently fail-closed for the systemd catalog entry.
 for failure in show-environment stop disable daemon-reload show-state; do
     reset_case "systemctl-${failure}"
     create_owned_unit
-    create_npm_receipt
     FAKE_SYSTEMCTL_FAIL="${failure}"
-    if uninstall_remove_rotator_npm; then fail "${failure} failure did not block npm removal"; fi
-    [[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" ]] || fail "${failure} failure did not preserve unit, receipt, and package"
+    if uninstall_remove_systemd_unit tuxevil-rotator.service; then fail "${failure} failure was not reported"; fi
+    [[ -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail "${failure} failure did not preserve unit and receipt"
 done
 
 for failure in daemon-reload-after-remove show-state-after-remove; do
     reset_case "systemctl-${failure}"
     create_owned_unit
-    create_npm_receipt
     FAKE_SYSTEMCTL_FAIL="${failure}"
-    if uninstall_remove_rotator_npm; then fail "${failure} failure did not block npm removal"; fi
-    [[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" ]] || fail "${failure} failure did not restore the unit and preserve the package"
+    if uninstall_remove_systemd_unit tuxevil-rotator.service; then fail "${failure} failure was not reported"; fi
+    [[ -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail "${failure} failure did not restore the unit and preserve the receipt"
 done
 
 reset_case removal-failure
 create_owned_unit
-create_npm_receipt
 FAKE_RM_FAIL_UNIT=1
-if uninstall_remove_rotator_npm; then fail 'unit removal failure did not block npm removal'; fi
-[[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'unit removal failure did not preserve unit and receipt'
+if uninstall_remove_systemd_unit tuxevil-rotator.service; then fail 'unit removal failure was not reported'; fi
+[[ -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'unit removal failure did not preserve unit and receipt'
 
 reset_case surviving-unit
 create_owned_unit
-create_npm_receipt
 FAKE_RM_KEEP_UNIT=1
-if uninstall_remove_rotator_npm; then fail 'surviving unit did not block npm removal'; fi
-[[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'surviving unit did not preserve ownership and package state'
+if uninstall_remove_systemd_unit tuxevil-rotator.service; then fail 'surviving unit was reported as removed'; fi
+[[ -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'surviving unit did not preserve ownership state'
 
 reset_case receipt-removal-failure
 create_owned_unit
-create_npm_receipt
 FAKE_RM_FAIL_RECEIPT=1
-if uninstall_remove_rotator_npm; then fail 'receipt removal failure did not block npm removal'; fi
-[[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" ]] || fail 'receipt removal failure did not restore the unit and preserve receipts and package'
+if uninstall_remove_systemd_unit tuxevil-rotator.service; then fail 'receipt removal failure was not reported'; fi
+[[ -f "${FAKE_UNIT_PATH}" && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'receipt removal failure did not restore unit and receipt'
 
 for state in unowned mismatched malformed modified; do
     reset_case "protected-${state}"
@@ -302,9 +296,8 @@ for state in unowned mismatched malformed modified; do
             printf '{malformed\n' >"${FAKE_SYSTEMD_RECEIPT}"
         fi
     fi
-    create_npm_receipt
-    if uninstall_remove_rotator_npm; then fail "${state} unit did not block npm removal"; fi
-    [[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_UNIT_PATH}" && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" ]] || fail "${state} unit or package was changed"
+    if uninstall_remove_systemd_unit tuxevil-rotator.service; then fail "${state} unit was reported as removable"; fi
+    [[ -f "${FAKE_UNIT_PATH}" ]] || fail "${state} unit was changed"
     if [[ "${state}" != unowned ]]; then [[ -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail "${state} receipt was removed"; fi
 done
 
@@ -313,10 +306,9 @@ reset_case stale-receipt
 create_owned_unit
 command rm -- "${FAKE_UNIT_PATH}"
 FAKE_SYSTEMCTL_STATE=absent
-create_npm_receipt
 FAKE_RECEIPT_RM_CHECK=1
-if uninstall_remove_rotator_npm; then fail 'stale receipt unexpectedly permitted npm removal'; fi
-[[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'stale receipt was removed without a unit-state proof'
+if uninstall_remove_systemd_unit tuxevil-rotator.service; then fail 'stale receipt was reported as removable'; fi
+[[ -f "${FAKE_SYSTEMD_RECEIPT}" ]] || fail 'stale receipt was removed without a unit-state proof'
 
 # --purge does not authorize touching an unowned unit, wants link, unrelated unit, or user data.
 reset_case purge
