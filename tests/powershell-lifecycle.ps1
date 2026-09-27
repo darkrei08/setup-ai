@@ -327,6 +327,8 @@ function Test-RotatorReceiptLocation {
 if (Write-RotatorTaskReceipt -Receipt $ownedReceipt) { throw 'Receipt writer accepted a destination created before atomic publication.' }
 if ([System.IO.File]::ReadAllText($script:receiptTestPath) -cne $script:receiptRaceValue) { throw 'Receipt publication changed a receipt that appeared during the write.' }
 if (@(Get-ChildItem -LiteralPath $receiptTestDir -Filter 'rotator-task.json.*.tmp' -File).Count -ne 0) { throw 'Failed receipt publication left a temporary file behind.' }
+$receiptLocationAst = $sourceAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq 'Test-RotatorReceiptLocation' }, $true)
+. ([scriptblock]::Create($receiptLocationAst.Extent.Text))
 
 $npmFunctionNames = @('Get-RotatorNpmReceiptPath','Test-RotatorNpmReceiptLocation','Write-RotatorNpmReceipt','Get-RotatorNpmPathAttributes','Get-RotatorNpmReceiptState','Get-RotatorTaskQueryState','Get-OwnedRotatorTask','Install-RotatorNpmPackage','Test-RotatorNpmTaskDependency','Get-RotatorTaskInventoryStatus','Remove-RotatorNpmPackage')
 $npmFunctions = @($sourceAst.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $npmFunctionNames }, $true))
@@ -573,6 +575,20 @@ function Prepare-TestRotatorNpm {
         if (-not (Write-RotatorNpmReceipt -Receipt $receipt)) { throw 'Could not create fake npm receipt.' }
     }
 }
+
+Prepare-TestRotatorNpm 'receipt-parent-link'
+$linkedOwnership = Split-Path -Parent (Get-RotatorNpmReceiptPath)
+$linkedOutside = Join-Path $testLocalAppData 'npm-receipt-parent-link-outside'
+[System.IO.Directory]::Move($linkedOwnership, $linkedOutside)
+if ($IsWindows) {
+    & $env:ComSpec /c mklink /J $linkedOwnership $linkedOutside | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create fake receipt-parent junction.' }
+} else {
+    [void][System.IO.Directory]::CreateSymbolicLink($linkedOwnership, $linkedOutside)
+}
+if ((Get-RotatorNpmReceiptState).Valid) { throw 'Npm receipt behind a linked parent was inventoried as owned.' }
+if ((Remove-RotatorNpmPackage -Confirmed) -or $script:npmFakeUninstallCount -ne 0 -or
+    -not (Test-Path -LiteralPath (Join-Path $linkedOutside 'rotator-npm.json'))) { throw 'Linked npm receipt parent authorized removal or lost the receipt.' }
 
 Prepare-TestRotatorNpm 'no-receipt' $false
 $beforeNpmCalls = $script:npmFakeCalls

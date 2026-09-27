@@ -2499,10 +2499,10 @@ function Test-RotatorTaskOwnership {
 }
 
 function Test-RotatorReceiptPathSafe {
-    param([string]$LocalAppData, [string]$ReceiptPath, [object[]]$Attributes)
+    param([string]$LocalAppData, [string]$ReceiptPath, [object[]]$Attributes, [string]$ReceiptName = 'rotator-task.json')
     try {
         if ([string]::IsNullOrWhiteSpace($LocalAppData) -or [string]::IsNullOrWhiteSpace($ReceiptPath) -or $Attributes.Count -ne 4) { return $false }
-        $expected = Join-Path (Join-Path (Join-Path $LocalAppData 'setup-ai') 'ownership') 'rotator-task.json'
+        $expected = Join-Path (Join-Path (Join-Path $LocalAppData 'setup-ai') 'ownership') $ReceiptName
         if (-not [string]::Equals([System.IO.Path]::GetFullPath($expected), [System.IO.Path]::GetFullPath($ReceiptPath), [StringComparison]::OrdinalIgnoreCase)) { return $false }
         foreach ($attribute in $Attributes) { if ($null -ne $attribute -and $attribute -ne -1 -and ([System.IO.FileAttributes]$attribute -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false } }
         return $true
@@ -2515,16 +2515,18 @@ function Get-RotatorTaskReceiptPath {
 }
 
 function Test-RotatorReceiptLocation {
-    $root = $env:LOCALAPPDATA; $path = Get-RotatorTaskReceiptPath
-    if (-not $path) { return $false }
-    $paths = @($root, (Join-Path $root 'setup-ai'), (Join-Path (Join-Path $root 'setup-ai') 'ownership'), $path); $attributes = @(-1, -1, -1, -1)
+    param([string]$ReceiptPath, [string]$ReceiptName = 'rotator-task.json')
+    $root = $env:LOCALAPPDATA
+    if (-not $ReceiptPath) { $ReceiptPath = Get-RotatorTaskReceiptPath }
+    if ([string]::IsNullOrWhiteSpace($root) -or [string]::IsNullOrWhiteSpace($ReceiptPath)) { return $false }
+    $paths = @($root, (Join-Path $root 'setup-ai'), (Join-Path (Join-Path $root 'setup-ai') 'ownership'), $ReceiptPath); $attributes = @(-1, -1, -1, -1)
     try {
         for ($i = 0; $i -lt 4; $i++) {
             if (-not (Test-Path -LiteralPath $paths[$i])) { continue }
             $item = Get-Item -LiteralPath $paths[$i] -Force -ErrorAction Stop
             if (($i -lt 3) -ne [bool]$item.PSIsContainer) { return $false }; $attributes[$i] = $item.Attributes
         }
-        return Test-RotatorReceiptPathSafe -LocalAppData $root -ReceiptPath $path -Attributes $attributes
+        return Test-RotatorReceiptPathSafe -LocalAppData $root -ReceiptPath $ReceiptPath -Attributes $attributes -ReceiptName $ReceiptName
     } catch { return $false }
 }
 
@@ -2781,18 +2783,7 @@ function Get-RotatorNpmReceiptPath {
 }
 
 function Test-RotatorNpmReceiptLocation {
-    $root = $env:LOCALAPPDATA; $path = Get-RotatorNpmReceiptPath
-    if (-not $path) { return $false }
-    $paths = @($root, (Join-Path $root 'setup-ai'), (Join-Path (Join-Path $root 'setup-ai') 'ownership'), $path)
-    try {
-        for ($i = 0; $i -lt 4; $i++) {
-            if (-not (Test-Path -LiteralPath $paths[$i])) { continue }
-            $item = Get-Item -LiteralPath $paths[$i] -Force -ErrorAction Stop
-            if (($i -lt 3) -ne [bool]$item.PSIsContainer -or ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
-        }
-        $expected = Join-Path (Join-Path (Join-Path $root 'setup-ai') 'ownership') 'rotator-npm.json'
-        return [string]::Equals([System.IO.Path]::GetFullPath($expected), [System.IO.Path]::GetFullPath($path), [StringComparison]::OrdinalIgnoreCase)
-    } catch { return $false }
+    return Test-RotatorReceiptLocation -ReceiptPath (Get-RotatorNpmReceiptPath) -ReceiptName 'rotator-npm.json'
 }
 
 function Write-RotatorNpmReceipt {
@@ -2895,7 +2886,7 @@ function Remove-RotatorNpmPackage {
     param([switch]$Confirmed, [switch]$DryRun)
     if (-not $Confirmed -or $DryRun) { return $false }
     $receiptPath = Get-RotatorNpmReceiptPath
-    if (-not $receiptPath) { return $false }
+    if (-not $receiptPath -or -not (Test-RotatorNpmReceiptLocation)) { return $false }
     try { $receiptBefore = [System.IO.File]::ReadAllText($receiptPath) } catch { return $false }
     $state = Get-RotatorNpmReceiptState
     if (-not $state.Valid -or -not $state.PackagePresent) { return $false }
@@ -2927,7 +2918,7 @@ function Remove-RotatorNpmPackage {
         return $false
     }
     try {
-        if ([System.IO.File]::ReadAllText($receiptPath) -cne $receiptBefore) { throw 'receipt changed' }
+        if (-not (Test-RotatorNpmReceiptLocation) -or [System.IO.File]::ReadAllText($receiptPath) -cne $receiptBefore) { throw 'receipt changed or location unsafe' }
         Remove-Item -LiteralPath $receiptPath -Force -ErrorAction Stop
         if ($null -ne (Get-RotatorNpmPathAttributes $receiptPath)) { throw 'receipt still exists' }
         return $true

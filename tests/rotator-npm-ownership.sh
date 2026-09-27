@@ -209,6 +209,14 @@ UNINSTALL_YES=1
 uninstall_remove_npm_global tuxevil-rotator || fail 'v1 receipt rejection returned an error'
 [[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && "$(cat "${receipt}")" == "${receipt_before}" ]] || fail 'v1 receipt was changed or used to uninstall the package'
 
+prepare_rotator_state receipt-parent-link
+mv -- "${XDG_STATE_HOME}/setup-ai/ownership" "${TMP_DIR}/receipt-parent-link-outside"
+ln -s -- "${TMP_DIR}/receipt-parent-link-outside" "${XDG_STATE_HOME}/setup-ai/ownership"
+if uninstall_entry_present npm-global tuxevil-rotator ''; then fail 'receipt behind a symlinked parent was accepted'; fi
+UNINSTALL_YES=1
+uninstall_remove_npm_global tuxevil-rotator || fail 'linked receipt parent rejection returned an error'
+[[ "${FAKE_NPM_UNINSTALL_CALLS}" -eq 0 && -f "${TMP_DIR}/receipt-parent-link-outside/rotator-npm.json" && -f "${FAKE_NPM_ROOT}/tuxevil-rotator/package.json" ]] || fail 'linked receipt parent authorized removal or lost the receipt'
+
 prepare_rotator_state no-receipt 0
 SELECTED_MODULES=(rotator)
 if uninstall_entry_present npm-global tuxevil-rotator ''; then fail 'package without a receipt was listed as removable'; fi

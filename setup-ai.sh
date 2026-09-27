@@ -3128,10 +3128,16 @@ mod_cockpit() {
 
 # --- rotator (opt-in: tuxevil-rotator multi-account gateway) -----------------
 
+# The state root and every directory below it must be real directories, and the
+# receipt a regular file, so no link can redirect a receipt read, write, or delete.
 rotator_npm_receipt_location_safe() {
-    local receipt_dir="$1" receipt_path="$2"
-    rotator_systemd_dirs_safe create "${receipt_dir}" || return 1
-    [[ ! -L "${receipt_path}" && ( ! -e "${receipt_path}" || -f "${receipt_path}" ) ]]
+    local state_root="${XDG_STATE_HOME:-${HOME}/.local/state}" dir receipt
+    receipt="${state_root}/setup-ai/ownership/rotator-npm.json"
+    [[ "${state_root}" == /* ]] || return 1
+    for dir in "${state_root}" "${state_root}/setup-ai" "${state_root}/setup-ai/ownership"; do
+        [[ ! -L "${dir}" && ( ! -e "${dir}" || -d "${dir}" ) ]] || return 1
+    done
+    [[ ! -L "${receipt}" && ( ! -e "${receipt}" || -f "${receipt}" ) ]]
 }
 
 install_rotator_npm_package() {
@@ -3179,7 +3185,7 @@ install_rotator_npm_package() {
 
     receipt_dir="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai/ownership"
     receipt_path="${receipt_dir}/rotator-npm.json"
-    if ! rotator_npm_receipt_location_safe "${receipt_dir}" "${receipt_path}"; then
+    if ! rotator_npm_receipt_location_safe || ! mkdir -p -- "${receipt_dir}" || ! rotator_npm_receipt_location_safe; then
         log_event "WARN" "rotator" "ownership_receipt_skipped" \
             "The package ownership receipt path is unsafe or unavailable" 0 "path=${receipt_path}"
         return 0
@@ -3900,7 +3906,7 @@ uninstall_remove_appimage() {
 
 uninstall_rotator_npm_receipt_matches() {
     local expected_absence="${1:-0}" receipt_path="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai/ownership/rotator-npm.json" npm_root
-    [[ -f "${receipt_path}" ]] || return 1
+    rotator_npm_receipt_location_safe && [[ -f "${receipt_path}" ]] || return 1
     command -v npm >/dev/null 2>&1 && command -v node >/dev/null 2>&1 || return 1
     npm_root="$(npm root -g 2>/dev/null)" || return 1
     [[ -n "${npm_root}" ]] || return 1
