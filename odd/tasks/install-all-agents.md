@@ -22,14 +22,14 @@
 - Keep the module order dependency-safe: agent CLIs before `gentle-ai`; LazyVim after base.
 - Use the x86_64 Neovim tarball only on x86_64; retain distro packages as the fallback on other architectures, and run LazyVim headlessly with `nvim --headless "+Lazy! sync" +qa`.
 - Update the installed/configured-agent documentation in the same change so it no longer contradicts the new Claude module.
-- Claude's installer has no documented non-interactive env var; reuse `run_vendor_installer`/`Invoke-RemoteScriptNoPrompt`, and use `https://claude.ai/install.ps1` on Windows with npm fallback documented.
+- Claude's Unix installer has no documented non-interactive env var; reuse `run_vendor_installer`; on Windows use the documented `npm install -g @anthropic-ai/claude-code` method directly.
 
 ## Evidence
 
 - Baseline: `main` at `bfa8135`, version `3.6.5`.
 - Existing working-tree file `tests/pi-session-container.sh` is unrelated and must remain untouched.
 - LazyVim sync is isolated to a staged config and only runs again in quality gates after a fresh clone; existing configs get a non-mutating `nvim --version` check.
-- Claude Code uses the vendor installer first on every OS, with the npm fallback using `--allow-scripts` on npm 12+.
+- Claude Code uses the vendor installer on Unix; Windows uses the documented npm package directly, with `--allow-scripts` on npm 12+.
 
 ## Verification
 

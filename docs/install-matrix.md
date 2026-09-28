@@ -6,7 +6,7 @@ result.
 
 | Tool | binary | macOS | Linux | Windows |
 |---|---|---|---|---|
-| Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh | bash` | same | `irm https://claude.ai/install.ps1 | iex` (npm fallback) |
+| Claude Code | `claude` | `curl -fsSL https://claude.ai/install.sh | bash` | same | `npm install -g @anthropic-ai/claude-code` |
 | Antigravity | `agy` | `curl -fsSL https://antigravity.google/cli/install.sh \| bash` | same | `irm https://antigravity.google/cli/install.ps1 \| iex` |
 | Codex | `codex` | `brew install --cask codex` | `curl -fsSL https://chatgpt.com/codex/install.sh \| sh` | `irm https://chatgpt.com/codex/install.ps1 \| iex` |
 | pi | `pi` | `curl -fsSL https://pi.dev/install.sh \| sh` | same | `irm https://pi.dev/install.ps1 \| iex` |

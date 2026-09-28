@@ -92,10 +92,9 @@ and Cursor when they are already installed by their vendors.
 Claude Code uses Anthropic's official Unix installer (`https://claude.ai/install.sh`).
 Unattended Unix runs use the installer helper without a controlling TTY; the
 installer has no separate documented non-interactive environment variable. On
-Windows, setup-ai first runs Anthropic's `install.ps1` and falls back to the
-documented `npm install -g @anthropic-ai/claude-code` method if the vendor helper
-is unavailable. Authentication remains a user action: run `claude` once after
-installation when login is required.
+Windows, setup-ai uses Anthropic's documented `npm install -g @anthropic-ai/claude-code`
+method. Authentication remains a user action: run `claude` once after installation
+when login is required.
 
 The other modules use the vendor commands listed in
 [install-matrix.md](./install-matrix.md). Vendor-owned launchers and auth/config

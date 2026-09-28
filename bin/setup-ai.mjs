@@ -240,7 +240,7 @@ async function main() {
     return;
   }
 
-  const unattended = has("--yes") || has("-y") || has("--verbose") || has("-v");
+  const unattended = has("--yes") || has("-y") || has("--verbose") || has("-v") || has("--dry-run");
   if (has("--uninstall")) {
     const uninstallArgs = [isWin ? "-Uninstall" : "--uninstall"];
     const hasOnly = argv.some((arg) => arg === "--only" || arg.startsWith("--only="));
@@ -270,8 +270,8 @@ async function main() {
     return runScript(toScriptArgs("only", only, unattended));
   }
 
-  // --verbose asks for output, not for a menu: it runs the core set unattended.
-  if (has("--yes") || has("-y") || has("--verbose") || has("-v")) return runScript(toScriptArgs("yes"));
+  // --verbose and --dry-run ask for output, not for a menu: they run the core set unattended.
+  if (has("--yes") || has("-y") || has("--verbose") || has("-v") || has("--dry-run")) return runScript(toScriptArgs("yes"));
 
   // No selection flag: try the interactive menu; fall back cleanly if the
   // terminal/stdin can't drive it (common under some npx/CI shells).

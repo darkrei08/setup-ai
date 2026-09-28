@@ -102,14 +102,19 @@ for (const needle of [
   'https://claude.ai/install.sh',
   'run_vendor_installer "claude-code"',
   'nvim --headless "+Lazy! sync" +qa',
+  'XDG_CONFIG_HOME="${TMP_DIR}" NVIM_APPNAME=nvim',
   'LAZYVIM_CLONED',
   '/opt/nvim-linux-x86_64/bin',
 ]) {
   if (!sh.includes(needle)) throw new Error(`Bash missing ${needle}`);
 }
+const powershellClaude = ps.match(/function Mod-ClaudeCode \{([\s\S]*?)\n\}/)?.[1] ?? '';
+if (!powershellClaude.includes('npm install -g @anthropic-ai/claude-code') ||
+    powershellClaude.includes('https://claude.ai/install.ps1') ||
+    powershellClaude.includes('Invoke-RemoteScriptNoPrompt')) {
+  throw new Error('Claude Code PowerShell install must use npm directly');
+}
 for (const needle of [
-  'https://claude.ai/install.ps1',
-  'Invoke-RemoteScriptNoPrompt',
   'npm install -g @anthropic-ai/claude-code',
   'function Mod-ClaudeCode',
   'nvim --headless "+Lazy! sync" +qa',

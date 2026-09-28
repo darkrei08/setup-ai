@@ -1419,7 +1419,7 @@ mod_lazyvim() {
     local staged_config="${TMP_DIR}/nvim"
     run_cmd "lazyvim" git clone --depth=1 https://github.com/LazyVim/starter "${staged_config}"
     run_cmd "lazyvim" rm -rf -- "${staged_config}/.git"
-    run_cmd "lazyvim" env XDG_CONFIG_HOME="${TMP_DIR}" nvim --headless "+Lazy! sync" +qa
+    run_cmd "lazyvim" env XDG_CONFIG_HOME="${TMP_DIR}" NVIM_APPNAME=nvim nvim --headless "+Lazy! sync" +qa
     run_cmd "lazyvim" mkdir -p "${config_dir%/*}"
     run_cmd "lazyvim" mv -- "${staged_config}" "${config_dir}"
     LAZYVIM_CLONED=1
@@ -3302,7 +3302,8 @@ export GOPATH="$HOME/go"
 export PATH="$BUN_INSTALL/bin:$HOME/.pi/bin:$HOME/.local/bin:$GOPATH/bin:$HOME/.cargo/bin:$PATH"'
 
 install_extras_skill() {
-    local source="$1" skill="$2" stage_home="${TMP_DIR}/extras-${skill}"
+    local source="$1" skill="$2"
+    local stage_home="${TMP_DIR}/extras-${skill}"
     local staged="${stage_home}/.agents/skills/${skill}" canonical="${HOME}/.agents/skills"
     local target="${canonical}/${skill}"
 

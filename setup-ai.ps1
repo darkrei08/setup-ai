@@ -5,9 +5,9 @@
  Version: 3.6.5
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
- Windows method: winget for language runtimes, the vendor install.ps1 scripts
- for the AI CLIs, and npm for opencode, and
- `npx skills` / `pi install` for skills and pi packages.
+ Windows method: winget for language runtimes, vendor installers where documented,
+ npm for Claude Code and opencode, and `npx skills` / `pi install` for skills and
+ pi packages.
 
  The Node launcher bin/setup-ai.mjs dispatches here on win32 and can pass a
  module selection via -Only (from its interactive menu).
@@ -1407,26 +1407,16 @@ function Mod-Herdr {
 function Mod-ClaudeCode {
     Write-Log INFO "claude-code" "start" "Claude Code CLI"
     if (-not (Test-Cmd claude)) {
-        $vendorInstalled = $false
-        try {
-            $vendorStepOk = Invoke-RemoteScriptNoPrompt -Url "https://claude.ai/install.ps1" -Phase "claude-code" -Optional
-            Update-SessionPath
-            $vendorInstalled = $vendorStepOk -and (Test-Cmd claude)
-        } catch {
-            Write-Log WARN "claude-code" "vendor_installer_failed" "Claude Code vendor installer failed; trying npm fallback" 0 "error=$($_.Exception.Message)"
+        if (-not (Test-Cmd npm)) { throw "claude not found and npm is unavailable" }
+        $allowScripts = @()
+        if (Test-NpmInstallScriptsSupport -Phase "claude-code") {
+            $allowScripts = @('--allow-scripts=@anthropic-ai/claude-code')
         }
-        if (-not $vendorInstalled) {
-            if (-not (Test-Cmd npm)) { throw "claude not found after vendor installer and npm is unavailable" }
-            $allowScripts = @()
-            if (Test-NpmInstallScriptsSupport -Phase "claude-code") {
-                $allowScripts = @('--allow-scripts=@anthropic-ai/claude-code')
-            }
-            Invoke-Step -Phase "claude-code" -Action { npm install -g @anthropic-ai/claude-code @allowScripts }
-            Update-SessionPath
-        }
+        Invoke-Step -Phase "claude-code" -Action { npm install -g @anthropic-ai/claude-code @allowScripts }
+        Update-SessionPath
         if (-not (Test-Cmd claude)) {
-            Write-Log ERROR "claude-code" "install_missing" "claude not found on PATH after vendor installer and npm fallback"
-            throw "claude not found on PATH after vendor installer and npm fallback"
+            Write-Log ERROR "claude-code" "install_missing" "claude not found on PATH after npm install"
+            throw "claude not found on PATH after npm install"
         }
     } else {
         Write-Log INFO "claude-code" "already_present" "Claude Code already installed"
@@ -2210,8 +2200,8 @@ function Start-RotatorGateway {
 
 function Test-DirectoryContentEqual {
     param([string]$Left, [string]$Right)
-    $leftRoot = [IO.Path]::GetFullPath($Left).TrimEnd([char[]]@('\\','/'))
-    $rightRoot = [IO.Path]::GetFullPath($Right).TrimEnd([char[]]@('\\','/'))
+    $leftRoot = [IO.Path]::GetFullPath($Left).TrimEnd([char[]]@('\','/'))
+    $rightRoot = [IO.Path]::GetFullPath($Right).TrimEnd([char[]]@('\','/'))
     $leftDirs = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Sort-Object)
     $rightDirs = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Sort-Object)
     if (@(Compare-Object $leftDirs $rightDirs).Count -gt 0) { return $false }
@@ -2261,6 +2251,9 @@ function Install-ExtrasSkill {
 function Link-ExtrasSkill {
     param([string]$Skill)
     $canonical = Join-Path $HOME ".agents\\skills\\$Skill"
+    if (-not (Test-Path -LiteralPath (Join-Path $canonical 'SKILL.md') -PathType Leaf)) {
+        throw "Canonical skill is missing ($canonical)"
+    }
     $roots = @(
         (Join-Path $HOME '.claude\\skills'), (Join-Path $HOME '.codex\\skills'),
         (Join-Path $HOME '.config\\opencode\\skills'), (Join-Path $HOME '.gemini\\skills'),
