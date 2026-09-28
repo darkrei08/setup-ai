@@ -124,13 +124,16 @@ $UpstreamSkillSources = @(
     @{ Source = 'humanlayer/skills';                    Skills = @('show-me') }
 )
 $UpstreamSkillNames = @('herdr','triage','grill-me','grilling','wayfinder','domain-modeling','prototype','research','typescript-advanced','show-me')
-$SkillAgentNames = @('pi','claude-code','gemini-cli','cursor','antigravity','codex','opencode')
+# These are `skills` CLI harness names. The installer module remains `antigravity`,
+# while the skills package distinguishes the CLI harness as `antigravity-cli`.
+$SkillAgentNames = @('pi','claude-code','gemini-cli','cursor','antigravity-cli','codex','opencode')
+$GentleAiAgentNames = @('pi','claude-code','gemini-cli','cursor','antigravity','codex','opencode')
 $SkillAgentConfigDirs = @{
     pi = Join-Path $HOME ".pi"
     'claude-code' = Join-Path $HOME ".claude"
     'gemini-cli' = Join-Path $HOME ".gemini"
     cursor = Join-Path $HOME ".cursor"
-    antigravity = Join-Path $HOME ".antigravity"
+    'antigravity-cli' = Join-Path $HOME ".gemini\antigravity-cli"
     codex = Join-Path $HOME ".codex"
     opencode = Join-Path $HOME ".config\opencode"
 }
@@ -139,7 +142,7 @@ $SkillAgentRoots = @{
     'claude-code' = Join-Path $HOME ".claude\skills"
     'gemini-cli' = Join-Path $HOME ".gemini\skills"
     cursor = Join-Path $HOME ".cursor\skills"
-    antigravity = Join-Path $HOME ".antigravity\skills"
+    'antigravity-cli' = Join-Path $HOME ".gemini\antigravity-cli\skills"
     codex = Join-Path $HOME ".codex\skills"
     opencode = Join-Path $HOME ".config\opencode\skills"
 }
@@ -617,6 +620,16 @@ function Get-TargetSkillAgents {
     return $found
 }
 
+function Get-GentleAiTargetAgents {
+    $found = @()
+    foreach ($agent in $GentleAiAgentNames) {
+        $skillAgent = if ($agent -eq 'antigravity') { 'antigravity-cli' } else { $agent }
+        if (Test-Path $SkillAgentConfigDirs[$skillAgent]) { $found += $agent }
+    }
+    if ($found.Count -eq 0) { return @('pi') }
+    return $found
+}
+
 function Assert-SkillInstalledForAgents {
     param([string]$Phase, [string]$Skill, [string[]]$Agents)
     foreach ($agent in $Agents) {
@@ -1018,7 +1031,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','rotator')
+$ModuleOrder = @('base','node','bun','pi','dotenv','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','rotator','extras')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
@@ -1040,8 +1053,9 @@ $ModuleDesc = [ordered]@{
     'opencode'     = 'opencode agent CLI (opencode-ai)'
     'cockpit'      = 'cockpit-tools desktop GUI app (optional, CC BY-NC-SA)'
     'rotator'      = 'tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)'
+    'extras'       = 'Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)'
 }
-$ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true }
+$ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -1755,8 +1769,8 @@ function Mod-GentleAi {
         Write-Log INFO "gentle-ai" "github_token_absent" "No GitHub token available; the configurator's GitHub API calls stay unauthenticated"
     }
 
-    # Detect the agents/IDEs present on this machine (same mapping as Mod-Ee).
-    $detectedAgents = Get-TargetSkillAgents
+    # Detect the agents/IDEs present on this machine using gentle-ai's harness names.
+    $detectedAgents = Get-GentleAiTargetAgents
 
     # Per-agent / per-IDE selection + MCP wiring, owned by gentle-ai. This is a
     # core step and must actually run: with a real console we launch the
@@ -2194,6 +2208,101 @@ function Start-RotatorGateway {
     }
 }
 
+function Test-DirectoryContentEqual {
+    param([string]$Left, [string]$Right)
+    $leftRoot = [IO.Path]::GetFullPath($Left).TrimEnd([char[]]@('\\','/'))
+    $rightRoot = [IO.Path]::GetFullPath($Right).TrimEnd([char[]]@('\\','/'))
+    $leftDirs = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Sort-Object)
+    $rightDirs = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Sort-Object)
+    if (@(Compare-Object $leftDirs $rightDirs).Count -gt 0) { return $false }
+    $leftFiles = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Sort-Object)
+    $rightFiles = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Sort-Object)
+    if (@(Compare-Object $leftFiles $rightFiles).Count -gt 0) { return $false }
+    foreach ($file in $leftFiles) {
+        if ((Get-FileHash -LiteralPath (Join-Path $leftRoot $file)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $rightRoot $file)).Hash) { return $false }
+    }
+    return $true
+}
+
+function Install-ExtrasSkill {
+    param([string]$Source, [string]$Skill)
+    $stageHome = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-extras-" + [guid]::NewGuid().ToString('N'))
+    $staged = Join-Path $stageHome ".agents\\skills\\$Skill"
+    $canonical = Join-Path $HOME '.agents\\skills'
+    $target = Join-Path $canonical $Skill
+    $oldHome = $env:HOME; $oldProfile = $env:USERPROFILE
+    try {
+        New-Item -ItemType Directory -Force -Path $stageHome | Out-Null
+        $env:HOME = $stageHome; $env:USERPROFILE = $stageHome
+        try {
+            Push-Location -LiteralPath $stageHome
+            try { Invoke-Step -Phase 'extras' -Action { npx --yes skills@latest add $Source --skill $Skill --agent codex --copy --yes } }
+            finally { Pop-Location }
+        } finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile }
+        if (-not (Test-Path -LiteralPath (Join-Path $staged 'SKILL.md') -PathType Leaf)) { throw "Staged $Skill has no SKILL.md ($staged)" }
+        if (Test-Path -LiteralPath $canonical) {
+            $rootItem = Get-Item -Force -LiteralPath $canonical
+            if ($rootItem.LinkType -or -not $rootItem.PSIsContainer) { throw "Preserving unverified canonical skills root ($canonical)" }
+        }
+        New-Item -ItemType Directory -Force -Path $canonical | Out-Null
+        if (Test-Path -LiteralPath $target) {
+            $item = Get-Item -Force -LiteralPath $target
+            if ($item.LinkType -or -not $item.PSIsContainer -or -not (Test-DirectoryContentEqual $staged $target)) { throw "Preserving existing conflicting skill ($target)" }
+            return
+        }
+        Invoke-Step -Phase 'extras' -Action { Copy-Item -LiteralPath $staged -Destination $target -Recurse }
+        if (-not (Test-DirectoryContentEqual $staged $target)) { throw "Copied skill differs from staged source ($target)" }
+    } finally {
+        $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile
+        if (Test-Path -LiteralPath $stageHome) { Remove-Item -LiteralPath $stageHome -Recurse -Force -ErrorAction Stop }
+    }
+}
+
+function Link-ExtrasSkill {
+    param([string]$Skill)
+    $canonical = Join-Path $HOME ".agents\\skills\\$Skill"
+    $roots = @(
+        (Join-Path $HOME '.claude\\skills'), (Join-Path $HOME '.codex\\skills'),
+        (Join-Path $HOME '.config\\opencode\\skills'), (Join-Path $HOME '.gemini\\skills'),
+        (Join-Path $HOME '.gemini\\antigravity-cli\\skills')
+    )
+    foreach ($root in $roots) {
+        $target = Join-Path $root $Skill
+        if (Test-Path -LiteralPath $target) {
+            $item = Get-Item -Force -LiteralPath $target
+            if ($item.LinkType) {
+                try {
+                    $linkTarget = (Resolve-Path -LiteralPath $target -ErrorAction Stop).Path
+                    $canonicalTarget = (Resolve-Path -LiteralPath $canonical -ErrorAction Stop).Path
+                } catch {
+                    throw "Could not resolve existing skill link ($target)"
+                }
+                if ($linkTarget -ine $canonicalTarget) { throw "Preserving existing conflicting skill link ($target)" }
+            } elseif (-not $item.PSIsContainer -or -not (Test-DirectoryContentEqual $canonical $target)) {
+                throw "Preserving existing conflicting skill copy ($target)"
+            }
+        } else {
+            New-Item -ItemType Directory -Force -Path $root | Out-Null
+            Invoke-Step -Phase 'extras' -Action { New-Item -ItemType Junction -Path $target -Target $canonical | Out-Null }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $target 'SKILL.md') -PathType Leaf)) { throw "Skill is not reachable from harness root ($target)" }
+    }
+}
+
+function Mod-Extras {
+    Write-Log INFO 'extras' 'start' 'Optional shared skills'
+    if (-not (Test-Cmd npx)) { throw "npx not found; extras cannot be installed" }
+    foreach ($entry in @(
+        @{ Source = 'Leonxlnx/taste-skill'; Skill = 'design-taste-frontend' }
+        @{ Source = 'blader/humanizer'; Skill = 'humanizer' }
+        @{ Source = 'heroui-inc/heroui'; Skill = 'heroui-react' }
+    )) {
+        Install-ExtrasSkill -Source $entry.Source -Skill $entry.Skill
+        Link-ExtrasSkill -Skill $entry.Skill
+    }
+    Invoke-Step -Phase 'extras' -Action { npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks }
+}
+
 function Mod-Rotator {
     Write-Log INFO "rotator" "start" "tuxevil-rotator gateway"
     # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
@@ -2335,6 +2444,7 @@ $ModuleFn = @{
     'gentle-ai' = ${function:Mod-GentleAi}
     'codex' = ${function:Mod-Codex}; 'antigravity' = ${function:Mod-Antigravity}
     'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}; 'rotator' = ${function:Mod-Rotator}
+    'extras' = ${function:Mod-Extras}
 }
 
 # ==============================================================================

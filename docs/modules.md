@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [rotator]
+base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [rotator] [extras]
 ```
 
 ## base
@@ -71,7 +71,7 @@ command. Start from `pi-packages.example.txt`; see
 ## ee
 
 Installs the Engineering Excellence skill for every detected agent
-(pi, claude, gemini, cursor, antigravity, codex, opencode) via `npx skills add`.
+(pi, claude, gemini, cursor, antigravity-cli, codex, opencode) via `npx skills add`.
 
 ## skills
 
@@ -111,6 +111,18 @@ opt-in instructions in [pi-workflows-guide.md](./pi-workflows-guide.md) §3.
 ## herdr
 
 The herdr terminal multiplexer, through its official installer.
+
+## extras *(opt-in)*
+
+Stages Taste (`design-taste-frontend`), Humanizer, and HeroUI (`heroui-react`) in
+`~/.agents/skills`, the canonical shared-skill root. Existing canonical or
+agent-specific copies and links are preserved when they conflict; matching
+copies are left in place. The skills are linked for Claude Code, Codex, OpenCode,
+Gemini CLI, and Antigravity CLI under its `.gemini/antigravity-cli/skills` root.
+The `skills` CLI harness key is `antigravity-cli`, distinct from setup-ai's
+`antigravity` module key and gentle-ai's `antigravity` harness name. Pi reads the
+canonical root directly. Impeccable is installed globally with
+`--no-hooks`, so the installer does not create project-local hook files.
 
 ## gentle-ai
 
