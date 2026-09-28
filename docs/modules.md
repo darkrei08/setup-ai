@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv pi-packages go ee skills pi-workflows herdr codex antigravity opencode gentle-ai [cockpit] [rotator]
+base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [rotator] [extras]
 ```
 
 ## base
@@ -48,6 +48,18 @@ directory, not a symlink, and it never deletes runtime state (`auth.json`,
 `sessions/`, pi-managed installs), so re-runs are idempotent. Any other distro
 exits 1 with an explicit message, and on Windows the module logs `skipped_non_linux`.
 
+## lazyvim
+
+Installs the official Neovim x86_64 tarball under `/opt/nvim-linux-x86_64` on
+Linux x86_64 and puts its `bin` directory ahead of the distro package for the
+current run and future shells. Other Linux architectures use their platform
+Neovim package; macOS and Windows use their platform package. When
+`~/.config/nvim` is absent, it clones the [LazyVim starter](https://github.com/LazyVim/starter),
+removes only the starter's `.git` metadata, and runs `nvim --headless "+Lazy! sync" +qa`.
+An existing Neovim configuration is preserved. On Linux, the `dotenv` module runs
+first and owns its own Neovim configuration, so the starter clone is skipped when
+that configuration already exists.
+
 ## pi-packages
 
 Reads a declarative manifest, one source per line (`npm:<pkg>[@<version>]`,
@@ -59,7 +71,7 @@ command. Start from `pi-packages.example.txt`; see
 ## ee
 
 Installs the Engineering Excellence skill for every detected agent
-(pi, claude, gemini, cursor, antigravity, codex, opencode) via `npx skills add`.
+(pi, claude, gemini, cursor, antigravity-cli, codex, opencode) via `npx skills add`.
 
 ## skills
 
@@ -70,38 +82,23 @@ Installs darkrei08/dotenv's agent-skill stack on **every OS** via `npx skills ad
 (humanlayer/skills) — for every detected agent. `skills add --copy` is
 idempotent, so it is safe alongside the Linux `dotenv` run.
 
-## Agents configured, not installed
+## Agent modules
 
-The `ee`, `skills` and `gentle-ai` modules act on every agent **detected** on the
-machine, and that list is wider than what this installer installs. It contains
-`pi`, `claude-code`, `gemini-cli`, `cursor`, `antigravity`, `codex` and
-`opencode`; of those, the installer installs only `pi` (module `pi`), `codex`
-(module `codex`) and `opencode` (module `opencode`).
+The core registry installs the requested agent CLIs: `pi`, `claude-code`, `codex`,
+`antigravity`, `opencode`, and `herdr`. The `ee`, `skills`, and `gentle-ai`
+modules continue to target every detected compatible agent, including Gemini CLI
+and Cursor when they are already installed by their vendors.
 
-Claude Code, Gemini CLI, Cursor and Antigravity are **configuration targets**.
-When their config directory already exists they receive the shared skills and,
-through the gentle-ai configurator, their MCP wiring. When it does not, nothing
-is installed for them, and the only sign is that they do not appear in the
-detected list. Nothing fails, so the silence is easy to misread as a bug: this
-section exists because it was.
+Claude Code uses Anthropic's official Unix installer (`https://claude.ai/install.sh`).
+Unattended Unix runs use the installer helper without a controlling TTY; the
+installer has no separate documented non-interactive environment variable. On
+Windows, setup-ai uses Anthropic's documented `npm install -g @anthropic-ai/claude-code`
+method. Authentication remains a user action: run `claude` once after installation
+when login is required.
 
-The boundary is deliberate. Each of those tools ships its own installer, expects
-a subscription, and needs an interactive login, so installing them would turn a
-toolchain setup into an unfinished account setup. Install them from the vendor
-when you want them, then re-run this installer so the skills and MCP modules pick
-the new agent up through the same detection.
-
-| Agent | Vendor install (verified 2026-09-21) |
-|---|---|
-| Claude Code | `npm install -g @anthropic-ai/claude-code` (package `2.1.278` confirmed in the registry), then run `claude` once to log in |
-| Gemini CLI | `npm install -g @google/gemini-cli` (package `0.60.0` confirmed in the registry), then run `gemini` once to log in |
-| Cursor | the vendor's own installer from its site; it is not distributed on npm, and this project has not exercised it |
-| Antigravity | the vendor's own installer from its site; it is not distributed on npm, and this project has not exercised it |
-
-Neither of the last two rows is a command this project has run, and `gemini` was
-absent on the machine this section was verified on, so treat all three as vendor
-documentation rather than as something this project has exercised. Only the Claude
-Code row describes a tool this project has seen installed and configured.
+The other modules use the vendor commands listed in
+[install-matrix.md](./install-matrix.md). Vendor-owned launchers and auth/config
+state are not removed by setup-ai's Bash uninstall catalog.
 
 ## pi-workflows
 
@@ -113,6 +110,18 @@ opt-in instructions in [pi-workflows-guide.md](./pi-workflows-guide.md) §3.
 ## herdr
 
 The herdr terminal multiplexer, through its official installer.
+
+## extras *(opt-in)*
+
+Stages Taste (`design-taste-frontend`), Humanizer, and HeroUI (`heroui-react`) in
+`~/.agents/skills`, the canonical shared-skill root. Existing canonical or
+agent-specific copies and links are preserved when they conflict; matching
+copies are left in place. The skills are linked for Claude Code, Codex, OpenCode,
+Gemini CLI, and Antigravity CLI under its `.gemini/antigravity-cli/skills` root.
+The `skills` CLI harness key is `antigravity-cli`, distinct from setup-ai's
+`antigravity` module key and gentle-ai's `antigravity` harness name. Pi reads the
+canonical root directly. Impeccable is installed globally with
+`--no-hooks`, so the installer does not create project-local hook files.
 
 ## gentle-ai
 

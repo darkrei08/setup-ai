@@ -5,9 +5,9 @@
  Version: 3.6.5
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
- Windows method: winget for language runtimes, the vendor install.ps1 scripts
- for the AI CLIs, and npm for opencode, and
- `npx skills` / `pi install` for skills and pi packages.
+ Windows method: winget for language runtimes, vendor installers where documented,
+ npm for Claude Code and opencode, and `npx skills` / `pi install` for skills and
+ pi packages.
 
  The Node launcher bin/setup-ai.mjs dispatches here on win32 and can pass a
  module selection via -Only (from its interactive menu).
@@ -107,6 +107,7 @@ if (-not $env:PI_PACKAGES_FILE) { $PiPackagesFile = "" } else { $PiPackagesFile 
 $PiWorkflowsRetryMarker = 'renameWithRetry'
 # Holds the resolved published workflow version for the module and its readbacks.
 $script:SetupAiWorkflowVersion = ''
+$script:LazyVimCloned = $false
 
 # npm 12 blocks a dependency's install scripts until that package is explicitly
 # approved; these are the ones the toolchain depends on. Declared once so the
@@ -123,13 +124,16 @@ $UpstreamSkillSources = @(
     @{ Source = 'humanlayer/skills';                    Skills = @('show-me') }
 )
 $UpstreamSkillNames = @('herdr','triage','grill-me','grilling','wayfinder','domain-modeling','prototype','research','typescript-advanced','show-me')
-$SkillAgentNames = @('pi','claude-code','gemini-cli','cursor','antigravity','codex','opencode')
+# These are `skills` CLI harness names. The installer module remains `antigravity`,
+# while the skills package distinguishes the CLI harness as `antigravity-cli`.
+$SkillAgentNames = @('pi','claude-code','gemini-cli','cursor','antigravity-cli','codex','opencode')
+$GentleAiAgentNames = @('pi','claude-code','gemini-cli','cursor','antigravity','codex','opencode')
 $SkillAgentConfigDirs = @{
     pi = Join-Path $HOME ".pi"
     'claude-code' = Join-Path $HOME ".claude"
     'gemini-cli' = Join-Path $HOME ".gemini"
     cursor = Join-Path $HOME ".cursor"
-    antigravity = Join-Path $HOME ".antigravity"
+    'antigravity-cli' = Join-Path $HOME ".gemini\antigravity-cli"
     codex = Join-Path $HOME ".codex"
     opencode = Join-Path $HOME ".config\opencode"
 }
@@ -138,7 +142,7 @@ $SkillAgentRoots = @{
     'claude-code' = Join-Path $HOME ".claude\skills"
     'gemini-cli' = Join-Path $HOME ".gemini\skills"
     cursor = Join-Path $HOME ".cursor\skills"
-    antigravity = Join-Path $HOME ".antigravity\skills"
+    'antigravity-cli' = Join-Path $HOME ".gemini\antigravity-cli\skills"
     codex = Join-Path $HOME ".codex\skills"
     opencode = Join-Path $HOME ".config\opencode\skills"
 }
@@ -537,8 +541,8 @@ function Invoke-RemoteScript {
 # child's console non-interactive, so the vendor script takes its documented
 # default instead of waiting on a keypress.
 function Invoke-RemoteScriptNoPrompt {
-    param([string]$Url, [string]$Phase)
-    Invoke-Step -Phase $Phase -Action {
+    param([string]$Url, [string]$Phase, [switch]$Optional)
+    Invoke-Step -Phase $Phase -Optional:$Optional -Action {
         $script = Invoke-RestMethod -Uri $Url -UseBasicParsing
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-remote-" + [guid]::NewGuid().ToString("N") + ".ps1")
         Set-Content -LiteralPath $tmp -Value $script -Encoding utf8
@@ -611,6 +615,16 @@ function Get-TargetSkillAgents {
     $found = @()
     foreach ($agent in $SkillAgentNames) {
         if (Test-Path $SkillAgentConfigDirs[$agent]) { $found += $agent }
+    }
+    if ($found.Count -eq 0) { return @('pi') }
+    return $found
+}
+
+function Get-GentleAiTargetAgents {
+    $found = @()
+    foreach ($agent in $GentleAiAgentNames) {
+        $skillAgent = if ($agent -eq 'antigravity') { 'antigravity-cli' } else { $agent }
+        if (Test-Path $SkillAgentConfigDirs[$skillAgent]) { $found += $agent }
     }
     if ($found.Count -eq 0) { return @('pi') }
     return $found
@@ -1017,13 +1031,14 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','pi-packages','go','ee','skills','pi-workflows','herdr','codex','antigravity','opencode','gentle-ai','cockpit','rotator')
+$ModuleOrder = @('base','node','bun','pi','dotenv','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','rotator','extras')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
     'node'         = 'Node.js v22 + npm@latest (nvm on Unix, winget on Windows)'
     'bun'          = 'Bun runtime'
     'pi'           = 'pi.dev coding agent CLI'
+    'lazyvim'      = 'Neovim and LazyVim starter (headless sync)'
     'pi-packages'  = 'Extra Pi packages from a declarative manifest (pi-packages.txt)'
     'go'           = 'Go toolchain'
     'dotenv'       = 'darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)'
@@ -1031,14 +1046,16 @@ $ModuleDesc = [ordered]@{
     'skills'       = 'Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add'
     'pi-workflows' = 'pi-extensible-workflows (published release + npm 12 remote sources for pi installs)'
     'herdr'        = 'herdr terminal multiplexer'
+    'claude-code'  = 'Anthropic Claude Code CLI'
     'gentle-ai'    = 'gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi'
     'codex'        = 'OpenAI Codex CLI'
     'antigravity'  = 'Google Antigravity CLI (agy)'
     'opencode'     = 'opencode agent CLI (opencode-ai)'
     'cockpit'      = 'cockpit-tools desktop GUI app (optional, CC BY-NC-SA)'
     'rotator'      = 'tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)'
+    'extras'       = 'Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)'
 }
-$ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true }
+$ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -1171,6 +1188,51 @@ function Mod-Go {
 
 function Mod-Dotenv {
     Write-Log WARN "dotenv" "skipped_non_linux" "dotenv/setup_env.sh targets Linux package managers; skipped on Windows"
+}
+
+function Mod-LazyVim {
+    Write-Log INFO "lazyvim" "start" "Neovim + LazyVim"
+    if (-not (Test-Cmd nvim)) {
+        Install-Winget -Id "Neovim.Neovim" -Phase "lazyvim"
+        Update-SessionPath
+    }
+    if (-not (Test-Cmd nvim)) { throw "nvim not found after winget install; lazyvim cannot be installed" }
+    if (-not (Test-Cmd git)) { throw "git not found; lazyvim cannot be installed" }
+    $configRoot = if ($env:XDG_CONFIG_HOME) { Join-Path $env:XDG_CONFIG_HOME "nvim" } else { Join-Path $env:LOCALAPPDATA "nvim" }
+    if (Test-Path -LiteralPath $configRoot -PathType Container) {
+        Write-Log INFO "lazyvim" "config_present" "Preserving the existing Neovim configuration" 0 "path=$configRoot"
+        return
+    }
+    $stagedConfig = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-nvim-" + [guid]::NewGuid().ToString("N"))
+    try {
+        Invoke-Step -Phase "lazyvim" -Action { git clone --depth=1 https://github.com/LazyVim/starter $stagedConfig }
+        Invoke-Step -Phase "lazyvim" -Action { Remove-Item -LiteralPath (Join-Path $stagedConfig ".git") -Recurse -Force }
+        Invoke-Step -Phase "lazyvim" -Action {
+            $previousAppName = $env:NVIM_APPNAME
+            $previousConfigHome = $env:XDG_CONFIG_HOME
+            $env:NVIM_APPNAME = Split-Path -Leaf $stagedConfig
+            $env:XDG_CONFIG_HOME = Split-Path -Parent $stagedConfig
+            try { nvim --headless "+Lazy! sync" +qa } finally {
+                $env:NVIM_APPNAME = $previousAppName
+                $env:XDG_CONFIG_HOME = $previousConfigHome
+            }
+        }
+        Invoke-Step -Phase "lazyvim" -Action { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $configRoot) | Out-Null }
+        Invoke-Step -Phase "lazyvim" -Action { Move-Item -LiteralPath $stagedConfig -Destination $configRoot }
+    } finally {
+        if (Test-Path -LiteralPath $stagedConfig) {
+            try {
+                Remove-Item -LiteralPath $stagedConfig -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-Log WARN "lazyvim" "cleanup_failed" "Could not remove temporary LazyVim staging directory: $($_.Exception.Message)"
+            }
+        }
+    }
+    $script:LazyVimCloned = $true
+    if (-not (Test-Path -LiteralPath $configRoot -PathType Container)) {
+        throw "LazyVim configuration was not created at $configRoot"
+    }
+    Write-Log INFO "lazyvim" "config_verified" "LazyVim starter cloned and synchronized headlessly" 0 "path=$configRoot"
 }
 
 function Mod-Ee {
@@ -1342,6 +1404,26 @@ function Mod-Herdr {
     }
 }
 
+function Mod-ClaudeCode {
+    Write-Log INFO "claude-code" "start" "Claude Code CLI"
+    if (-not (Test-Cmd claude)) {
+        if (-not (Test-Cmd npm)) { throw "claude not found and npm is unavailable" }
+        $allowScripts = @()
+        if (Test-NpmInstallScriptsSupport -Phase "claude-code") {
+            $allowScripts = @('--allow-scripts=@anthropic-ai/claude-code')
+        }
+        Invoke-Step -Phase "claude-code" -Action { npm install -g @anthropic-ai/claude-code @allowScripts }
+        Update-SessionPath
+        if (-not (Test-Cmd claude)) {
+            Write-Log ERROR "claude-code" "install_missing" "claude not found on PATH after npm install"
+            throw "claude not found on PATH after npm install"
+        }
+    } else {
+        Write-Log INFO "claude-code" "already_present" "Claude Code already installed"
+    }
+    Invoke-Step -Phase "claude-code" -Verify -Action { claude --version }
+}
+
 # An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
 # pi-hashline-edit-pro to keep pi startable. That value is exactly the one that
 # makes gentle-pi's bundled pi-pretty register the built-in tool names itself, so it
@@ -1363,11 +1445,74 @@ function Remove-StaleQuietToolsSwitch {
     Write-Log INFO "gentle-ai" "stale_quiet_tools_switch_removed" "Removed the GENTLE_PI_QUIET_TOOLS=0 switch an earlier setup-ai persisted: it disables gentle-pi quiet tools, which is what makes pi-pretty register the built-in tool names itself and abort startup" 0 ("removed=" + ($changed -join ','))
 }
 
+function Remove-StaleRpivQuestionExtension {
+    $settings = Join-Path $PiAgentDir "settings.json"
+    if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
+    $bytes = [System.IO.File]::ReadAllBytes($settings)
+    $hasBom = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+    $utf8 = New-Object System.Text.UTF8Encoding($hasBom)
+    $offset = if ($hasBom) { 3 } else { 0 }
+    $raw = $utf8.GetString($bytes, $offset, $bytes.Length - $offset)
+
+    $hasGentle = $false
+    $rpivEntries = @()
+    try {
+        $parsed = ConvertFrom-Json -InputObject $raw
+        foreach ($entry in @($parsed.packages)) {
+            if ($null -eq $entry) { continue }
+            $isString = $entry -is [string]
+            $source = if ($isString) { $entry } elseif ($null -ne $entry.PSObject.Properties['source']) { [string]$entry.source } else { '' }
+            if ($source -cmatch '^npm:gentle-pi(@.*)?$') { $hasGentle = $true }
+            if ($source -cmatch '^npm:@juicesharp/rpiv-ask-user-question(@.*)?$') { $rpivEntries += @{ Value = $entry; IsString = $isString } }
+        }
+    } catch {
+        Write-Log WARN "gentle-ai" "rpiv_question_conflict_unrepaired" "Could not parse $settings while checking for the stale rpiv ask_user_question extension" 0 "settings=$settings"
+        return
+    }
+    if (-not $hasGentle -or $rpivEntries.Count -eq 0) { return }
+    if ($rpivEntries.Count -ne 1 -or -not $rpivEntries[0].IsString) {
+        Write-Log WARN "gentle-ai" "rpiv_question_conflict_unrepaired" "The stale rpiv ask_user_question extension conflicts with gentle-pi; settings.json was not changed because its package entry is ambiguous" 0 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+        return
+    }
+
+    $entryMatch = [regex]::Matches($raw, '(?m)^([ \t]*)"npm:@juicesharp/rpiv-ask-user-question(?:@[^\"]*)?"([ \t]*)(,?)[ \t]*(\r?)$')
+    if ($entryMatch.Count -ne 1) {
+        Write-Log WARN "gentle-ai" "rpiv_question_conflict_unrepaired" "The stale rpiv ask_user_question extension conflicts with gentle-pi; settings.json was unchanged because its entry could not be removed safely" 0 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+        return
+    }
+    $updated = $raw.Remove($entryMatch[0].Index, $entryMatch[0].Length)
+    if ([string]::IsNullOrEmpty($entryMatch[0].Groups[3].Value)) {
+        $prefix = $updated.Substring(0, $entryMatch[0].Index)
+        $prefix = [regex]::Replace($prefix, '(?m),([ \t]*\r?\n[ \t]*)$', '$1')
+        $updated = $prefix + $updated.Substring($entryMatch[0].Index)
+    }
+    $tmp = "$settings.setup-ai.tmp"
+    $backup = "$settings.setup-ai.bak"
+    try {
+        [System.IO.File]::WriteAllText($tmp, $updated, $utf8)
+        $null = [System.IO.File]::ReadAllText($tmp, $utf8) | ConvertFrom-Json
+        [System.IO.File]::Replace($tmp, $settings, $backup)
+    } catch {
+        Write-Log ERROR "gentle-ai" "rpiv_question_conflict_unrepaired" "Could not remove the stale rpiv ask_user_question extension from ${settings}: $($_.Exception.Message)" 1 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+        throw "Could not repair the stale rpiv ask_user_question extension in $settings"
+    } finally {
+        foreach ($stale in @($tmp, $backup)) {
+            if (Test-Path -LiteralPath $stale) {
+                try { Remove-Item -LiteralPath $stale -Force -ErrorAction Stop }
+                catch { Write-Log WARN "gentle-ai" "quiet_tools_temp_left" "Could not remove a temporary file next to settings.json" 0 "path=$stale" }
+            }
+        }
+    }
+    Write-Log INFO "gentle-ai" "rpiv_question_extension_removed" "Removed the obsolete rpiv ask_user_question extension because gentle-pi now provides the same tool" 0 "settings=$settings;package=npm:@juicesharp/rpiv-ask-user-question"
+}
+
 # gentle-pi's quiet-tools re-registers the built-in read/edit/grep/... tools, and pi
 # aborts at startup ("Tool <name> conflicts") when a second installed extension
 # registers one of the same names. pi-tool-display does exactly that, and so does the
 # dropped pi-hashline-edit-pro still registered on machines upgraded from an older
-# install. gentle-pi has no per-registrant switch, so the repair is its object entry
+# install. Newer gentle-pi releases also own ask_user_question, so remove the
+# obsolete standalone rpiv extension when it is still registered beside it.
+# gentle-pi has no per-registrant switch, so the repair is its object entry
 # in settings.json with both of its own registrants excluded. Loading extensions
 # without a model call is impossible, so the collision is detected statically and the
 # entry rewritten as raw text, which leaves the rest of the file's formatting
@@ -1377,6 +1522,8 @@ function Repair-QuietToolsConflict {
 
     $settings = Join-Path $PiAgentDir "settings.json"
     if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
+    Remove-StaleRpivQuestionExtension
+
     # Read the bytes explicitly, so the text can be written back with the same
     # encoding: UTF-8, with a byte-order mark only when the file already has one.
     $bytes = [System.IO.File]::ReadAllBytes($settings)
@@ -1612,8 +1759,8 @@ function Mod-GentleAi {
         Write-Log INFO "gentle-ai" "github_token_absent" "No GitHub token available; the configurator's GitHub API calls stay unauthenticated"
     }
 
-    # Detect the agents/IDEs present on this machine (same mapping as Mod-Ee).
-    $detectedAgents = Get-TargetSkillAgents
+    # Detect the agents/IDEs present on this machine using gentle-ai's harness names.
+    $detectedAgents = Get-GentleAiTargetAgents
 
     # Per-agent / per-IDE selection + MCP wiring, owned by gentle-ai. This is a
     # core step and must actually run: with a real console we launch the
@@ -2051,6 +2198,104 @@ function Start-RotatorGateway {
     }
 }
 
+function Test-DirectoryContentEqual {
+    param([string]$Left, [string]$Right)
+    $leftRoot = [IO.Path]::GetFullPath($Left).TrimEnd([char[]]@('\','/'))
+    $rightRoot = [IO.Path]::GetFullPath($Right).TrimEnd([char[]]@('\','/'))
+    $leftDirs = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Sort-Object)
+    $rightDirs = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Sort-Object)
+    if (@(Compare-Object $leftDirs $rightDirs).Count -gt 0) { return $false }
+    $leftFiles = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Sort-Object)
+    $rightFiles = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Sort-Object)
+    if (@(Compare-Object $leftFiles $rightFiles).Count -gt 0) { return $false }
+    foreach ($file in $leftFiles) {
+        if ((Get-FileHash -LiteralPath (Join-Path $leftRoot $file)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $rightRoot $file)).Hash) { return $false }
+    }
+    return $true
+}
+
+function Install-ExtrasSkill {
+    param([string]$Source, [string]$Skill)
+    $stageHome = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-extras-" + [guid]::NewGuid().ToString('N'))
+    $staged = Join-Path $stageHome ".agents\\skills\\$Skill"
+    $canonical = Join-Path $HOME '.agents\\skills'
+    $target = Join-Path $canonical $Skill
+    $oldHome = $env:HOME; $oldProfile = $env:USERPROFILE
+    try {
+        New-Item -ItemType Directory -Force -Path $stageHome | Out-Null
+        $env:HOME = $stageHome; $env:USERPROFILE = $stageHome
+        try {
+            Push-Location -LiteralPath $stageHome
+            try { Invoke-Step -Phase 'extras' -Action { npx --yes skills@latest add $Source --skill $Skill --agent codex --copy --yes } }
+            finally { Pop-Location }
+        } finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile }
+        if (-not (Test-Path -LiteralPath (Join-Path $staged 'SKILL.md') -PathType Leaf)) { throw "Staged $Skill has no SKILL.md ($staged)" }
+        if (Test-Path -LiteralPath $canonical) {
+            $rootItem = Get-Item -Force -LiteralPath $canonical
+            if ($rootItem.LinkType -or -not $rootItem.PSIsContainer) { throw "Preserving unverified canonical skills root ($canonical)" }
+        }
+        New-Item -ItemType Directory -Force -Path $canonical | Out-Null
+        if (Test-Path -LiteralPath $target) {
+            $item = Get-Item -Force -LiteralPath $target
+            if ($item.LinkType -or -not $item.PSIsContainer -or -not (Test-DirectoryContentEqual $staged $target)) { throw "Preserving existing conflicting skill ($target)" }
+            return
+        }
+        Invoke-Step -Phase 'extras' -Action { Copy-Item -LiteralPath $staged -Destination $target -Recurse }
+        if (-not (Test-DirectoryContentEqual $staged $target)) { throw "Copied skill differs from staged source ($target)" }
+    } finally {
+        $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile
+        if (Test-Path -LiteralPath $stageHome) { Remove-Item -LiteralPath $stageHome -Recurse -Force -ErrorAction Stop }
+    }
+}
+
+function Link-ExtrasSkill {
+    param([string]$Skill)
+    $canonical = Join-Path $HOME ".agents\\skills\\$Skill"
+    if (-not (Test-Path -LiteralPath (Join-Path $canonical 'SKILL.md') -PathType Leaf)) {
+        throw "Canonical skill is missing ($canonical)"
+    }
+    $roots = @(
+        (Join-Path $HOME '.claude\\skills'), (Join-Path $HOME '.codex\\skills'),
+        (Join-Path $HOME '.config\\opencode\\skills'), (Join-Path $HOME '.gemini\\skills'),
+        (Join-Path $HOME '.gemini\\antigravity-cli\\skills')
+    )
+    foreach ($root in $roots) {
+        $target = Join-Path $root $Skill
+        if (Test-Path -LiteralPath $target) {
+            $item = Get-Item -Force -LiteralPath $target
+            if ($item.LinkType) {
+                try {
+                    $linkTarget = (Resolve-Path -LiteralPath $target -ErrorAction Stop).Path
+                    $canonicalTarget = (Resolve-Path -LiteralPath $canonical -ErrorAction Stop).Path
+                } catch {
+                    throw "Could not resolve existing skill link ($target)"
+                }
+                if ($linkTarget -ine $canonicalTarget) { throw "Preserving existing conflicting skill link ($target)" }
+            } elseif (-not $item.PSIsContainer -or -not (Test-DirectoryContentEqual $canonical $target)) {
+                throw "Preserving existing conflicting skill copy ($target)"
+            }
+        } else {
+            New-Item -ItemType Directory -Force -Path $root | Out-Null
+            Invoke-Step -Phase 'extras' -Action { New-Item -ItemType Junction -Path $target -Target $canonical | Out-Null }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $target 'SKILL.md') -PathType Leaf)) { throw "Skill is not reachable from harness root ($target)" }
+    }
+}
+
+function Mod-Extras {
+    Write-Log INFO 'extras' 'start' 'Optional shared skills'
+    if (-not (Test-Cmd npx)) { throw "npx not found; extras cannot be installed" }
+    foreach ($entry in @(
+        @{ Source = 'Leonxlnx/taste-skill'; Skill = 'design-taste-frontend' }
+        @{ Source = 'blader/humanizer'; Skill = 'humanizer' }
+        @{ Source = 'heroui-inc/heroui'; Skill = 'heroui-react' }
+    )) {
+        Install-ExtrasSkill -Source $entry.Source -Skill $entry.Skill
+        Link-ExtrasSkill -Skill $entry.Skill
+    }
+    Invoke-Step -Phase 'extras' -Action { npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks }
+}
+
 function Mod-Rotator {
     Write-Log INFO "rotator" "start" "tuxevil-rotator gateway"
     # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
@@ -2186,12 +2431,13 @@ function Mod-Rotator {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
-    'pi' = ${function:Mod-Pi}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'ee' = ${function:Mod-Ee}
+    'pi' = ${function:Mod-Pi}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
-    'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}
+    'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
     'gentle-ai' = ${function:Mod-GentleAi}
     'codex' = ${function:Mod-Codex}; 'antigravity' = ${function:Mod-Antigravity}
     'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}; 'rotator' = ${function:Mod-Rotator}
+    'extras' = ${function:Mod-Extras}
 }
 
 # ==============================================================================
@@ -2264,6 +2510,18 @@ function Invoke-QualityGates {
     if ($Selected -contains 'pi') {
         if (-not (Test-Cmd pi)) { throw "pi quality gate could not find pi" }
         Invoke-Step -Phase "quality" -Verify -Action { pi --no-extensions --version }
+    }
+    if ($Selected -contains 'claude-code') {
+        if (-not (Test-Cmd claude)) { throw "claude-code quality gate could not find claude" }
+        Invoke-Step -Phase "quality" -Verify -Action { claude --version }
+    }
+    if ($Selected -contains 'lazyvim') {
+        if (-not (Test-Cmd nvim)) { throw "lazyvim quality gate could not find nvim" }
+        if ($script:LazyVimCloned) {
+            Invoke-Step -Phase "quality" -Verify -Action { nvim --headless "+Lazy! sync" +qa }
+        } else {
+            Invoke-Step -Phase "quality" -Verify -Action { nvim --version }
+        }
     }
     if ($Selected -contains 'pi-workflows') {
         $workflowPkg = Join-Path $PiExtDir "node_modules/pi-extensible-workflows/package.json"
