@@ -271,7 +271,7 @@ async function main() {
   }
 
   // --verbose and --dry-run ask for output, not for a menu: they run the core set unattended.
-  if (has("--yes") || has("-y") || has("--verbose") || has("-v") || has("--dry-run")) return runScript(toScriptArgs("yes"));
+  if (has("--yes") || has("-y") || has("--verbose") || has("-v") || has("--dry-run")) return runScript(toScriptArgs("yes")); // toScriptArgs forwards --dry-run.
 
   // No selection flag: try the interactive menu; fall back cleanly if the
   // terminal/stdin can't drive it (common under some npx/CI shells).
