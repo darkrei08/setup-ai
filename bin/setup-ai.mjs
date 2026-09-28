@@ -51,6 +51,7 @@ const MODULES = [
   { name: "gentle-ai",    core: true,  desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
   { name: "cockpit",      core: false, desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
   { name: "rotator",      core: false, desc: "tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)" },
+  { name: "extras",       core: false, desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
 ];
 
 // dotenv is Linux-only; drop it from the Windows menu.

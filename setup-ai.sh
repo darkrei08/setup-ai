@@ -779,7 +779,7 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit rotator)
+MODULE_ORDER=(base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit rotator extras)
 
 module_desc() {
     case "$1" in
@@ -802,12 +802,13 @@ module_desc() {
         opencode) printf '%s\n' "opencode agent CLI (opencode-ai)" ;;
         cockpit) printf '%s\n' "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" ;;
         rotator) printf '%s\n' "tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)" ;;
+        extras) printf '%s\n' "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" ;;
         *) return 1 ;;
     esac
 }
 
 module_is_optional() {
-    [[ "$1" == "cockpit" || "$1" == "rotator" ]]
+    [[ "$1" == "cockpit" || "$1" == "rotator" || "$1" == "extras" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -1692,30 +1693,45 @@ PYPATCH
 }
 
 # --- skill target helpers ----------------------------------------------------
+# These are `skills` CLI harness names. The installer module remains `antigravity`,
+# while the skills package distinguishes the CLI harness as `antigravity-cli`.
+SKILL_AGENT_NAMES=(pi claude-code gemini-cli cursor antigravity-cli codex opencode)
+GENTLE_AI_AGENT_NAMES=(pi claude-code gemini-cli cursor antigravity codex opencode)
+
 agent_config_dir() {
     case "$1" in
-        pi)          printf '%s\n' "${HOME}/.pi" ;;
-        claude-code) printf '%s\n' "${HOME}/.claude" ;;
-        gemini-cli)  printf '%s\n' "${HOME}/.gemini" ;;
-        cursor)      printf '%s\n' "${HOME}/.cursor" ;;
-        antigravity) printf '%s\n' "${HOME}/.antigravity" ;;
-        codex)       printf '%s\n' "${HOME}/.codex" ;;
-        opencode)    printf '%s\n' "${HOME}/.config/opencode" ;;
+        pi)             printf '%s\n' "${HOME}/.pi" ;;
+        claude-code)    printf '%s\n' "${HOME}/.claude" ;;
+        gemini-cli)     printf '%s\n' "${HOME}/.gemini" ;;
+        cursor)         printf '%s\n' "${HOME}/.cursor" ;;
+        antigravity-cli) printf '%s\n' "${HOME}/.gemini/antigravity-cli" ;;
+        codex)          printf '%s\n' "${HOME}/.codex" ;;
+        opencode)       printf '%s\n' "${HOME}/.config/opencode" ;;
         *) return 1 ;;
     esac
 }
 
 agent_skill_root() {
     case "$1" in
-        pi)          printf '%s\n' "${PI_AGENT_DIR}/skills" ;;
-        claude-code) printf '%s\n' "${HOME}/.claude/skills" ;;
-        gemini-cli)  printf '%s\n' "${HOME}/.gemini/skills" ;;
-        cursor)      printf '%s\n' "${HOME}/.cursor/skills" ;;
-        antigravity) printf '%s\n' "${HOME}/.antigravity/skills" ;;
-        codex)       printf '%s\n' "${HOME}/.codex/skills" ;;
-        opencode)    printf '%s\n' "${HOME}/.config/opencode/skills" ;;
+        pi)             printf '%s\n' "${PI_AGENT_DIR}/skills" ;;
+        claude-code)    printf '%s\n' "${HOME}/.claude/skills" ;;
+        gemini-cli)     printf '%s\n' "${HOME}/.gemini/skills" ;;
+        cursor)         printf '%s\n' "${HOME}/.cursor/skills" ;;
+        antigravity-cli) printf '%s\n' "${HOME}/.gemini/antigravity-cli/skills" ;;
+        codex)          printf '%s\n' "${HOME}/.codex/skills" ;;
+        opencode)       printf '%s\n' "${HOME}/.config/opencode/skills" ;;
         *) return 1 ;;
     esac
+}
+
+# gentle-ai has its own harness registry, where the same installed CLI is named
+# `antigravity`; keep that module-facing name out of `skills --agent` calls.
+gentle_ai_agent_config_dir() {
+    if [[ "$1" == "antigravity" ]]; then
+        agent_config_dir "antigravity-cli"
+    else
+        agent_config_dir "$1"
+    fi
 }
 
 # Candidate skill roots per agent (one per line): verification passes if SKILL.md
@@ -1805,7 +1821,7 @@ mod_ee() {
     local agent
     local installed_any=0
     local -a target_agents=()
-    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+    for agent in "${SKILL_AGENT_NAMES[@]}"; do
         [[ -d "$(agent_config_dir "${agent}")" ]] || continue
         run_cmd "engineering-excellence" \
             npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
@@ -1839,7 +1855,7 @@ mod_skills() {
     # detected by their config dir - same mapping as mod_ee.
     local agent
     local -a agents=()
-    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+    for agent in "${SKILL_AGENT_NAMES[@]}"; do
         [[ -d "$(agent_config_dir "${agent}")" ]] && agents+=("${agent}")
     done
     # pi is created by mod_pi; guarantee at least pi so the stack always lands.
@@ -2547,11 +2563,11 @@ mod_gentle_ai() {
     fi
     run_cmd "gentle-ai" --verify gentle-ai --version
 
-    # Detect the agents/IDEs present on this machine (same mapping as mod_ee).
+    # Detect the agents/IDEs present on this machine using gentle-ai's harness names.
     local agent
     local -a detected_agents=()
-    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
-        [[ -d "$(agent_config_dir "${agent}")" ]] && detected_agents+=("${agent}")
+    for agent in "${GENTLE_AI_AGENT_NAMES[@]}"; do
+        [[ -d "$(gentle_ai_agent_config_dir "${agent}")" ]] && detected_agents+=("${agent}")
     done
     (( ${#detected_agents[@]} == 0 )) && detected_agents=(pi)
 
@@ -3285,6 +3301,113 @@ export GOPATH="$HOME/go"
 [ -d "/opt/nvim-linux-x86_64/bin" ] && export PATH="/opt/nvim-linux-x86_64/bin:$PATH"
 export PATH="$BUN_INSTALL/bin:$HOME/.pi/bin:$HOME/.local/bin:$GOPATH/bin:$HOME/.cargo/bin:$PATH"'
 
+install_extras_skill() {
+    local source="$1" skill="$2" stage_home="${TMP_DIR}/extras-${skill}"
+    local staged="${stage_home}/.agents/skills/${skill}" canonical="${HOME}/.agents/skills"
+    local target="${canonical}/${skill}"
+
+    run_cmd "extras" mkdir -p "${stage_home}"
+    (
+        cd "${stage_home}"
+        run_cmd "extras" env HOME="${stage_home}" USERPROFILE="${stage_home}" \
+            npx --yes skills@latest add "${source}" --skill "${skill}" --agent codex --copy --yes </dev/null
+    )
+    [[ -f "${staged}/SKILL.md" ]] || {
+        log_event "ERROR" "extras" "skill_missing" "Staged skill has no SKILL.md" 1 "path=${staged}"
+        return 1
+    }
+    if [[ -L "${canonical}" || ( -e "${canonical}" && ! -d "${canonical}" ) ]]; then
+        log_event "ERROR" "extras" "canonical_root_conflict" \
+            "Preserving an unverified canonical skill root" 1 "path=${canonical}"
+        return 1
+    fi
+    run_cmd "extras" mkdir -p "${canonical}"
+    if [[ -e "${target}" || -L "${target}" ]]; then
+        if [[ ! -d "${target}" || -L "${target}" ]] || ! diff -qr "${staged}" "${target}" >/dev/null; then
+            log_event "ERROR" "extras" "skill_conflict" \
+                "Preserving an existing conflicting skill" 1 "path=${target}"
+            return 1
+        fi
+        return 0
+    fi
+    run_cmd "extras" cp -R "${staged}" "${target}"
+    if ! diff -qr "${staged}" "${target}" >/dev/null; then
+        log_event "ERROR" "extras" "skill_copy_unverified" \
+            "Copied skill differs from the staged source" 1 "path=${target}"
+        return 1
+    fi
+}
+
+link_extras_skill() {
+    local skill="$1" canonical="${HOME}/.agents/skills/${1}"
+    local agent root target link_target canonical_target
+
+    [[ -f "${canonical}/SKILL.md" ]] || {
+        log_event "ERROR" "extras" "skill_canonical_unverified" \
+            "Canonical skill is missing" 1 "path=${canonical}"
+        return 1
+    }
+    for agent in claude-code codex opencode gemini-cli antigravity-cli; do
+        root="$(agent_skill_root "${agent}")"
+        target="${root}/${skill}"
+        if [[ -L "${target}" ]]; then
+            if ! link_target="$(uninstall_resolve_link "${target}")"; then
+                log_event "ERROR" "extras" "skill_link_unresolved" \
+                    "Could not resolve an existing skill link" 1 "path=${target}"
+                return 1
+            fi
+            if ! canonical_target="$(uninstall_resolve_link "${canonical}")"; then
+                log_event "ERROR" "extras" "skill_canonical_unresolved" \
+                    "Could not resolve the canonical skill root" 1 "path=${canonical}"
+                return 1
+            fi
+            [[ "${link_target}" == "${canonical_target}" ]] || {
+                log_event "ERROR" "extras" "skill_link_conflict" \
+                    "Preserving an existing skill link" 1 "path=${target}"
+                return 1
+            }
+        elif [[ -e "${target}" ]]; then
+            if [[ ! -d "${target}" ]] || ! diff -qr "${canonical}" "${target}" >/dev/null; then
+                log_event "ERROR" "extras" "skill_link_conflict" \
+                    "Preserving an existing conflicting skill copy" 1 "path=${target}"
+                return 1
+            fi
+        else
+            run_cmd "extras" mkdir -p "${root}"
+            run_cmd "extras" ln -s "${canonical}" "${target}"
+        fi
+        [[ -f "${target}/SKILL.md" ]] || {
+            log_event "ERROR" "extras" "skill_link_unverified" \
+                "Skill is not reachable from the harness root" 1 "path=${target}"
+            return 1
+        }
+    done
+}
+
+mod_extras() {
+    section "Optional shared skills"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "extras" "stage Taste, Humanizer, and HeroUI under ${HOME}/.agents/skills and link the five agent roots"
+        run_cmd "extras" npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks </dev/null
+        return 0
+    fi
+    require_command node
+    require_command npx
+
+    local spec source skill
+    for spec in \
+        "Leonxlnx/taste-skill design-taste-frontend" \
+        "blader/humanizer humanizer" \
+        "heroui-inc/heroui heroui-react"; do
+        source="${spec%% *}"
+        skill="${spec#* }"
+        install_extras_skill "${source}" "${skill}"
+        link_extras_skill "${skill}"
+    done
+
+    run_cmd "extras" npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks </dev/null
+}
+
 configure_shell_env() {
     CURRENT_MODULE="shell"
     section "Shell environment"
@@ -3365,7 +3488,7 @@ quality_gates() {
 
     local -a target_agents=()
     local agent sk
-    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+    for agent in "${SKILL_AGENT_NAMES[@]}"; do
         [[ -d "$(agent_config_dir "${agent}")" ]] && target_agents+=("${agent}")
     done
     (( ${#target_agents[@]} == 0 )) && target_agents=(pi)
@@ -3503,14 +3626,14 @@ uninstall_catalog() {
 
     local agent root skill
     for skill in "${UPSTREAM_SKILL_NAMES[@]}"; do
-        for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+        for agent in "${SKILL_AGENT_NAMES[@]}"; do
             root="$(agent_skill_root "${agent}")"
             printf 'path|skills|%s/%s|-|\n' "${root}" "${skill}"
         done
         printf 'path|skills|%s/%s|-|\n' "${HOME}/.agents/skills" "${skill}"
     done
     skill="${ENGINEERING_EXCELLENCE_SKILL}"
-    for agent in pi claude-code gemini-cli cursor antigravity codex opencode; do
+    for agent in "${SKILL_AGENT_NAMES[@]}"; do
         root="$(agent_skill_root "${agent}")"
         printf 'path|ee|%s/%s|-|\n' "${root}" "${skill}"
     done
