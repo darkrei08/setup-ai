@@ -98,6 +98,22 @@ const impeccableInstallArgs = 'impeccable install -y --providers=claude,codex,op
 if (!bashExtras.includes(impeccableInstallArgs) || !psExtras.includes(impeccableInstallArgs)) {
   throw new Error('extras must install Impeccable globally without hooks');
 }
+const cliAnythingRef = '34f519533bc175d2fe287ab8316b0dd99bb9cc43';
+if (!bashExtras.includes('npx --yes hyperframes skills update </dev/null') ||
+    !psExtras.includes("'' | npx --yes hyperframes skills update") ||
+    !sh.includes(`CLI_ANYTHING_REF="${cliAnythingRef}"`) || !ps.includes(`$CliAnythingRef = '${cliAnythingRef}'`)) {
+  throw new Error('extras must update HyperFrames skills non-interactively and pin CLI-Anything in both scripts');
+}
+for (const pkg of ['typescript-express-starter', '@alibaba-group/open-code-review']) {
+  if (!bashExtras.includes(`install_extras_global_package ${pkg}`) ||
+      !psExtras.includes(`Install-ExtrasGlobalPackage -Package '${pkg}'`) ||
+      !sh.includes(`npm-global|extras|${pkg}|-|setup-ai extras npm-global ${pkg}`)) {
+    throw new Error(`extras must install, mark, and catalog ${pkg} in both scripts`);
+  }
+}
+for (const marker of ['setup-ai extras npm-global ', 'setup-ai extras CLI-Anything ']) {
+  if (!sh.includes(marker) || !ps.includes(marker)) throw new Error(`Ownership marker drift: ${marker}`);
+}
 for (const needle of [
   'https://claude.ai/install.sh',
   'run_vendor_installer "claude-code"',

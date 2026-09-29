@@ -11,6 +11,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).
 
+## [4.0.0]
+
+### Added
+
+- The opt-in `extras` module runs HyperFrames' non-interactive core skills update, keeps Impeccable hook-free, installs `typescript-express-starter` and `@alibaba-group/open-code-review` globally with exact `package.json` identity checks, and installs the CLI-Anything Pi extension pinned to `34f519533bc175d2fe287ab8316b0dd99bb9cc43` without overwriting an unverified target. Only items this run installs get a `.setup-ai-owned` marker; `--uninstall` removes an extras item only when that exact marker (and, for packages, the package name) matches, and the CLI-Anything directory additionally needs `--purge`. setup-ai never runs Open Code Review or configures a provider for it. Mirrored in `setup-ai.ps1` ([#98](https://github.com/darkrei08/setup-ai/issues/98)).
+
 ## [3.6.5] - 2026-09-19
 
 ### Fixed

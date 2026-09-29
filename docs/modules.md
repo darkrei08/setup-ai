@@ -123,6 +123,21 @@ The `skills` CLI harness key is `antigravity-cli`, distinct from setup-ai's
 canonical root directly. Impeccable is installed globally with
 `--no-hooks`, so the installer does not create project-local hook files.
 
+The module also runs HyperFrames' core skills update (`npx hyperframes skills
+update`, with stdin redirected so it never waits on a prompt) and installs `typescript-express-starter`
+and `@alibaba-group/open-code-review` globally. Each package is verified by reading
+`<npm root -g>/<package>/package.json` and matching its exact `name`. A package that
+was already present is verified and left in place; only a package installed by this
+run receives a `.setup-ai-owned` marker. setup-ai never runs Open Code Review,
+configures an LLM provider for it, or submits code anywhere.
+
+CLI-Anything's Pi extension is fetched at the pinned revision
+`34f519533bc175d2fe287ab8316b0dd99bb9cc43`, the checkout is verified against the pin,
+and `.pi-extension/cli-anything` is copied to
+`${PI_CODING_AGENT_DIR:-~/.pi/agent}/extensions/cli-anything` with a
+`.setup-ai-owned` marker. An existing target that does not match the pinned assets is
+preserved and the module fails instead of overwriting it.
+
 ## gentle-ai
 
 Installs the gentle-ai / `gga` ecosystem configurator, then runs
@@ -202,6 +217,12 @@ Use `--only` to restrict modules, and `--purge` to remove destructive items such
 `~/.nvm`, `~/.bun`, and the dotenv checkout. `--uninstall --dry-run` reports removals
 without deleting anything. The catalog never touches
 `~/.pi/agent/auth.json` or `~/.pi/agent/sessions/`.
+
+For `extras`, the two global packages are removed only when their `package.json`
+name and `.setup-ai-owned` marker both match exactly, and the CLI-Anything extension
+directory only when its marker names the pinned revision and `--purge` is given.
+Anything else is reported as `skipped (not verified as setup-ai-owned)`. The shared
+skills, Impeccable files, and HyperFrames skill updates are not removed.
 
 On Windows, `setup-ai.ps1` refuses `-DryRun` and `-Uninstall` with exit 2 and points
 users to `setup-ai.sh`; Windows lifecycle operations are not implemented yet.

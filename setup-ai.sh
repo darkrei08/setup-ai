@@ -97,6 +97,8 @@ UPSTREAM_SKILL_NAMES=(herdr triage grill-me grilling wayfinder domain-modeling p
 PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
 PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
 PI_NPM_DIR="${PI_AGENT_DIR}/npm"
+# Pinned CLI-Anything revision whose .pi-extension/cli-anything assets the extras module installs.
+CLI_ANYTHING_REF="34f519533bc175d2fe287ab8316b0dd99bb9cc43"
 
 # Where setup-ai clones/reads the dotenv checkout. Overridable so a machine that
 # keeps its repos outside $HOME (e.g. on a data volume) can point at the existing
@@ -3397,15 +3399,104 @@ link_extras_skill() {
     done
 }
 
+# Ownership markers hold exactly one line; a missing, linked, or different marker is not ours.
+extras_marker_matches() {
+    [[ -f "$1" && ! -L "$1" ]] && cmp -s -- "$1" <(printf '%s\n' "$2")
+}
+
+# A global package is verified only as a real directory whose package.json names it exactly.
+extras_npm_package_verified() {
+    local package="$1" package_dir="$2"
+    if [[ "${package}" == @*/* && ( -L "${package_dir%/*}" || ! -d "${package_dir%/*}" ) ]]; then
+        return 1
+    fi
+    [[ -d "${package_dir}" && ! -L "${package_dir}" && -f "${package_dir}/package.json" && ! -L "${package_dir}/package.json" ]] || return 1
+    node -e 'const fs=require("node:fs");const [file,name]=process.argv.slice(1);process.exit(JSON.parse(fs.readFileSync(file,"utf8")).name===name?0:1)' \
+        "${package_dir}/package.json" "${package}" 2>/dev/null
+}
+
+# Only a package this run installed gets the ownership marker; an existing one is verified and left unowned.
+install_extras_global_package() {
+    local package="$1" npm_root package_dir expected="setup-ai extras npm-global $1"
+    capture_cmd npm_root "extras" npm root -g
+    package_dir="${npm_root}/${package}"
+    if [[ -e "${package_dir}" || -L "${package_dir}" ]]; then
+        if ! extras_npm_package_verified "${package}" "${package_dir}"; then
+            log_event "ERROR" "extras" "package_unverified" \
+                "Preserving an existing global package whose identity could not be verified" 1 "path=${package_dir}"
+            return 1
+        fi
+        log_event "INFO" "extras" "package_preserved" "Existing global package verified and left in place" 0 "path=${package_dir}"
+        return 0
+    fi
+    run_cmd "extras" npm install -g "${package}"
+    if ! extras_npm_package_verified "${package}" "${package_dir}"; then
+        log_event "ERROR" "extras" "package_unverified" \
+            "Installed global package identity could not be verified" 1 "path=${package_dir}"
+        return 1
+    fi
+    printf '%s\n' "${expected}" > "${package_dir}/.setup-ai-owned"
+    if ! extras_marker_matches "${package_dir}/.setup-ai-owned" "${expected}"; then
+        log_event "ERROR" "extras" "package_marker_unverified" \
+            "Global package ownership marker could not be verified" 1 "path=${package_dir}/.setup-ai-owned"
+        return 1
+    fi
+    log_event "INFO" "extras" "package_verified" "Global package installed and marked as setup-ai-owned" 0 "path=${package_dir}"
+}
+
+install_cli_anything() {
+    local repo="${TMP_DIR}/cli-anything" target="${PI_EXTENSIONS_DIR}/cli-anything" source head
+    local expected="setup-ai extras CLI-Anything ${CLI_ANYTHING_REF}"
+    run_cmd "extras" git init -q "${repo}"
+    run_cmd "extras" git -C "${repo}" fetch --depth 1 https://github.com/HKUDS/CLI-Anything.git "${CLI_ANYTHING_REF}"
+    run_cmd "extras" git -C "${repo}" checkout -q --detach FETCH_HEAD
+    capture_cmd head "extras" git -C "${repo}" rev-parse HEAD
+    if [[ "${head}" != "${CLI_ANYTHING_REF}" ]]; then
+        log_event "ERROR" "extras" "cli_anything_revision_mismatch" "CLI-Anything checkout does not match the pin" 1 "head=${head}"
+        return 1
+    fi
+    source="${repo}/.pi-extension/cli-anything"
+    if [[ ! -d "${source}" ]]; then
+        log_event "ERROR" "extras" "cli_anything_assets_missing" "Pinned Pi extension assets are missing" 1 "path=${source}"
+        return 1
+    fi
+    if [[ -e "${target}" || -L "${target}" ]]; then
+        if [[ ! -d "${target}" || -L "${target}" ]] || ! diff -qr -x .setup-ai-owned "${source}" "${target}" >/dev/null; then
+            log_event "ERROR" "extras" "cli_anything_conflict" "Preserving an unverified CLI-Anything directory" 1 "path=${target}"
+            return 1
+        fi
+        log_event "INFO" "extras" "cli_anything_preserved" "CLI-Anything already matches the pin" 0 "path=${target}"
+        return 0
+    fi
+    run_cmd "extras" mkdir -p "${PI_EXTENSIONS_DIR}"
+    run_cmd "extras" cp -R "${source}" "${target}"
+    if ! diff -qr "${source}" "${target}" >/dev/null; then
+        log_event "ERROR" "extras" "cli_anything_copy_unverified" "Copied Pi extension differs from the pinned source" 1 "path=${target}"
+        return 1
+    fi
+    printf '%s\n' "${expected}" > "${target}/.setup-ai-owned"
+    if ! extras_marker_matches "${target}/.setup-ai-owned" "${expected}"; then
+        log_event "ERROR" "extras" "cli_anything_marker_unverified" "CLI-Anything ownership marker could not be verified" 1 "path=${target}"
+        return 1
+    fi
+    log_event "INFO" "extras" "cli_anything_installed" "CLI-Anything Pi extension installed at the pin" 0 "path=${target};ref=${CLI_ANYTHING_REF}"
+}
+
 mod_extras() {
-    section "Optional shared skills"
+    section "Optional shared skills and tools"
     if (( DRY_RUN == 1 )); then
         dry_run_note "extras" "stage Taste, Humanizer, and HeroUI under ${HOME}/.agents/skills and link the five agent roots"
         run_cmd "extras" npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks </dev/null
+        run_cmd "extras" npx --yes hyperframes skills update </dev/null
+        run_cmd "extras" npm install -g typescript-express-starter
+        run_cmd "extras" npm install -g @alibaba-group/open-code-review
+        dry_run_note "extras" "copy CLI-Anything ${CLI_ANYTHING_REF} .pi-extension/cli-anything into ${PI_EXTENSIONS_DIR}/cli-anything with an ownership marker"
         return 0
     fi
     require_command node
     require_command npx
+    require_command npm
+    require_command git
 
     local spec source skill
     for spec in \
@@ -3419,6 +3510,10 @@ mod_extras() {
     done
 
     run_cmd "extras" npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks </dev/null
+    run_cmd "extras" npx --yes hyperframes skills update </dev/null
+    install_extras_global_package typescript-express-starter
+    install_extras_global_package @alibaba-group/open-code-review
+    install_cli_anything
 }
 
 configure_shell_env() {
@@ -3636,6 +3731,10 @@ uninstall_catalog() {
     printf 'path|rotator|%s|d|\n' "${HOME}/.tuxevil-rotator"
     printf 'appimage|cockpit|%s|-|\n' "${HOME}/.local/bin/cockpit-tools.AppImage"
     printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
+    # extras entries carry their exact ownership marker; unmarked copies are never removed.
+    printf 'npm-global|extras|typescript-express-starter|-|setup-ai extras npm-global typescript-express-starter\n'
+    printf 'npm-global|extras|@alibaba-group/open-code-review|-|setup-ai extras npm-global @alibaba-group/open-code-review\n'
+    printf 'owned-path|extras|%s|d|setup-ai extras CLI-Anything %s\n' "${PI_EXTENSIONS_DIR}/cli-anything" "${CLI_ANYTHING_REF}"
 
     local agent root skill
     for skill in "${UPSTREAM_SKILL_NAMES[@]}"; do
@@ -3703,6 +3802,16 @@ uninstall_remove_path() {
     fi
 }
 
+uninstall_remove_owned_path() {
+    local target="$1" flags="$2" expected="$3"
+    if [[ -e "${target}" || -L "${target}" ]] \
+        && { [[ ! -d "${target}" || -L "${target}" ]] || ! extras_marker_matches "${target}/.setup-ai-owned" "${expected}"; }; then
+        printf 'skipped (not verified as setup-ai-owned): %s\n' "${target}"
+        return 0
+    fi
+    uninstall_remove_path "${target}" "${flags}"
+}
+
 uninstall_remove_appimage() {
     local target="$1"
     uninstall_protected "${target}" || return 1
@@ -3724,7 +3833,7 @@ uninstall_remove_appimage() {
 }
 
 uninstall_remove_npm_global() {
-    local target="$1" npm_root
+    local target="$1" expected="$2" npm_root
     if ! command -v npm >/dev/null 2>&1; then
         log_event "WARN" "uninstall" "npm_missing" \
             "npm is unavailable; global package left behind" 0 "package=${target}"
@@ -3739,6 +3848,11 @@ uninstall_remove_npm_global() {
     fi
     if [[ ! -e "${npm_root}/${target}" && ! -L "${npm_root}/${target}" ]]; then
         printf 'skipped (not present): %s\n' "${target}"
+        return 0
+    fi
+    if [[ -n "${expected}" ]] && { ! extras_npm_package_verified "${target}" "${npm_root}/${target}" \
+        || ! extras_marker_matches "${npm_root}/${target}/.setup-ai-owned" "${expected}"; }; then
+        printf 'skipped (not verified as setup-ai-owned): %s\n' "${target}"
         return 0
     fi
     if (( DRY_RUN == 1 )); then
@@ -3875,7 +3989,7 @@ uninstall_entry_selected() {
 uninstall_entry_present() {
     local kind="$1" target="$2" detail="$3" file npm_root
     case "${kind}" in
-        path|appimage|systemd-unit)
+        path|owned-path|appimage|systemd-unit)
             [[ -e "${target}" || -L "${target}" ]] ;;
         npm-global)
             if ! command -v npm >/dev/null 2>&1; then
@@ -3923,6 +4037,8 @@ uninstall_print_not_covered() {
     printf '  - cockpit .deb/.rpm installs and macOS brew --cask installs belong to their package manager; only the AppImage is catalogued.\n'
     printf '  - the opencode vendor installer shell-rc line belongs to the vendor, not this catalog.\n'
     printf "  - Claude Code's vendor installer owns its native launcher and user configuration under %s; setup-ai never removes that auth/config state.\\n" "${HOME}/.claude"
+    printf '  - extras: the shared skills, Impeccable files, and HyperFrames skill updates are left in place; global packages and %s/cli-anything are removed only with an exact setup-ai ownership marker.\n' \
+        "${PI_EXTENSIONS_DIR}"
     printf '  - %s/settings.json, %s/skills, %s/auth.json and %s/sessions are never removed.\n' \
         "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}"
 }
@@ -3938,7 +4054,7 @@ run_uninstall() {
     local kind module target flags detail any_present=0 validation_failed=0 rc=0
     while IFS='|' read -r kind module target flags detail; do
         uninstall_entry_selected "${module}" || continue
-        if [[ "${kind}" == "path" || "${kind}" == "appimage" ]]; then
+        if [[ "${kind}" == "path" || "${kind}" == "owned-path" || "${kind}" == "appimage" ]]; then
             uninstall_protected "${target}" || validation_failed=1
         fi
         if uninstall_entry_present "${kind}" "${target}" "${detail}"; then
@@ -3959,8 +4075,9 @@ run_uninstall() {
         uninstall_entry_selected "${module}" || continue
         case "${kind}" in
             path)          uninstall_remove_path "${target}" "${flags}" || rc=1 ;;
+            owned-path)    uninstall_remove_owned_path "${target}" "${flags}" "${detail}" || rc=1 ;;
             appimage)      uninstall_remove_appimage "${target}" || rc=1 ;;
-            npm-global)    uninstall_remove_npm_global "${target}" || rc=1 ;;
+            npm-global)    uninstall_remove_npm_global "${target}" "${detail}" || rc=1 ;;
             pi-package)    uninstall_remove_pi_package "${target}" || rc=1 ;;
             systemd-unit)  uninstall_remove_systemd_unit "${target}" || rc=1 ;;
             shell-rc-line) uninstall_remove_shell_rc_line "${target}" || rc=1 ;;
