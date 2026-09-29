@@ -84,6 +84,8 @@ $EE_Skill = "engineering-excellence"
 $PiAgentDir = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $HOME ".pi\agent" }
 $PiExtDir   = Join-Path $PiAgentDir "extensions"
 $PiNpmDir   = Join-Path $PiAgentDir "npm"
+# Pinned CLI-Anything revision whose .pi-extension/cli-anything assets the extras module installs.
+$CliAnythingRef = '34f519533bc175d2fe287ab8316b0dd99bb9cc43'
 
 # --- Pi packages: per-machine defaults ---------------------------------------
 # Declarative manifest of extra Pi packages, one source per line
@@ -2207,8 +2209,9 @@ function Test-DirectoryContentEqual {
     $leftDirs = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Sort-Object)
     $rightDirs = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -Directory -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Sort-Object)
     if (@(Compare-Object $leftDirs $rightDirs).Count -gt 0) { return $false }
-    $leftFiles = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Sort-Object)
-    $rightFiles = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Sort-Object)
+    # The top-level setup-ai ownership marker is not upstream content (diff -x .setup-ai-owned in Bash).
+    $leftFiles = @(Get-ChildItem -LiteralPath $leftRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($leftRoot.Length + 1) } | Where-Object { $_ -ne '.setup-ai-owned' } | Sort-Object)
+    $rightFiles = @(Get-ChildItem -LiteralPath $rightRoot -Recurse -File -Force | ForEach-Object { $_.FullName.Substring($rightRoot.Length + 1) } | Where-Object { $_ -ne '.setup-ai-owned' } | Sort-Object)
     if (@(Compare-Object $leftFiles $rightFiles).Count -gt 0) { return $false }
     foreach ($file in $leftFiles) {
         if ((Get-FileHash -LiteralPath (Join-Path $leftRoot $file)).Hash -ne (Get-FileHash -LiteralPath (Join-Path $rightRoot $file)).Hash) { return $false }
@@ -2284,9 +2287,80 @@ function Link-ExtrasSkill {
     }
 }
 
+# Ownership markers hold exactly one line, byte-identical to the Bash marker.
+function Test-ExtrasMarker {
+    param([string]$Marker, [string]$Expected)
+    $item = Get-Item -Force -LiteralPath $Marker -ErrorAction SilentlyContinue
+    return [bool]($item -and -not $item.LinkType -and -not $item.PSIsContainer -and [IO.File]::ReadAllText($Marker) -ceq "$Expected`n")
+}
+
+# A global package is verified only as a real directory whose package.json names it exactly.
+function Test-ExtrasNpmPackage {
+    param([string]$Package, [string]$PackageDir)
+    if ($Package.StartsWith('@')) {
+        $scope = Get-Item -Force -LiteralPath (Split-Path -Parent $PackageDir) -ErrorAction SilentlyContinue
+        if (-not $scope -or $scope.LinkType -or -not $scope.PSIsContainer) { return $false }
+    }
+    $item = Get-Item -Force -LiteralPath $PackageDir -ErrorAction SilentlyContinue
+    $packageJson = Join-Path $PackageDir 'package.json'
+    if (-not $item -or $item.LinkType -or -not $item.PSIsContainer -or -not (Test-Path -LiteralPath $packageJson -PathType Leaf)) { return $false }
+    try { return (Get-Content -Raw -LiteralPath $packageJson | ConvertFrom-Json).name -ceq $Package } catch { return $false }
+}
+
+# Only a package this run installed gets the ownership marker; an existing one is verified and left unowned.
+function Install-ExtrasGlobalPackage {
+    param([string]$Package)
+    $npmRoot = (npm root -g | Out-String).Trim()
+    $packageDir = Join-Path $npmRoot ($Package.Replace('/', [IO.Path]::DirectorySeparatorChar))
+    $marker = Join-Path $packageDir '.setup-ai-owned'
+    $expected = "setup-ai extras npm-global $Package"
+    if (Get-Item -Force -LiteralPath $packageDir -ErrorAction SilentlyContinue) {
+        if (-not (Test-ExtrasNpmPackage -Package $Package -PackageDir $packageDir)) { throw "Preserving an existing global package whose identity could not be verified ($packageDir)" }
+        Write-Log INFO 'extras' 'package_preserved' 'Existing global package verified and left in place' 0 "path=$packageDir"
+        return
+    }
+    Invoke-Step -Phase 'extras' -Action { npm install -g $Package }
+    if (-not (Test-ExtrasNpmPackage -Package $Package -PackageDir $packageDir)) { throw "Installed global package identity could not be verified ($packageDir)" }
+    [IO.File]::WriteAllText($marker, "$expected`n")
+    if (-not (Test-ExtrasMarker -Marker $marker -Expected $expected)) { throw "Global package ownership marker could not be verified ($marker)" }
+    Write-Log INFO 'extras' 'package_verified' 'Global package installed and marked as setup-ai-owned' 0 "path=$packageDir"
+}
+
+function Install-CliAnything {
+    $repo = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-cli-anything-" + [guid]::NewGuid().ToString('N'))
+    $source = Join-Path $repo '.pi-extension\cli-anything'
+    $target = Join-Path $PiExtDir 'cli-anything'
+    $marker = Join-Path $target '.setup-ai-owned'
+    $expected = "setup-ai extras CLI-Anything $CliAnythingRef"
+    try {
+        Invoke-Step -Phase 'extras' -Action { git init -q $repo }
+        Invoke-Step -Phase 'extras' -Action { git -C $repo fetch --depth 1 https://github.com/HKUDS/CLI-Anything.git $CliAnythingRef }
+        Invoke-Step -Phase 'extras' -Action { git -C $repo checkout -q --detach FETCH_HEAD }
+        $head = (git -C $repo rev-parse HEAD | Out-String).Trim()
+        if ($head -cne $CliAnythingRef) { throw "CLI-Anything checkout does not match the pin ($head)" }
+        if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw "Pinned Pi extension assets are missing ($source)" }
+        $existing = Get-Item -Force -LiteralPath $target -ErrorAction SilentlyContinue
+        if ($existing) {
+            if ($existing.LinkType -or -not $existing.PSIsContainer -or -not (Test-DirectoryContentEqual $source $target)) { throw "Preserving an unverified CLI-Anything directory ($target)" }
+            Write-Log INFO 'extras' 'cli_anything_preserved' 'CLI-Anything already matches the pin' 0 "path=$target"
+            return
+        }
+        New-Item -ItemType Directory -Force -Path $PiExtDir | Out-Null
+        Invoke-Step -Phase 'extras' -Action { Copy-Item -LiteralPath $source -Destination $target -Recurse }
+        if (-not (Test-DirectoryContentEqual $source $target)) { throw "Copied Pi extension differs from the pinned source ($target)" }
+        [IO.File]::WriteAllText($marker, "$expected`n")
+        if (-not (Test-ExtrasMarker -Marker $marker -Expected $expected)) { throw "CLI-Anything ownership marker could not be verified ($marker)" }
+        Write-Log INFO 'extras' 'cli_anything_installed' 'CLI-Anything Pi extension installed at the pin' 0 "path=$target;ref=$CliAnythingRef"
+    } finally {
+        if (Test-Path -LiteralPath $repo) { Remove-Item -LiteralPath $repo -Recurse -Force -ErrorAction Stop }
+    }
+}
+
 function Mod-Extras {
-    Write-Log INFO 'extras' 'start' 'Optional shared skills'
-    if (-not (Test-Cmd npx)) { throw "npx not found; extras cannot be installed" }
+    Write-Log INFO 'extras' 'start' 'Optional shared skills and tools'
+    foreach ($tool in @('npx', 'npm', 'git')) {
+        if (-not (Test-Cmd $tool)) { throw "$tool not found; extras cannot be installed" }
+    }
     foreach ($entry in @(
         @{ Source = 'Leonxlnx/taste-skill'; Skill = 'design-taste-frontend' }
         @{ Source = 'blader/humanizer'; Skill = 'humanizer' }
@@ -2296,6 +2370,11 @@ function Mod-Extras {
         Link-ExtrasSkill -Skill $entry.Skill
     }
     Invoke-Step -Phase 'extras' -Action { npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks }
+    # Redirected stdin, like </dev/null in Bash: the update never waits on a prompt.
+    Invoke-Step -Phase 'extras' -Action { '' | npx --yes hyperframes skills update }
+    Install-ExtrasGlobalPackage -Package 'typescript-express-starter'
+    Install-ExtrasGlobalPackage -Package '@alibaba-group/open-code-review'
+    Install-CliAnything
 }
 
 function Mod-Rotator {
