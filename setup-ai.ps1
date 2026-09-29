@@ -1203,15 +1203,17 @@ function Mod-LazyVim {
         Write-Log INFO "lazyvim" "config_present" "Preserving the existing Neovim configuration" 0 "path=$configRoot"
         return
     }
-    $stagedConfig = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-nvim-" + [guid]::NewGuid().ToString("N"))
+    $stagedParent = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-nvim-" + [guid]::NewGuid().ToString("N"))
+    $stagedConfig = Join-Path $stagedParent "nvim"
     try {
+        Invoke-Step -Phase "lazyvim" -Action { New-Item -ItemType Directory -Force -Path $stagedParent | Out-Null }
         Invoke-Step -Phase "lazyvim" -Action { git clone --depth=1 https://github.com/LazyVim/starter $stagedConfig }
         Invoke-Step -Phase "lazyvim" -Action { Remove-Item -LiteralPath (Join-Path $stagedConfig ".git") -Recurse -Force }
         Invoke-Step -Phase "lazyvim" -Action {
             $previousAppName = $env:NVIM_APPNAME
             $previousConfigHome = $env:XDG_CONFIG_HOME
-            $env:NVIM_APPNAME = Split-Path -Leaf $stagedConfig
-            $env:XDG_CONFIG_HOME = Split-Path -Parent $stagedConfig
+            $env:NVIM_APPNAME = "nvim"
+            $env:XDG_CONFIG_HOME = $stagedParent
             try { nvim --headless "+Lazy! sync" +qa } finally {
                 $env:NVIM_APPNAME = $previousAppName
                 $env:XDG_CONFIG_HOME = $previousConfigHome
@@ -1220,9 +1222,9 @@ function Mod-LazyVim {
         Invoke-Step -Phase "lazyvim" -Action { New-Item -ItemType Directory -Force -Path (Split-Path -Parent $configRoot) | Out-Null }
         Invoke-Step -Phase "lazyvim" -Action { Move-Item -LiteralPath $stagedConfig -Destination $configRoot }
     } finally {
-        if (Test-Path -LiteralPath $stagedConfig) {
+        if (Test-Path -LiteralPath $stagedParent) {
             try {
-                Remove-Item -LiteralPath $stagedConfig -Recurse -Force -ErrorAction Stop
+                Remove-Item -LiteralPath $stagedParent -Recurse -Force -ErrorAction Stop
             } catch {
                 Write-Log WARN "lazyvim" "cleanup_failed" "Could not remove temporary LazyVim staging directory: $($_.Exception.Message)"
             }
@@ -2626,7 +2628,7 @@ foreach ($m in $selected) {
 
 # The in-flight module is the one that was running when the signal arrived; the
 # phase reassignments below must not rewrite it in the summary.
-if (Test-Interrupted -and -not $script:InterruptModule) { $script:InterruptModule = $script:CurrentModule }
+if ((Test-Interrupted) -and -not $script:InterruptModule) { $script:InterruptModule = $script:CurrentModule }
 
 # npm 12 install-script approval can only name an installed package, so converge
 # after the modules that install pi packages and before the gates that use them.
