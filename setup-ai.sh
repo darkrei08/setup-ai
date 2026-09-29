@@ -2083,6 +2083,7 @@ mod_herdr() {
 
 # --- claude-code ------------------------------------------------------------
 mod_claude_code() {
+    local claude_version
     section "Claude Code"
     export PATH="${HOME}/.local/bin:${PATH}"
     if (( DRY_RUN == 1 )); then
@@ -2090,7 +2091,6 @@ mod_claude_code() {
         return 0
     fi
     if command -v claude >/dev/null 2>&1; then
-        local claude_version
         if capture_cmd claude_version "claude-code" claude --version; then
             log_event "INFO" "claude-code" "already_present" "Claude Code already installed" 0 "version=${claude_version}"
             return 0
@@ -2225,6 +2225,10 @@ remove_stale_quiet_tools_switch() {
 # file's formatting untouched.
 remove_stale_rpiv_question_extension() {
     local settings="${PI_AGENT_DIR}/settings.json"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "gentle-ai" "remove the stale rpiv ask_user_question extension from ${settings}"
+        return 0
+    fi
     [[ -f "${settings}" ]] || return 0
 
     local state="invalid"
@@ -2300,6 +2304,10 @@ handle_quiet_tools_conflict() {
     local settings="${PI_AGENT_DIR}/settings.json"
     [[ -f "${settings}" ]] || return 0
     remove_stale_rpiv_question_extension || return 1
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "gentle-ai" "repair pi settings at ${settings} for quiet-tools conflicts"
+        return 0
+    fi
 
     local raw=""
     raw="$(<"${settings}")"
@@ -2405,6 +2413,10 @@ handle_quiet_tools_conflict() {
 # settings exit 1 with a Tool "read" conflicts diagnostic and the repaired settings
 # exit 0 in about 12 seconds.
 verify_pi_startup() {
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "gentle-ai" "launch pi to verify startup with ${PI_AGENT_DIR}/settings.json"
+        return 0
+    fi
     if ! command -v pi >/dev/null 2>&1; then
         log_event "INFO" "gentle-ai" "pi_startup_skipped" \
             "pi is not on PATH; startup verification skipped" 0
