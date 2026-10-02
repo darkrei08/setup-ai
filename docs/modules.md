@@ -145,7 +145,10 @@ Installs the gentle-ai / `gga` ecosystem configurator, then runs
 Claude Code, Cursor, Codex, ...) that also wires each selected agent's **MCP**
 servers, so the tools show up under `/mcp`. For pi it additionally installs the
 first-class `gentle-pi` harness and `pi-mcp-adapter`, so pi reads gentle-ai in
-its own MCP list. The interactive selector runs only with a real TTY;
+its own MCP list. The adapter enables all configured servers while connecting idle
+servers lazily, so `/mcp` may show a server as cached/not listening without it
+being disabled; `node ~/.pi/agent/npm/node_modules/pi-mcp-adapter/cli.js doctor`
+verifies the configured catalogs. The interactive selector runs only with a real TTY;
 non-interactive/CI runs execute `gentle-ai install --scope global --agents
 <detected>` over the detected agents, so they never hang. In
 non-interactive/CI mode, a matching HTTP 403 from the GitHub API gets two

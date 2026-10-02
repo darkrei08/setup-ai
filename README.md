@@ -81,6 +81,7 @@ that matches your question.
 |---|---|
 | [docs/install-matrix.md](docs/install-matrix.md) | The official install method of every tool, per OS |
 | [docs/modules.md](docs/modules.md) | Module list and order, agent/editor installation, configuration targets, and the manual `dotenv` setup |
+| [dotenv provider setup](https://github.com/darkrei08/dotenv) | Tuxevil: `pi/agent/README.md` (optional `rotator` module is available in setup-ai); CLIProxyAPI/Gemini: `cliproxyapi/README.md` (manual dotenv setup; setup-ai does not install or configure CLIProxyAPI) |
 | [docs/pi-extensions.md](docs/pi-extensions.md) | Pi package roots, npm 12 remote sources and install-script approval, models, resource selectors |
 | [docs/pi-workflows-guide.md](docs/pi-workflows-guide.md) | `pi-extensible-workflows`: install, `/workflow` picker, roles/aliases, Herdr, Neovim (bilingual) |
 | [docs/rdd-review-troubleshooting.md](docs/rdd-review-troubleshooting.md) | When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`) |
