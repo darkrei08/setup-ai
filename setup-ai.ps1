@@ -37,11 +37,10 @@ param(
 )
 
 $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
-if ($DryRun -or $Uninstall) {
-    $flag = if ($DryRun) { '-DryRun' } else { '-Uninstall' }
+if ($DryRun) {
     Write-Host ""
-    Write-Host "$flag is not implemented on Windows." -ForegroundColor Red
-    Write-Host "setup-ai.ps1 cannot plan a run or remove the Windows install yet, and it will not pretend to: run setup-ai.sh for these flags, or remove the modules by hand (see docs/modules.md)." -ForegroundColor Red
+    Write-Host "-DryRun is not implemented on Windows." -ForegroundColor Red
+    Write-Host "setup-ai.ps1 cannot plan a run yet, and it will not pretend to: run setup-ai.sh for this flag (see docs/modules.md)." -ForegroundColor Red
     Write-Host ""
     exit 2
 }
@@ -1606,25 +1605,164 @@ function Mod-ClaudeCode {
     Invoke-Step -Phase "claude-code" -Verify -Action { claude --version }
 }
 
+# Environment ownership is receipt-backed. A value that predates setup-ai, or whose
+# receipt no longer matches it, is user state and stays in place.
+function Get-SetupAiUserEnvironmentValue {
+    param([string]$Name)
+    return [Environment]::GetEnvironmentVariable($Name, 'User')
+}
+
+function Set-SetupAiUserEnvironmentValue {
+    param([string]$Name, [AllowNull()][string]$Value)
+    [Environment]::SetEnvironmentVariable($Name, $Value, 'User')
+}
+
+function Get-SetupAiEnvironmentReceiptPath {
+    param([string]$Name)
+    if ([string]::IsNullOrWhiteSpace($env:LOCALAPPDATA)) { return $null }
+    $file = switch ($Name) {
+        'OPENCODE_PI_BIN' { 'opencode-pi-bin.json' }
+        default { return $null }
+    }
+    return Join-Path (Join-Path (Join-Path $env:LOCALAPPDATA 'setup-ai') 'ownership') $file
+}
+
+function Test-SetupAiEnvironmentReceiptLocation {
+    param([string]$Name)
+    $root = $env:LOCALAPPDATA
+    $path = Get-SetupAiEnvironmentReceiptPath -Name $Name
+    if (-not $root -or -not $path) { return $false }
+    $ownership = Join-Path (Join-Path $root 'setup-ai') 'ownership'
+    $expected = Join-Path $ownership ([IO.Path]::GetFileName($path))
+    try {
+        if ([IO.Path]::GetFullPath($path) -ine [IO.Path]::GetFullPath($expected)) { return $false }
+        foreach ($item in @($root, (Split-Path -Parent $ownership), $ownership, $path)) {
+            if (-not (Test-Path -LiteralPath $item)) { continue }
+            $info = Get-Item -Force -LiteralPath $item -ErrorAction Stop
+            if (($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+            if ($item -ne $path -and -not $info.PSIsContainer) { return $false }
+            if ($item -eq $path -and $info.PSIsContainer) { return $false }
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Get-SetupAiEnvironmentReceiptState {
+    param([string]$Name)
+    $path = Get-SetupAiEnvironmentReceiptPath -Name $Name
+    if (-not $path -or -not (Test-SetupAiEnvironmentReceiptLocation -Name $Name)) {
+        return [pscustomobject]@{ Safe = $false; Exists = $false; Valid = $false; Receipt = $null }
+    }
+    if (-not (Test-Path -LiteralPath $path)) {
+        return [pscustomobject]@{ Safe = $true; Exists = $false; Valid = $false; Receipt = $null }
+    }
+    try {
+        $receipt = Get-Content -Raw -LiteralPath $path -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $valid = $receipt -is [pscustomobject] -and $receipt.SchemaVersion -eq 1 -and
+            $receipt.Scope -ceq 'User' -and $receipt.Name -ceq $Name -and
+            $receipt.Value -is [string] -and -not [string]::IsNullOrWhiteSpace($receipt.Value)
+        return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = [bool]$valid; Receipt = $(if ($valid) { $receipt } else { $null }) }
+    } catch {
+        return [pscustomobject]@{ Safe = $true; Exists = $true; Valid = $false; Receipt = $null }
+    }
+}
+
+function Write-SetupAiEnvironmentReceipt {
+    param([string]$Name, [string]$Value)
+    $path = Get-SetupAiEnvironmentReceiptPath -Name $Name
+    if (-not $path -or [string]::IsNullOrWhiteSpace($Value)) { return $false }
+    $state = Get-SetupAiEnvironmentReceiptState -Name $Name
+    if (-not $state.Safe -or $state.Exists) { return $false }
+    $stream = $null
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) -ErrorAction Stop | Out-Null
+        if (-not (Test-SetupAiEnvironmentReceiptLocation -Name $Name)) { return $false }
+        $json = [pscustomobject]@{ SchemaVersion = 1; Scope = 'User'; Name = $Name; Value = $Value } | ConvertTo-Json -Compress
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json)
+        $stream = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+        $stream.Dispose(); $stream = $null
+        $written = Get-SetupAiEnvironmentReceiptState -Name $Name
+        return $written.Valid -and $written.Receipt.Value -ceq $Value
+    } catch { return $false }
+    finally { if ($null -ne $stream) { $stream.Dispose() } }
+}
+
+function Get-SetupAiEnvironmentInventoryStatus {
+    param([string]$Name)
+    if (-not (Get-SetupAiEnvironmentReceiptPath -Name $Name)) {
+        if ($null -eq (Get-SetupAiUserEnvironmentValue -Name $Name)) { return [pscustomobject]@{ State = 'absent'; Message = 'absent; setup-ai has no ownership receipt for this legacy value.' } }
+        return [pscustomobject]@{ State = 'protected'; Message = 'protected; setup-ai has no ownership receipt for this legacy value.' }
+    }
+    $state = Get-SetupAiEnvironmentReceiptState -Name $Name
+    if (-not $state.Safe) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; environment receipt path is unsafe.' } }
+    if (-not $state.Exists) {
+        if ($null -eq (Get-SetupAiUserEnvironmentValue -Name $Name)) { return [pscustomobject]@{ State = 'absent'; Message = 'absent.' } }
+        return [pscustomobject]@{ State = 'protected'; Message = 'protected; User environment value has no setup-ai ownership receipt.' }
+    }
+    if (-not $state.Valid) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; environment ownership receipt is missing or invalid.' } }
+    $current = Get-SetupAiUserEnvironmentValue -Name $Name
+    if ($current -ceq $state.Receipt.Value) { return [pscustomobject]@{ State = 'receipt-backed'; Message = 'receipt-backed User environment value; removable with -Yes.' } }
+    if ($null -eq $current) { return [pscustomobject]@{ State = 'protected'; Message = 'protected; receipt-backed User environment value is already absent.' } }
+    return [pscustomobject]@{ State = 'protected'; Message = 'protected; User environment value changed after setup-ai recorded it.' }
+}
+
+function Remove-SetupAiEnvironment {
+    param([string]$Name, [switch]$Confirmed)
+    if (-not $Confirmed) { return $false }
+    $script:SetupAiEnvironmentRemovalFailed = $false
+    $path = Get-SetupAiEnvironmentReceiptPath -Name $Name
+    $mutationStarted = $false
+    try {
+        if (-not (Test-SetupAiEnvironmentReceiptLocation -Name $Name)) { return $false }
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+        $receiptBefore = [IO.File]::ReadAllText($path)
+        $state = Get-SetupAiEnvironmentReceiptState -Name $Name
+        if (-not $state.Safe -or -not $state.Valid) { return $false }
+        $value = $state.Receipt.Value
+        if ([IO.File]::ReadAllText($path) -cne $receiptBefore) { return $false }
+        if ((Get-SetupAiUserEnvironmentValue -Name $Name) -cne $value) { return $false }
+        $mutationStarted = $true
+        Set-SetupAiUserEnvironmentValue -Name $Name -Value $null
+        if ($null -ne (Get-SetupAiUserEnvironmentValue -Name $Name)) { throw "User environment readback still contains $Name." }
+        if ([IO.File]::ReadAllText($path) -cne $receiptBefore) { throw 'Environment receipt changed during removal.' }
+        [IO.File]::Delete($path)
+        if (Test-Path -LiteralPath $path) { throw 'Environment receipt remains after deletion.' }
+        return $true
+    } catch {
+        $script:SetupAiEnvironmentRemovalFailed = $true
+        $errorMessage = $_.Exception.Message
+        if ($mutationStarted) {
+            try { Set-SetupAiUserEnvironmentValue -Name $Name -Value $value }
+            catch { Write-Log ERROR "uninstall" "environment_rollback_failed" "Failed to restore the User environment value after an incomplete receipt-backed removal" 1 "name=$Name" }
+        }
+        Write-Log ERROR "uninstall" "environment_removal_failed" "Receipt-backed User environment removal failed: $errorMessage" 1 "name=$Name"
+        return $false
+    }
+}
+
+function Get-OpenCodeUserEnvironmentValue {
+    param([string]$Name = 'OPENCODE_PI_BIN')
+    Get-SetupAiUserEnvironmentValue -Name $Name
+}
+function Set-OpenCodeUserEnvironmentValue {
+    param([string]$Name = 'OPENCODE_PI_BIN', [AllowNull()][string]$Value)
+    Set-SetupAiUserEnvironmentValue -Name $Name -Value $Value
+}
+function Get-OpenCodeEnvReceiptState { Get-SetupAiEnvironmentReceiptState -Name 'OPENCODE_PI_BIN' }
+function Write-OpenCodeEnvReceipt { param([string]$Value) Write-SetupAiEnvironmentReceipt -Name 'OPENCODE_PI_BIN' -Value $Value }
+function Get-OpenCodeEnvInventoryStatus { Get-SetupAiEnvironmentInventoryStatus -Name 'OPENCODE_PI_BIN' }
+function Remove-OpenCodeUserEnvironment { param([switch]$Confirmed) Remove-SetupAiEnvironment -Name 'OPENCODE_PI_BIN' -Confirmed:$Confirmed }
+
 # An earlier setup-ai version persisted GENTLE_PI_QUIET_TOOLS=0 next to
-# pi-hashline-edit-pro to keep pi startable. That value is exactly the one that
-# makes gentle-pi's bundled pi-pretty register the built-in tool names itself, so it
-# now causes the startup abort it was meant to avoid. Remove the User-scope value
-# this installer wrote, unconditionally: a machine can carry it with no shadowing
-# package left. Any other value belongs to the user and is left alone.
-function Remove-StaleQuietToolsSwitch {
-    $changed = @()
-    if ([Environment]::GetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', 'User') -eq '0') {
-        [Environment]::SetEnvironmentVariable('GENTLE_PI_QUIET_TOOLS', $null, 'User')
-        $changed += 'User:GENTLE_PI_QUIET_TOOLS'
+# pi-hashline-edit-pro. Unlike Bash, Windows has no ownership receipt for that legacy
+# value, so preserve both User and process state instead of guessing ownership.
+function Report-StaleQuietToolsSwitch {
+    if ($null -ne (Get-SetupAiUserEnvironmentValue -Name 'GENTLE_PI_QUIET_TOOLS') -or
+        $null -ne $env:GENTLE_PI_QUIET_TOOLS) {
+        Write-Log WARN "gentle-ai" "quiet_tools_switch_protected" "Preserved GENTLE_PI_QUIET_TOOLS because setup-ai has no ownership receipt for the legacy Windows value" 0
     }
-    if ($env:GENTLE_PI_QUIET_TOOLS -eq '0') {
-        # The current session inherited the value when it started; clear it there too.
-        $env:GENTLE_PI_QUIET_TOOLS = $null
-        if ($changed.Count -eq 0) { $changed += 'Process:GENTLE_PI_QUIET_TOOLS' }
-    }
-    if ($changed.Count -eq 0) { return }
-    Write-Log INFO "gentle-ai" "stale_quiet_tools_switch_removed" "Removed the GENTLE_PI_QUIET_TOOLS=0 switch an earlier setup-ai persisted: it disables gentle-pi quiet tools, which is what makes pi-pretty register the built-in tool names itself and abort startup" 0 ("removed=" + ($changed -join ','))
 }
 
 function Remove-StaleRpivQuestionExtension {
@@ -1700,7 +1838,7 @@ function Remove-StaleRpivQuestionExtension {
 # entry rewritten as raw text, which leaves the rest of the file's formatting
 # untouched.
 function Repair-QuietToolsConflict {
-    Remove-StaleQuietToolsSwitch
+    Report-StaleQuietToolsSwitch
 
     $settings = Join-Path $PiAgentDir "settings.json"
     if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) { return }
@@ -2172,9 +2310,15 @@ function Test-OpenCodeSpawn {
 }
 
 function Set-OpenCodePiBin {
-    # What a fresh pi session resolves: explicit override first, else bare PATH.
+    # Never replace a User-scope value that was present before this run.
+    $userValueBefore = Get-OpenCodeUserEnvironmentValue -Name 'OPENCODE_PI_BIN'
+    if ($null -ne $userValueBefore) {
+        if (-not $env:OPENCODE_PI_BIN) { $env:OPENCODE_PI_BIN = $userValueBefore }
+        Write-Log INFO "opencode" "pi_bin_preserved" "Preserved the pre-existing User OPENCODE_PI_BIN value" 0 "bin=$userValueBefore"
+        return
+    }
+    # What a fresh pi session resolves: explicit process override, else bare PATH.
     $effective = $env:OPENCODE_PI_BIN
-    if (-not $effective) { $effective = [Environment]::GetEnvironmentVariable('OPENCODE_PI_BIN', 'User') }
     if (-not $effective) { $effective = 'opencode' }
     $spawnable = Test-OpenCodeSpawn -Bin $effective
     if ($spawnable -eq $true) {
@@ -2194,8 +2338,19 @@ function Set-OpenCodePiBin {
         Write-Log WARN "opencode" "spawn_failed" "the resolved opencode launcher is not spawnable without a shell" 0 "bin=$native"
         return
     }
-    [Environment]::SetEnvironmentVariable('OPENCODE_PI_BIN', $native, 'User')
+    Set-OpenCodeUserEnvironmentValue -Name 'OPENCODE_PI_BIN' -Value $native
+    if ((Get-OpenCodeUserEnvironmentValue -Name 'OPENCODE_PI_BIN') -cne $native) {
+        throw 'OPENCODE_PI_BIN User environment readback did not match the native launcher.'
+    }
     $env:OPENCODE_PI_BIN = $native
+    $receiptState = Get-OpenCodeEnvReceiptState
+    if ($receiptState.Valid -and $receiptState.Receipt.Value -ceq $native) {
+        Write-Log INFO "opencode" "ownership_receipt_preserved" "Preserved the existing setup-ai OpenCode environment ownership receipt" 0 "bin=$native"
+    } elseif (-not $receiptState.Exists -and (Write-OpenCodeEnvReceipt -Value $native)) {
+        Write-Log INFO "opencode" "ownership_receipt_written" "Recorded fresh ownership of the User OPENCODE_PI_BIN value" 0 "bin=$native"
+    } else {
+        Write-Log WARN "opencode" "ownership_receipt_skipped" "Could not record ownership of OPENCODE_PI_BIN; the User environment value remains protected" 0 "bin=$native"
+    }
     Write-Log INFO "opencode" "pi_bin_set" "OPENCODE_PI_BIN points opencode-pi at the native launcher" 0 "bin=$native"
 }
 
@@ -2826,9 +2981,71 @@ function Invoke-QualityGates {
     Write-Log INFO "quality" "gates_done" "Quality gates completed for selected modules"
 }
 
+function Invoke-WindowsEnvironmentUninstall {
+    $supported = @('opencode', 'gentle-ai')
+    $requested = $supported
+    if ($All) {
+        Write-Host '-Uninstall supports only Windows environment state; use -Only opencode or -Only gentle-ai.' -ForegroundColor Red
+        return 2
+    }
+    if ($OnlySpecified) {
+        if ([string]::IsNullOrWhiteSpace($Only)) {
+            Write-Host 'ERROR: -Only requires a non-empty comma-separated module list.' -ForegroundColor Red
+            return 2
+        }
+        $requested = @()
+        foreach ($name in ($Only -split ',')) {
+            $name = $name.Trim()
+            if (-not $name) { continue }
+            if (-not $ModuleDesc.Contains($name)) {
+                Write-Host "ERROR: Unknown module: $name" -ForegroundColor Red
+                return 2
+            }
+            if ($name -notin $supported) {
+                Write-Host "ERROR: -Uninstall does not remove module '$name' on Windows; use setup-ai.sh for module removal." -ForegroundColor Red
+                return 2
+            }
+            $requested += $name
+        }
+        if ($requested.Count -eq 0) {
+            Write-Host 'ERROR: -Only requires a non-empty comma-separated module list.' -ForegroundColor Red
+            return 2
+        }
+    }
+
+    Write-Host 'Uninstall inventory (Windows environment state):'
+    $failed = $false
+    foreach ($module in $requested) {
+        switch ($module) {
+            'opencode' {
+                Write-Host "  module 'opencode': only receipt-backed User OPENCODE_PI_BIN state is removable; the CLI, credentials, and other environment values remain protected."
+                $status = Get-OpenCodeEnvInventoryStatus
+                if ($Yes) {
+                    if (Remove-OpenCodeUserEnvironment -Confirmed:$Yes) { Write-Host '  removed: User OPENCODE_PI_BIN environment value' }
+                    elseif ($script:SetupAiEnvironmentRemovalFailed) { Write-Host '  ERROR: User OPENCODE_PI_BIN removal failed; ownership receipt preserved.'; $failed = $true }
+                    else { Write-Host "  User OPENCODE_PI_BIN: $($status.Message)" }
+                } else { Write-Host "  User OPENCODE_PI_BIN: $($status.Message)" }
+            }
+            'gentle-ai' {
+                Write-Host "  module 'gentle-ai': legacy User/process GENTLE_PI_QUIET_TOOLS state is protected because Windows has no ownership receipt for it."
+                $status = Get-SetupAiEnvironmentInventoryStatus -Name 'GENTLE_PI_QUIET_TOOLS'
+                Write-Host "  User GENTLE_PI_QUIET_TOOLS: $($status.Message)"
+            }
+            default { Write-Host "  module '$module': no Windows environment state is owned by setup-ai." }
+        }
+    }
+    if ($Yes) {
+        if ($failed) { Write-Host 'Removal requested (-Yes), but one or more receipt-backed values could not be removed.' }
+        else { Write-Host 'Removal requested (-Yes); only exact receipt-backed values were eligible.' }
+    } else { Write-Host 'Inventory only; pass -Yes to request removal.' }
+    return $(if ($failed) { 1 } else { 0 })
+}
+
 # ==============================================================================
 # Main
 # ==============================================================================
+
+if ($Uninstall) { exit (Invoke-WindowsEnvironmentUninstall) }
 
 New-Item -ItemType File -Force -Path $HumanLog | Out-Null
 New-Item -ItemType File -Force -Path $JsonlLog | Out-Null
