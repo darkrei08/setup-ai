@@ -781,7 +781,7 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit rotator extras)
+MODULE_ORDER=(base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
 
 module_desc() {
     case "$1" in
@@ -803,14 +803,14 @@ module_desc() {
         antigravity) printf '%s\n' "Google Antigravity CLI (agy)" ;;
         opencode) printf '%s\n' "opencode agent CLI (opencode-ai)" ;;
         cockpit) printf '%s\n' "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" ;;
-        rotator) printf '%s\n' "tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)" ;;
+        cliproxyapi) printf '%s\n' "CLIProxyAPI plus CPA Usage Keeper Docker Compose stack (optional, opt-in)" ;;
         extras) printf '%s\n' "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" ;;
         *) return 1 ;;
     esac
 }
 
 module_is_optional() {
-    [[ "$1" == "cockpit" || "$1" == "rotator" || "$1" == "extras" ]]
+    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "extras" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -3071,231 +3071,59 @@ mod_cockpit() {
     esac
 }
 
-# --- rotator (opt-in: tuxevil-rotator multi-account gateway) -----------------
+# --- CLIProxyAPI + CPA Usage Keeper (opt-in) -------------------------------
+mod_cliproxyapi() {
+    section "CLIProxyAPI + CPA Usage Keeper"
+    local compose_dir="${CLIPROXYAPI_DIR:-${DOTENV_DIR}/cliproxyapi}"
+    local compose_file="${compose_dir}/docker-compose.yml"
+    local cpa_config="${compose_dir}/config.yaml"
+    local keeper_env="${compose_dir}/keeper.env"
 
-# Register the gateway with the machine's own autostart so it survives a reboot: a
-# systemd --user unit where the machine has one, and nothing anywhere else (macOS and
-# containers fall back to the detached start below). Enabling without --now is
-# deliberate: the process is started by its own step, and only when nothing answers the
-# port, so an already-running gateway is never doubled.
-#
-# Returns 0 for every expected outcome: a machine without a user manager, or one that
-# refuses the enable, is logged and the caller still starts the gateway by other means.
-# A failed mkdir or unit write is NOT swallowed, because this module is opt-in and
-# installing a unit nobody can start is worse than failing loudly.
-# The unit bounds its own restart loop: while no account is logged in the gateway
-# exits at once, and Restart=on-failure would respawn it every 5s forever.
-ensure_rotator_unit() {
-    # XDG_CONFIG_HOME is not set on every distro or session, so the standard default
-    # stays the fallback; the user manager reads the same path.
-    local unit_dir="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
-    local unit="${unit_dir}/tuxevil-rotator.service"
-    local bin_path
-
-    if ! command -v systemctl >/dev/null 2>&1 || ! systemctl --user show-environment >/dev/null 2>&1; then
-        log_event "INFO" "rotator" "service_skipped" \
-            "No working systemctl --user session; the gateway is only started as a detached process" 0
-        return 0
-    fi
-    bin_path="$(command -v tuxevil-rotator)"
     if (( DRY_RUN == 1 )); then
-        dry_run_note "rotator" "${unit_dir} + ${unit}"
+        dry_run_note "cliproxyapi" "validate and start ${compose_file} with Docker Compose"
         return 0
     fi
-    mkdir -p "${unit_dir}"
-    # Rewritten on every run so a moved binary or a stale unit converges here.
-    cat >"${unit}" <<UNIT
-[Unit]
-Description=tuxevil-rotator multi-account Gemini/Antigravity gateway
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-ExecStart="${bin_path}" start
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-UNIT
-    if run_cmd "rotator" systemctl --user enable tuxevil-rotator.service; then
-        log_event "INFO" "rotator" "service_enabled" \
-            "tuxevil-rotator is enabled as a systemd user service and starts at boot" 0 "unit=${unit}"
+    if ! command -v docker >/dev/null 2>&1; then
+        log_event "WARN" "cliproxyapi" "docker_missing" \
+            "Docker is required for CLIProxyAPI + CPA Usage Keeper; nothing was installed" 0
+        POST_INSTALL_ACTIONS+=("cliproxyapi: install Docker Desktop/Engine, configure ${compose_dir}/config.yaml and keeper.env, then rerun setup-ai --only cliproxyapi")
         return 0
     fi
-    log_event "WARN" "rotator" "service_enable_failed" \
-        "systemd user unit could not be enabled; the gateway is started as a detached process only" 0 "unit=${unit}"
-    return 0
-}
-
-# Start the gateway in the background and leave the proof of that start to the caller's
-# probe. The systemd unit is preferred because it also restarts the gateway when it
-# dies; anywhere else (macOS, WSL without systemd, containers) the process is detached
-# from this installer instead.
-start_rotator_gateway() {
-    local log_file="$1"
-    if (( DRY_RUN == 1 )); then
-        dry_run_note "rotator" "start tuxevil-rotator gateway"
+    if ! docker compose version >/dev/null 2>&1; then
+        log_event "WARN" "cliproxyapi" "compose_missing" \
+            "Docker Compose v2 is required for CLIProxyAPI + CPA Usage Keeper; nothing was started" 0
+        POST_INSTALL_ACTIONS+=("cliproxyapi: install Docker Compose v2, configure ${compose_dir}/config.yaml and keeper.env, then rerun setup-ai --only cliproxyapi")
+        return 0
+    fi
+    if [[ ! -f "${compose_file}" || ! -f "${cpa_config}" || ! -f "${keeper_env}" ]]; then
+        log_event "WARN" "cliproxyapi" "configuration_missing" \
+            "The dotenv CLIProxyAPI stack is not configured; setup-ai does not create credentials" 0 \
+            "directory=${compose_dir}"
+        POST_INSTALL_ACTIONS+=("cliproxyapi: copy config.example.yaml and keeper.env.example into ${compose_dir}, set private keys, then rerun setup-ai --only cliproxyapi")
+        return 0
+    fi
+    if grep -Eq 'REPLACE_WITH|replace-with|^LOGIN_PASSWORD[[:space:]]*=[[:space:]]*$' \
+        "${cpa_config}" "${keeper_env}"; then
+        log_event "WARN" "cliproxyapi" "configuration_placeholder" \
+            "CLIProxyAPI and Keeper still contain example credentials; nothing was started" 0 \
+            "directory=${compose_dir}"
+        POST_INSTALL_ACTIONS+=("cliproxyapi: replace example values in ${cpa_config} and ${keeper_env}, then rerun setup-ai --only cliproxyapi")
         return 0
     fi
 
-    # A unit that exhausted its start limit stays failed and refuses every later start
-    # until that rate-limit state is cleared, so clear it before asking again. A machine
-    # without systemctl never wrote a unit, so it has no start limit to clear.
-    if command -v systemctl >/dev/null 2>&1; then
-        run_optional "rotator" systemctl --user reset-failed tuxevil-rotator.service
-    fi
-    if systemctl --user start tuxevil-rotator.service >/dev/null 2>&1; then
-        log_event "INFO" "rotator" "service_started" "tuxevil-rotator started through the systemd user unit" 0 "unit=tuxevil-rotator.service"
-        return 0
-    fi
-    # macOS has no setsid and a shell without job control refuses disown; setsid or nohup
-    # has already detached the process, so a refused disown is informational.
-    if command -v setsid >/dev/null 2>&1; then
-        setsid nohup tuxevil-rotator start >>"${log_file}" 2>&1 &
-    else
-        nohup tuxevil-rotator start >>"${log_file}" 2>&1 &
-    fi
-    if ! disown 2>/dev/null; then
-        log_event "INFO" "rotator" "disown_unavailable" \
-            "This shell cannot disown jobs; setsid or nohup already detached the gateway" 0
-    fi
-    log_event "INFO" "rotator" "gateway_spawned" "tuxevil-rotator started in the background" 0 "log=${log_file}"
-    return 0
-}
-mod_rotator() {
-    section "tuxevil-rotator gateway"
-    # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
-    local -a candidates=(
-        "${HOME}/.antigravity_cockpit"
-        "${HOME}/.local/share/cockpit-tools"
-        "${HOME}/.config/cockpit-tools"
-        "${HOME}/.wizard-ai/cockpit-tools"
-        "${HOME}/Library/Application Support/cockpit-tools"
-    )
-    # Windows-only locations, appended only when set (mirrors the ps1 behavior).
-    [[ -n "${APPDATA:-}" ]] && candidates+=("${APPDATA}/cockpit-tools")
-    [[ -n "${LOCALAPPDATA:-}" ]] && candidates+=("${LOCALAPPDATA}/cockpit-tools")
-    local dir cockpit_dir=""
-    for dir in "${candidates[@]}"; do
-        if [[ -f "${dir}/accounts.json" || -f "${dir}/account-token.key" ]]; then
-            cockpit_dir="${dir}"; break
-        fi
-    done
-    if [[ -n "${cockpit_dir}" ]]; then
-        log_event "INFO" "rotator" "cockpit_detected" "cockpit-tools data directory detected" 0 "dir=${cockpit_dir}"
-    else
-        log_event "INFO" "rotator" "cockpit_absent" "No cockpit-tools data directory detected; the rotator can still use its own accounts" 0
-    fi
-    # Non-fatal health probe. gw_up drives the background start further below.
-    local gw="http://localhost:51200/v1/models" body count gw_up=0
-    if body="$(curl -fsS -m 5 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then
-        # curl -fsS already proved reachability; the count is informational only
-        # (awk always exits 0, so no operational failure is masked here).
-        count="$(printf '%s' "${body}" | awk '{c+=gsub(/"id"/,"&")} END{print c+0}')"
-        gw_up=1
-        log_event "INFO" "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=${gw};models=${count}"
-    else
-        log_event "INFO" "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=${gw}"
-    fi
-    # The CLI's undici dependency needs the global File (Node >= 20): on an older runtime
-    # it dies with "ReferenceError: File is not defined", so installing it there only
-    # produces a gateway that cannot start plus a login hint that cannot work. Check the
-    # runtime first and leave the machine untouched instead.
-    local node_version="" node_major=""
-    if command -v node >/dev/null 2>&1; then
-        if capture_cmd node_version "rotator" --optional node --version \
-            && [[ "${node_version}" =~ ^v([0-9]+) ]]; then
-            node_major="${BASH_REMATCH[1]}"
-        fi
-    fi
-    if [[ -z "${node_major}" ]] || (( node_major < 20 )); then
-        log_event "WARN" "rotator" "node_too_old" \
-            "tuxevil-rotator not installed: it needs Node.js >= 20 and crashes on older runtimes; install Node.js 20+ (the node module ships 22) and re-run the rotator module" 0 \
-            "node=${node_version:-none};minimum=20"
-        return 0
-    fi
-    # Install the CLI idempotently. Never runs login and never writes secrets; the
-    # start below is best-effort and never fails the module.
-    if command -v tuxevil-rotator >/dev/null 2>&1; then
-        log_event "INFO" "rotator" "already_present" "tuxevil-rotator already installed" 0
-    else
-        run_cmd "rotator" npm install --global tuxevil-rotator
-        require_command tuxevil-rotator
-    fi
-    # Register boot persistence first: enabling the unit or the task never starts a
-    # second process, so this is safe whether or not the gateway is already up. The
-    # helper logs its own INFO (`service_skipped`) when the machine has neither.
-    ensure_rotator_unit
-    # Start the gateway only when nothing answers its port: the dotenv Gemini aliases are
-    # unusable without it, so a gateway that only ever gets started by hand is the failure
-    # this module exists to prevent. The start is proven by the probe below, because a
-    # process that dies immediately must be reported, not assumed.
-    if (( gw_up == 0 )); then
-        local gw_log="${LOG_DIR}/rotator-gateway.log" attempt
-        start_rotator_gateway "${gw_log}"
-        if (( DRY_RUN == 1 )); then
-            log_event "INFO" "rotator" "dry_run_skipped" "Skipped gateway wait; the gateway was not started" 0
-        else
-            for (( attempt = 1; attempt <= 20; attempt++ )); do
-                if body="$(curl -fsS -m 2 -H 'Authorization: Bearer tuxevil' "${gw}" 2>/dev/null)"; then
-                    count="$(printf '%s' "${body}" | awk '{c+=gsub(/"id"/,"&")} END{print c+0}')"
-                    gw_up=1
-                    log_event "INFO" "rotator" "gateway_started" \
-                        "tuxevil-rotator answered after the background start" 0 "url=${gw};models=${count}"
-                    break
-                fi
-                sleep 0.5
-            done
-            if (( gw_up == 0 )); then
-                # A gateway with no account exits immediately, so the port never opens and
-                # the only place that says so is the CLI's own log (the same file the Pi
-                # extension points at); the run-side log only holds the start attempt.
-                # Without this the run reports the rotator as installed while the
-                # gemini-* aliases stay broken.
-                local cli_log="${HOME}/.tuxevil-rotator/gateway.log"
-                if grep -qs 'No accounts configured' "${cli_log}" "${gw_log}" 2>/dev/null; then
-                    log_event "WARN" "rotator" "accounts_missing" \
-                        "tuxevil-rotator has no account configured, so the gateway cannot start; run 'tuxevil-rotator login' in an interactive terminal, then 'tuxevil-rotator start'" 0 \
-                        "url=${gw};log=${gw_log}"
-                    POST_INSTALL_ACTIONS+=(
-                        "rotator: run 'tuxevil-rotator login' in an interactive terminal (it prints a Google OAuth URL and waits for the browser callback on localhost:51121), then 'tuxevil-rotator status' and 'tuxevil-rotator start'"
-                    )
-                else
-                    log_event "WARN" "rotator" "gateway_start_failed" \
-                        "tuxevil-rotator did not answer within 10s; check 'systemctl --user status tuxevil-rotator' or ${gw_log}" 0 "url=${gw}"
-                fi
-            fi
-        fi
-    fi
-    if command -v pi >/dev/null 2>&1; then
-        # `pi install` accepts only protocol URLs without the `git:` prefix, so the bare
-        # `github:owner/repo` this module used to pass resolved as a local path and failed.
-        # A leftover legacy entry from such a run is tolerated by pi (`pi list` skips it)
-        # and cannot be removed with `pi remove`, which only matches installed packages.
-        local extension_source="git:github.com/darkrei08/pi-cockpit-tools-sync"
-        local pi_settings="${PI_AGENT_DIR}/settings.json"
-        run_cmd "rotator" pi install "${extension_source}"
-        if [[ ! -f "${pi_settings}" ]] || ! grep -Fq "${extension_source}" "${pi_settings}"; then
-            log_event "ERROR" "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=${pi_settings}"
-            return 1
-        fi
-        log_event "INFO" "rotator" "pi_extension_verified" "Cockpit sync extension registered in Pi" 0 "path=${pi_settings}"
-    else
-        log_event "INFO" "rotator" "pi_extension_skipped" "pi not found; cockpit sync extension was not installed" 0
-    fi
-    cat <<'HINT' | tee -a "${HUMAN_LOG}"
-      tuxevil-rotator installed. To use the multi-account Gemini/Antigravity gateway:
-        tuxevil-rotator login     # add a Google Antigravity account (repeat to add more)
-        tuxevil-rotator import    # or bulk-import accounts from a cockpit-tools JSON
-        tuxevil-rotator status    # accounts, quotas, and routing state
-      setup-ai starts the gateway on http://localhost:51200 in the background, but only
-      when nothing is already listening: a systemd user unit on Linux, a logon scheduled
-      task on Windows, a detached process otherwise. The Pi extension does the same when
-      a session opens and the port is dead.
-      Pi reaches it through the 'tuxevil-rotator' provider configured in your dotenv.
-      The cockpit sync extension provides /cockpit-sync, /cockpit-provision, and /cockpit-proxy.
-      Login is never run by setup-ai and no tokens are read or stored.
+    run_cmd "cliproxyapi" docker compose --project-directory "${compose_dir}" \
+        -f "${compose_file}" config -q
+    run_cmd "cliproxyapi" docker compose --project-directory "${compose_dir}" \
+        -f "${compose_file}" up -d
+    run_cmd "cliproxyapi" --verify docker compose --project-directory "${compose_dir}" \
+        -f "${compose_file}" ps
+    log_event "INFO" "cliproxyapi" "stack_started" \
+        "CLIProxyAPI and CPA Usage Keeper are running" 0 \
+        "api=http://127.0.0.1:8317;keeper=http://127.0.0.1:8080"
+    cat <<HINT | tee -a "${HUMAN_LOG}"
+  CLIProxyAPI management: http://127.0.0.1:8317/management.html
+  CPA Usage Keeper dashboard: http://127.0.0.1:8080
+  Add provider accounts in CLIProxyAPI, then refresh Pi's dynamic cliproxyapi catalog.
 HINT
 }
 
@@ -3725,10 +3553,6 @@ uninstall_catalog() {
     printf 'shell-rc-line|gentle-ai|export GENTLE_PI_QUIET_TOOLS=0|-|\n'
     printf 'env-file-line|gentle-ai|%s|-|GENTLE_PI_QUIET_TOOLS=0\n' \
         "${HOME}/.config/environment.d/50-gentle-pi.conf"
-    printf 'pi-package|rotator|git:github.com/darkrei08/pi-cockpit-tools-sync|-|\n'
-    printf 'npm-global|rotator|tuxevil-rotator|-|\n'
-    printf 'systemd-unit|rotator|tuxevil-rotator.service|-|\n'
-    printf 'path|rotator|%s|d|\n' "${HOME}/.tuxevil-rotator"
     printf 'appimage|cockpit|%s|-|\n' "${HOME}/.local/bin/cockpit-tools.AppImage"
     printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
     # extras entries carry their exact ownership marker; unmarked copies are never removed.
@@ -4035,6 +3859,7 @@ uninstall_print_not_covered() {
     printf '  - dotenv runs upstream setup_env.sh, which rsyncs configuration into %s and installs files elsewhere; that payload belongs to the dotenv repository. The catalog only removes the %s checkout, and only with --purge.\n' \
         "${PI_AGENT_DIR}" "${DOTENV_DIR}"
     printf '  - cockpit .deb/.rpm installs and macOS brew --cask installs belong to their package manager; only the AppImage is catalogued.\n'
+    printf '  - cliproxyapi only starts the dotenv Docker Compose stack; Docker containers and CLIProxyAPI/Keeper data are left in place.\n'
     printf '  - the opencode vendor installer shell-rc line belongs to the vendor, not this catalog.\n'
     printf "  - Claude Code's vendor installer owns its native launcher and user configuration under %s; setup-ai never removes that auth/config state.\\n" "${HOME}/.claude"
     printf '  - extras: the shared skills, Impeccable files, and HyperFrames skill updates are left in place; global packages and %s/cli-anything are removed only with an exact setup-ai ownership marker.\n' \

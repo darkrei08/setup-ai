@@ -19,6 +19,12 @@ if (JSON.stringify(bashModules) !== JSON.stringify(powershellModules) ||
 }
 for (const modules of [bashModules, powershellModules, nodeModules]) {
   if (modules.at(-1) !== 'extras') throw new Error('extras must be the final optional module');
+  if (!modules.includes('cliproxyapi') || modules.includes('rotator')) {
+    throw new Error('CLIProxyAPI must replace the removed rotator module');
+  }
+}
+if ([sh, ps, mjs].some((source) => /tuxevil|rotator/.test(source))) {
+  throw new Error('Removed rotator integration must not remain in installer sources');
 }
 const bashSkillAgents = sh.match(/SKILL_AGENT_NAMES=\(([^)]+)\)/)?.[1].trim().split(/\s+/) ?? [];
 const powershellSkillAgents = ps.match(/\$SkillAgentNames = @\(([^)]+)\)/)?.[1]

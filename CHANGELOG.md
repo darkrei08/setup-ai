@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replaced the optional `tuxevil-rotator` module with `cliproxyapi`, which validates and starts the dotenv CLIProxyAPI plus CPA Usage Keeper Docker Compose stack without creating credentials.
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).
 
 ## [4.0.0]

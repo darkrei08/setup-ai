@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [rotator] [extras]
+base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
 ```
 
 ## base
@@ -190,25 +190,14 @@ the run and verifies it.
 
 The cockpit-tools desktop GUI app (CC BY-NC-SA).
 
-## rotator *(opt-in)*
+## cliproxyapi *(opt-in)*
 
-Installs the multi-account `tuxevil-rotator` Gemini/Antigravity gateway,
-registers it to start at boot (a `systemd --user` unit on Linux, a logon
-scheduled task on Windows), starts it in the background when nothing answers on
-port 51200, and installs the `pi-cockpit-tools-sync` Pi extension (source
-`git:github.com/darkrei08/pi-cockpit-tools-sync`). Login is never run and no
-tokens are read: add an account once with `tuxevil-rotator login`. Where the
-machine offers neither unit nor task, the gateway is still started as a detached
-process and the module logs `INFO rotator service_skipped`. On the dotenv side the `rotator-autostart`
-Pi extension does the same at session start when the port is dead, so the
-`gemini-*` aliases keep working; concurrent sessions coordinate through one start
-claim (one start, not one per session) and the detached process log is
-`~/.tuxevil-rotator/gateway.log`. Both registrations also bring back a gateway
-that dies, by different means: the Linux unit leaves it to systemd
-(`Restart=on-failure`, `RestartSec=5`), while the Windows task repeats every five
-minutes with `-MultipleInstances IgnoreNew`, so a tick is skipped while the
-gateway it started still runs, and each tick checks the port first so a gateway
-started by a session or by the detached fallback is never doubled.
+Starts the dotenv `cliproxyapi/docker-compose.yml` stack with Docker Compose:
+CLIProxyAPI provides the model gateway and CPA Usage Keeper provides its usage,
+cost and quota dashboard. The module never creates credentials. Configure the
+ignored `config.yaml` and `keeper.env` first, then run `setup-ai --only
+cliproxyapi`. The API and dashboard stay loopback-only at `127.0.0.1:8317` and
+`127.0.0.1:8080`.
 
 ## Uninstall
 

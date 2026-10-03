@@ -67,7 +67,7 @@ The terminal `run_summary` record keeps `summary.modules` and `summary.steps`:
     "started_at": "2026-09-13T15:07:42Z",
     "ended_at": "2026-09-13T15:07:48Z",
     "duration_seconds": 6,
-    "modules": [{ "name": "rotator", "status": "success" }],
+    "modules": [{ "name": "cliproxyapi", "status": "success" }],
     "steps": { "installed": 1, "verified": 3, "skipped": 0, "failed": 0 }
   }
 }
