@@ -2359,6 +2359,8 @@ remove_line_from_file() {
 # it now causes the startup abort it was meant to avoid. Remove the exact lines
 # this installer wrote, unconditionally: a machine can carry them with no
 # shadowing package left. Anything else in those files belongs to the user.
+# The Windows sibling preserves legacy User/process state instead because a registry
+# value written before ownership receipts cannot be attributed safely.
 remove_stale_quiet_tools_switch() {
     if (( DRY_RUN == 1 )); then
         dry_run_note "gentle-ai" "remove each stale GENTLE_PI_QUIET_TOOLS=0 line from ~/.bashrc, ~/.zshrc, ~/.profile and ~/.config/environment.d/50-gentle-pi.conf"
