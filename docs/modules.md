@@ -45,8 +45,12 @@ git clone https://github.com/darkrei08/dotenv.git ~/git/personale/dotenv
 `setup_env.sh` populates `~/.pi/agent` with a selective `rsync` from the checkout's
 `pi/agent` directory (settings, models, prompts, skills, themes, ...). It is a real
 directory, not a symlink, and it never deletes runtime state (`auth.json`,
-`sessions/`, pi-managed installs), so re-runs are idempotent. Any other distro
-exits 1 with an explicit message, and on Windows the module logs `skipped_non_linux`.
+`sessions/`, pi-managed installs), so re-runs are idempotent.
+
+For provider setup, use dotenv's canonical guides for [Tuxevil](https://github.com/darkrei08/dotenv/blob/main/pi/agent/README.md) and [CLIProxyAPI](https://github.com/darkrei08/dotenv/blob/main/cliproxyapi/README.md). setup-ai's optional `rotator` module covers Tuxevil; CLIProxyAPI remains a manual dotenv setup and is not configured by setup-ai.
+
+Any other distro exits 1 with an explicit message, and on Windows the module logs
+`skipped_non_linux`.
 
 ## ai-memory
 
