@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 3.6.5
+ Version: 4.0.0
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, vendor installers where documented,
@@ -66,7 +66,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "3.6.5"
+$ScriptVersion = "4.0.0"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
@@ -1146,17 +1146,18 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','rotator','extras')
+$ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','rotator','extras')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
     'node'         = 'Node.js v22 + npm@latest (nvm on Unix, winget on Windows)'
     'bun'          = 'Bun runtime'
     'pi'           = 'pi.dev coding agent CLI'
-    'lazyvim'      = 'Neovim and LazyVim starter (headless sync)'
+    'lazyvim'      = 'Neovim x86_64 tarball and LazyVim starter (headless sync)'
     'pi-packages'  = 'Extra Pi packages from a declarative manifest (pi-packages.txt)'
     'go'           = 'Go toolchain'
     'dotenv'       = 'darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)'
+    'ai-memory'    = 'ai-memory-kit aimem CLI and templates'
     'ee'           = 'Engineering Excellence skill (npx skills add, all detected agents)'
     'skills'       = 'Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add'
     'pi-workflows' = 'pi-extensible-workflows (published release + npm 12 remote sources for pi installs)'
@@ -1303,6 +1304,71 @@ function Mod-Go {
 
 function Mod-Dotenv {
     Write-Log WARN "dotenv" "skipped_non_linux" "dotenv/setup_env.sh targets Linux package managers; skipped on Windows"
+}
+
+function Mod-AiMemory {
+    $phase = "ai-memory"
+    Write-Log INFO $phase "start" "ai-memory-kit"
+    $aimemRef = if ($env:AIMEM_REF) { $env:AIMEM_REF.Trim() } else { "v0.1.0" }
+    $aimemVersion = if ($env:AIMEM_VERSION) { $env:AIMEM_VERSION.Trim().TrimStart('v') } else { "0.1.0" }
+    $aimemPrefix = if ($env:AIMEM_PREFIX) { $env:AIMEM_PREFIX.Trim() } else { Join-Path $HOME ".local" }
+    $aimemBin = Join-Path $aimemPrefix "bin\aimem"
+    $aimemCmd = Join-Path $aimemPrefix "bin\aimem.cmd"
+    $aimemTemplates = Join-Path $aimemPrefix "share\ai-memory-kit\templates"
+    $needsRepair = -not (Test-Path -LiteralPath $aimemBin -PathType Leaf) -or -not (Test-Path -LiteralPath $aimemCmd -PathType Leaf) -or -not (Test-Path -LiteralPath $aimemTemplates -PathType Container)
+    if (-not $needsRepair) {
+        $script:SetupAiAiMemoryProbe = ''
+        $probeOk = Invoke-Step -Phase $phase -Optional -Verify -Action {
+            $script:SetupAiAiMemoryProbe = (& $aimemCmd version 2>&1 | Out-String).Trim()
+        }
+        $probe = $script:SetupAiAiMemoryProbe
+        $needsRepair = -not $probeOk -or $probe -ne "aimem $aimemVersion"
+        if (-not $needsRepair) {
+            Write-Log INFO $phase "already_present" "ai-memory-kit $aimemVersion already installed" 0 "bin=$aimemBin;cmd=$aimemCmd"
+            return
+        }
+        Write-Log INFO $phase "repair_required" "ai-memory-kit version differs from the pinned version; repairing" 0 "expected=$aimemVersion;actual=$probe"
+    } else {
+        Write-Log INFO $phase "install_required" "ai-memory-kit files are missing; installing" 0 "bin=$aimemBin;cmd=$aimemCmd"
+    }
+    $installer = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-aimem-" + [guid]::NewGuid().ToString("N") + ".ps1")
+    try {
+        Invoke-Step -Phase $phase -Action {
+            Invoke-WebRequest -Uri "https://raw.githubusercontent.com/darkrei08/ai-memory-kit/$aimemRef/install.ps1" -OutFile $installer
+            $text = Get-Content -LiteralPath $installer -Raw
+            $text = $text.Replace('/tar.gz/refs/heads/$Ref', '/tar.gz/$Ref')
+            Set-Content -LiteralPath $installer -Value $text -Encoding utf8
+        }
+        $env:AIMEM_REF = $aimemRef
+        $pwshPath = (Get-Process -Id $PID).Path
+        Invoke-Step -Phase $phase -Action {
+            & $pwshPath -NoProfile -ExecutionPolicy Bypass -File $installer -NoSkill -Prefix $aimemPrefix
+        }
+    } finally {
+        if (Test-Path -LiteralPath $installer) {
+            try {
+                Remove-Item -LiteralPath $installer -Force -ErrorAction Stop
+            } catch {
+                Write-Log WARN $phase "cleanup_failed" "Could not remove temporary ai-memory installer: $($_.Exception.Message)"
+            }
+        }
+    }
+    if (-not (Test-Path -LiteralPath $aimemTemplates -PathType Container)) {
+        throw "ai-memory-kit templates missing after installation: expected $aimemTemplates"
+    }
+    if (-not (Test-Path -LiteralPath $aimemBin -PathType Leaf) -or -not (Test-Path -LiteralPath $aimemCmd -PathType Leaf)) {
+        throw "ai-memory-kit install incomplete: expected $aimemBin and $aimemCmd"
+    }
+    $script:SetupAiAiMemoryFinal = ''
+    $finalOk = Invoke-Step -Phase $phase -Verify -Action {
+        $script:SetupAiAiMemoryFinal = (& $aimemCmd version 2>&1 | Out-String).Trim()
+    }
+    $final = $script:SetupAiAiMemoryFinal
+    if (-not $finalOk -or $final -ne "aimem $aimemVersion") {
+        Write-Log ERROR $phase "version_mismatch" "ai-memory-kit version mismatch after repair" 1 "expected=aimem $aimemVersion;actual=$final"
+        throw "ai-memory-kit version mismatch after repair"
+    }
+    Write-Log INFO $phase "verified" "ai-memory-kit $aimemVersion installed" 0 "bin=$aimemBin;cmd=$aimemCmd"
 }
 
 function Mod-LazyVim {
@@ -1536,6 +1602,7 @@ function Mod-ClaudeCode {
     } else {
         Write-Log INFO "claude-code" "already_present" "Claude Code already installed"
     }
+
     Invoke-Step -Phase "claude-code" -Verify -Action { claude --version }
 }
 
@@ -2624,7 +2691,7 @@ function Mod-Rotator {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
-    'pi' = ${function:Mod-Pi}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
+    'pi' = ${function:Mod-Pi}; 'ai-memory' = ${function:Mod-AiMemory}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
     'gentle-ai' = ${function:Mod-GentleAi}

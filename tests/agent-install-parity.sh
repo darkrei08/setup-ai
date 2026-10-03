@@ -114,6 +114,26 @@ for (const pkg of ['typescript-express-starter', '@alibaba-group/open-code-revie
 for (const marker of ['setup-ai extras npm-global ', 'setup-ai extras CLI-Anything ']) {
   if (!sh.includes(marker) || !ps.includes(marker)) throw new Error(`Ownership marker drift: ${marker}`);
 }
+const bashAiMemory = sh.match(/mod_ai_memory\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+const psAiMemory = ps.match(/function Mod-AiMemory \{([\s\S]*?)\n\}/)?.[1] ?? '';
+const bashMemoryInstallAt = bashAiMemory.indexOf('run_cmd "ai-memory" env AIMEM_REF=');
+const bashExistingTemplateCheckAt = bashAiMemory.indexOf('-d "${aimem_templates}"');
+const bashFreshTemplateCheckAt = bashAiMemory.indexOf('-d "${aimem_templates}"', bashMemoryInstallAt);
+const bashReuseAt = bashAiMemory.indexOf('return 0', bashExistingTemplateCheckAt);
+const psMemoryInstallAt = psAiMemory.indexOf('& $pwshPath -NoProfile -ExecutionPolicy Bypass -File $installer');
+const psExistingTemplateCheckAt = psAiMemory.indexOf('Test-Path -LiteralPath $aimemTemplates -PathType Container');
+const psFreshTemplateCheckAt = psAiMemory.indexOf('Test-Path -LiteralPath $aimemTemplates -PathType Container', psMemoryInstallAt);
+const psReuseAt = psAiMemory.indexOf('return');
+if (!bashAiMemory.includes('local aimem_templates="${AIMEM_PREFIX}/share/ai-memory-kit/templates"') ||
+    bashMemoryInstallAt < 0 || bashReuseAt < 0 ||
+    bashExistingTemplateCheckAt < 0 || bashExistingTemplateCheckAt > bashReuseAt ||
+    bashFreshTemplateCheckAt < bashMemoryInstallAt ||
+    !psAiMemory.includes('Join-Path $aimemPrefix "share\\ai-memory-kit\\templates"') ||
+    psMemoryInstallAt < 0 || psReuseAt < 0 ||
+    psExistingTemplateCheckAt < 0 || psExistingTemplateCheckAt > psReuseAt ||
+    psFreshTemplateCheckAt < psMemoryInstallAt) {
+  throw new Error('Bash and PowerShell must verify ai-memory-kit templates at AIMEM_PREFIX/share/ai-memory-kit/templates before reuse and after install');
+}
 for (const needle of [
   'https://claude.ai/install.sh',
   'run_vendor_installer "claude-code"',
@@ -137,9 +157,6 @@ for (const needle of [
   '$script:LazyVimCloned',
 ]) {
   if (!ps.includes(needle)) throw new Error(`PowerShell missing ${needle}`);
-}
-if (ps.includes('ai-memory') || mjs.includes('ai-memory')) {
-  throw new Error('unrelated ai-memory module leaked into the issue branch');
 }
 console.log(`PASS: ${bashModules.length} module entries match across Bash, PowerShell, and Node`);
 NODE

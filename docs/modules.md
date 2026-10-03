@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [rotator] [extras]
+base node bun pi dotenv ai-memory lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [rotator] [extras]
 ```
 
 ## base
@@ -47,6 +47,23 @@ git clone https://github.com/darkrei08/dotenv.git ~/git/personale/dotenv
 directory, not a symlink, and it never deletes runtime state (`auth.json`,
 `sessions/`, pi-managed installs), so re-runs are idempotent. Any other distro
 exits 1 with an explicit message, and on Windows the module logs `skipped_non_linux`.
+
+## ai-memory
+
+Provides the `ai-memory-kit` `aimem` CLI and templates at
+v0.1.0. The installer uses `AIMEM_REF` for the source ref (default `v0.1.0`),
+`AIMEM_VERSION` for the expected installed version (default `0.1.0`), and
+`AIMEM_PREFIX` for the install root (default `$HOME/.local`). It verifies the
+exact paths `${AIMEM_PREFIX}/bin/aimem` and, on Windows,
+`${AIMEM_PREFIX}/bin/aimem.cmd`; missing files or a version mismatch trigger a
+repair and the installed version is checked again.
+
+The tagged codeload URL is patched from `/tar.gz/refs/heads/$Ref` to
+`/tar.gz/$Ref` before the upstream installer runs, because GitHub rejects the
+branch-shaped URL for release tags. On Linux/macOS, the current `ai-memory`
+module invokes the ai-memory-kit installer with `--no-skill`. Its uninstall-owned
+paths are `${AIMEM_PREFIX}/bin/aimem` and `${AIMEM_PREFIX}/share/ai-memory-kit`;
+`--uninstall --yes --only ai-memory` removes them without `--purge`; keep `AIMEM_PREFIX` under `$HOME` so the uninstall safety boundary can remove the owned paths.
 
 ## lazyvim
 
