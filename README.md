@@ -84,6 +84,7 @@ that matches your question.
 | [docs/modules.md](docs/modules.md) | Module list and order, agent/editor installation, configuration targets, and the manual `dotenv` setup |
 | [docs/pi-extensions.md](docs/pi-extensions.md) | Pi package roots, npm 12 remote sources and install-script approval, models, resource selectors |
 | [docs/pi-workflows-guide.md](docs/pi-workflows-guide.md) | `pi-extensible-workflows`: install, `/workflow` picker, roles/aliases, Herdr, Neovim (bilingual) |
+| [docs/context-budget.md](docs/context-budget.md) | Pi context-window measurement, compaction thresholds, reserve-token tuning, and session hygiene |
 | [docs/rdd-review-troubleshooting.md](docs/rdd-review-troubleshooting.md) | When the native RDD review refuses to start (`blocked` / `mutation_outcome: unknown`) |
 | [docs/logs.md](docs/logs.md) | `setup_<runid>.log` / `.jsonl` / engineering report, the `run_summary` record, the event stream |
 | [docs/opencode-go.md](docs/opencode-go.md) | Reuse an OpenCode Go subscription inside pi |
