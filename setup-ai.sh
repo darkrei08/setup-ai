@@ -1201,6 +1201,185 @@ pi_package_id() {
     printf '%s' "${spec##*/}"
 }
 
+# Node helper for Pi package identity and ownership receipts (issue #103). Modes:
+#   matches <settings> <spec>                exact registered sources with spec's identity, one per line
+#   digest <spec> <agentDir>                 sha256 of the identity: the receipt file name
+#   receipt <spec> <source> <agentDir>       receipt JSON for an exact registered source
+#   receipt-source <file> <spec> <agentDir>  recorded source of a receipt valid for this spec
+# Exit 2 means unreadable, malformed or invalid input, so callers fail closed.
+pi_package_node() {
+    node -e '
+        const fs = require("node:fs");
+        const os = require("node:os");
+        const path = require("node:path");
+        const crypto = require("node:crypto");
+        const dir = (value) => {
+            const full = path.resolve(value);
+            return process.platform === "win32" ? full.toLowerCase() : full;
+        };
+        // Identity keeps scope and owner: comparing basenames made @scope/pkg match pkg,
+        // and two repos with the same name match each other. npm and git compare without
+        // case, as setup-ai.ps1 does. Local paths resolve against the agent dir, where pi
+        // records them, and a leading ~ is the user profile.
+        const identity = (source, baseDir) => {
+            if (typeof source !== "string" || !source.trim()) throw new Error("invalid package source");
+            let spec = source.trim();
+            if (spec.startsWith("npm:")) {
+                spec = spec.slice(4);
+                const at = spec.lastIndexOf("@");
+                if (at > 0) spec = spec.slice(0, at);
+                return "npm:" + spec.toLowerCase();
+            }
+            if (spec.startsWith("git:")) {
+                spec = spec.slice(4).split("#")[0].replace(/\.git$/, "");
+                const at = spec.lastIndexOf("@");
+                if (at > 0) spec = spec.slice(0, at);
+                return "git:" + spec.toLowerCase();
+            }
+            if (spec === "~" || spec.startsWith("~/") || spec.startsWith("~\\")) {
+                spec = path.join(process.env.HOME || os.homedir(), spec.slice(1).replace(/^[\\/]+/, ""));
+            }
+            return "local:" + dir(path.resolve(baseDir, spec));
+        };
+        const [mode, a, b, c] = process.argv.slice(1);
+        try {
+            if (mode === "matches") {
+                let raw;
+                try { raw = fs.readFileSync(a, "utf8"); } catch (error) { if (error.code === "ENOENT") process.exit(0); throw error; }
+                const packages = JSON.parse(raw)?.packages ?? [];
+                if (!Array.isArray(packages)) throw new Error("packages is not an array");
+                const baseDir = path.dirname(a);
+                const want = identity(b, baseDir);
+                for (const entry of packages) {
+                    const source = typeof entry === "string" ? entry : entry?.source;
+                    if (identity(source, baseDir) === want) console.log(source);
+                }
+            } else if (mode === "digest") {
+                console.log(crypto.createHash("sha256").update(identity(a, b)).digest("hex"));
+            } else if (mode === "receipt") {
+                console.log(JSON.stringify({ schemaVersion: 1, identity: identity(a, c), source: b, agentDir: dir(c) }));
+            } else if (mode === "receipt-source") {
+                const receipt = JSON.parse(fs.readFileSync(a, "utf8"));
+                const want = identity(b, c);
+                if (receipt?.schemaVersion !== 1 || receipt.identity !== want || receipt.agentDir !== dir(c)
+                    || identity(receipt.source, c) !== want) process.exit(2);
+                process.stdout.write(receipt.source);
+            } else {
+                process.exit(2);
+            }
+        } catch {
+            process.exit(2);
+        }
+    ' "$@"
+}
+
+pi_package_matches() {
+    pi_package_node matches "${PI_AGENT_DIR}/settings.json" "$1"
+}
+
+pi_package_receipt_path() {
+    local digest
+    digest="$(pi_package_node digest "$1" "${PI_AGENT_DIR}")" || return 1
+    printf '%s/setup-ai/ownership/pi-packages/%s.json' "${XDG_STATE_HOME:-${HOME}/.local/state}" "${digest}"
+}
+
+# A symlink under setup-ai's own state directory could make a receipt claim, or
+# clobber, a file outside it.
+pi_package_receipt_path_safe() {
+    local path="$1" dir="${XDG_STATE_HOME:-${HOME}/.local/state}/setup-ai" part
+    for part in "${dir}" "${dir}/ownership" "${dir}/ownership/pi-packages"; do
+        if [[ -L "${part}" || ( -e "${part}" && ! -d "${part}" ) ]]; then return 1; fi
+    done
+    [[ ! -L "${path}" && ( ! -e "${path}" || -f "${path}" ) ]]
+}
+
+# One answer for install verification, inventory, dry run and removal:
+#   absent | unowned | owned<TAB><exact source> | blocked: <reason>
+pi_package_ownership_state() {
+    local spec="$1" registered path source
+    if ! registered="$(pi_package_matches "${spec}")"; then
+        printf 'blocked: Pi settings unreadable or malformed'
+        return 0
+    fi
+    if [[ -z "${registered}" ]]; then
+        printf 'absent'
+        return 0
+    fi
+    if ! path="$(pi_package_receipt_path "${spec}")" || ! pi_package_receipt_path_safe "${path}"; then
+        printf 'blocked: ownership receipt path unsafe'
+        return 0
+    fi
+    if [[ ! -e "${path}" ]]; then
+        printf 'unowned'
+        return 0
+    fi
+    if [[ "${registered}" == *$'\n'* ]]; then
+        printf 'blocked: duplicate registrations'
+        return 0
+    fi
+    if ! source="$(pi_package_node receipt-source "${path}" "${spec}" "${PI_AGENT_DIR}")"; then
+        printf 'blocked: ownership receipt invalid'
+        return 0
+    fi
+    if [[ "${source}" != "${registered}" ]]; then
+        printf 'blocked: registration changed since setup-ai installed it'
+        return 0
+    fi
+    printf 'owned\t%s' "${source}"
+}
+
+# Publish without overwriting. A receipt that already exists is kept, and the caller's
+# ownership check decides whether it vouches for this registration.
+write_pi_package_receipt() {
+    local spec="$1" source="$2" path json
+    path="$(pi_package_receipt_path "${spec}")" || return 1
+    pi_package_receipt_path_safe "${path}" || return 1
+    if [[ -e "${path}" ]]; then return 0; fi
+    mkdir -p -- "$(dirname -- "${path}")" || return 1
+    pi_package_receipt_path_safe "${path}" || return 1
+    json="$(pi_package_node receipt "${spec}" "${source}" "${PI_AGENT_DIR}")" || return 1
+    ( set -o noclobber; printf '%s\n' "${json}" >"${path}" )
+}
+
+# Own only a registration this exact install created: absent before, installed, and
+# read back as exactly one entry. A pre-existing, upgraded or duplicated one is never
+# claimed, and a registration whose receipt cannot be verified stays in place.
+install_pi_package_owned() {
+    local phase="$1" spec="$2" before after
+    if (( DRY_RUN == 1 )); then
+        run_cmd "${phase}" pi install "${spec}"
+        return 0
+    fi
+    if ! before="$(pi_package_matches "${spec}")"; then
+        log_event "ERROR" "${phase}" "settings_unreadable" \
+            "pi settings.json could not be parsed; cannot prove the package was absent before install" 1 \
+            "spec=${spec};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+    run_cmd "${phase}" pi install "${spec}" || return 1
+    assert_pi_package_registered "${phase}" "${spec}" || return 1
+    if [[ -n "${before}" ]]; then
+        log_event "INFO" "${phase}" "pi_registration_unowned" \
+            "The package was registered before this install; setup-ai does not claim it" 0 "spec=${spec}"
+        return 0
+    fi
+    if ! after="$(pi_package_matches "${spec}")" || [[ "${after}" == *$'\n'* ]]; then
+        log_event "ERROR" "${phase}" "pi_registration_ambiguous" \
+            "pi settings.json does not hold exactly one entry for the package; ownership not recorded" 1 \
+            "spec=${spec};settings=${PI_AGENT_DIR}/settings.json"
+        return 1
+    fi
+    if ! write_pi_package_receipt "${spec}" "${after}" \
+        || [[ "$(pi_package_ownership_state "${spec}")" != "owned"$'\t'"${after}" ]]; then
+        log_event "ERROR" "${phase}" "pi_receipt_unverified" \
+            "Could not publish a verified ownership receipt; the registration stays and uninstall will not remove it" 1 \
+            "spec=${spec};receipt=$(pi_package_receipt_path "${spec}")"
+        return 1
+    fi
+    log_event "INFO" "${phase}" "pi_registration_owned" \
+        "Ownership receipt published for the registration this install created" 0 "spec=${spec};source=${after}"
+}
+
 # Prove pi recorded a package by reading back pi's own registry, not by trusting
 # the install command we just ran.
 assert_pi_package_registered() {
@@ -1221,56 +1400,13 @@ assert_pi_package_registered() {
             "pi settings.json not found; cannot verify installed packages" 1 "path=${settings}"
         return 1
     fi
-    local rc=0
-    node -e '
-        const fs = require("node:fs");
-        let settings;
-        try {
-            settings = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-        } catch {
-            // An unreadable or malformed registry cannot prove the registration: fail closed.
-            process.exit(2);
-        }
-        const path = require("node:path");
-        // Identity keeps scope and owner: comparing basenames made @scope/pkg match pkg,
-        // and two repos with the same name match each other. Local paths resolve against
-        // the base dir of the registry, because pi records them relative to the agent dir.
-        const identity = (source, baseDir) => {
-            let spec = String(source).trim();
-            if (spec.startsWith("npm:")) {
-                spec = spec.slice(4);
-                const at = spec.lastIndexOf("@");
-                if (at > 0) spec = spec.slice(0, at);
-                return "npm:" + spec;
-            }
-            if (spec.startsWith("git:")) {
-                spec = spec.split("#")[0].replace(/\.git$/, "");
-                const at = spec.lastIndexOf("@");
-                if (at > 0) spec = spec.slice(0, at);
-                return "git:" + spec;
-            }
-            // A leading ~ means the user profile, not a directory named "~" under
-            // the agent dir, and the shell cannot expand it inside a quoted argument.
-            if (spec === "~" || spec.startsWith("~/") || spec.startsWith("~\\")) {
-                spec = path.join(process.env.HOME || require("node:os").homedir(), spec.slice(1).replace(/^[\\/]+/, ""));
-            }
-            const resolved = path.resolve(baseDir, spec);
-            return "local:" + (process.platform === "win32" ? resolved.toLowerCase() : resolved);
-        };
-        const baseDir = path.dirname(process.argv[1]);
-        const packages = settings.packages ?? [];
-        // Resolve a local want exactly as the recorded entries are resolved:
-        // against the agent dir, where pi records them, never the caller cwd.
-        const want = identity(process.argv[2], baseDir);
-        const found = packages.some((entry) => identity(typeof entry === "string" ? entry : entry?.source, baseDir) === want);
-        process.exit(found ? 0 : 1);
-    ' "${settings}" "${spec}" || rc=$?
-    if (( rc == 2 )); then
+    local registered
+    if ! registered="$(pi_package_matches "${spec}")"; then
         log_event "ERROR" "${phase}" "settings_unreadable" \
             "pi settings.json could not be parsed; cannot prove the package state" 1 "path=${settings}"
         return 1
     fi
-    if (( rc == 0 )); then
+    if [[ -n "${registered}" ]]; then
         log_event "INFO" "${phase}" "package_registered" \
             "pi registered the package" 0 "spec=${spec}"
         return 0
@@ -1912,12 +2048,11 @@ mod_pi_workflows() {
     }
     log_event "INFO" "pi-workflows" "version_selected" "Workflow version selected" 0 "version=${PI_WORKFLOW_VERSION}"
 
-    run_cmd "pi-workflows" pi install "npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}"
     # Prove what pi recorded instead of trusting the command's exit code: the parity rule
     # here is the same readback the PowerShell sibling performs right after its install.
-    if ! assert_pi_package_registered "pi-workflows" "npm:pi-extensible-workflows"; then
+    if ! install_pi_package_owned "pi-workflows" "npm:pi-extensible-workflows@${PI_WORKFLOW_VERSION}"; then
         log_event "ERROR" "pi-workflows" "published_package_not_registered" \
-            "pi did not register the published workflow package" 1 \
+            "pi did not install and register the published workflow package" 1 \
             "version=${PI_WORKFLOW_VERSION}"
         return 1
     fi
@@ -2048,8 +2183,7 @@ mod_pi_packages() {
             continue
         fi
 
-        run_cmd "pi-packages" pi install "${line}" || return 1
-        assert_pi_package_registered "pi-packages" "${line}" || return 1
+        install_pi_package_owned "pi-packages" "${line}" || return 1
         installed=$(( installed + 1 ))
     done < "${manifest}"
 
@@ -2742,7 +2876,7 @@ mod_gentle_ai() {
     # gentle-pi harness and the pi-mcp-adapter bridge, then verify the exact
     # target (pi's own settings file), not a walked resolution.
     if command -v pi >/dev/null 2>&1; then
-        run_cmd "gentle-ai" pi install npm:gentle-pi
+        install_pi_package_owned "gentle-ai" npm:gentle-pi
         # Ensure the project marker exists even for --only gentle-ai before the
         # npm 12 approval/rebuild check (issue #49).
         ensure_npm_remote_sources "${PI_NPM_DIR}"
@@ -2750,11 +2884,10 @@ mod_gentle_ai() {
         # managed Pi root, so its package-local RDD review binary exists even if a
         # later module fails before the final convergence pass runs.
         approve_npm_install_scripts "${PI_NPM_DIR}" "gentle-ai"
-        run_cmd "gentle-ai" pi install npm:pi-mcp-adapter
+        install_pi_package_owned "gentle-ai" npm:pi-mcp-adapter
         local pi_settings="${PI_AGENT_DIR}/settings.json"
-        if [[ -f "${pi_settings}" ]] \
-            && grep -q '"npm:gentle-pi"' "${pi_settings}" \
-            && grep -q '"npm:pi-mcp-adapter"' "${pi_settings}"; then
+        if assert_pi_package_registered "gentle-ai" "npm:gentle-pi" \
+            && assert_pi_package_registered "gentle-ai" "npm:pi-mcp-adapter"; then
             log_event "INFO" "gentle-ai" "pi_enabled" \
                 "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)" 0
         else
@@ -3275,8 +3408,7 @@ mod_rotator() {
         # and cannot be removed with `pi remove`, which only matches installed packages.
         local extension_source="git:github.com/darkrei08/pi-cockpit-tools-sync"
         local pi_settings="${PI_AGENT_DIR}/settings.json"
-        run_cmd "rotator" pi install "${extension_source}"
-        if [[ ! -f "${pi_settings}" ]] || ! grep -Fq "${extension_source}" "${pi_settings}"; then
+        if ! install_pi_package_owned "rotator" "${extension_source}"; then
             log_event "ERROR" "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=${pi_settings}"
             return 1
         fi
@@ -3625,9 +3757,8 @@ quality_gates() {
         fi
         if command -v pi >/dev/null 2>&1; then
             local gentle_settings="${PI_AGENT_DIR}/settings.json"
-            if [[ ! -f "${gentle_settings}" ]] \
-                || ! grep -q '"npm:gentle-pi"' "${gentle_settings}" \
-                || ! grep -q '"npm:pi-mcp-adapter"' "${gentle_settings}"; then
+            if ! assert_pi_package_registered "quality" "npm:gentle-pi" \
+                || ! assert_pi_package_registered "quality" "npm:pi-mcp-adapter"; then
                 log_event "ERROR" "quality" "gentle_pi_missing" \
                     "gentle-pi and/or pi-mcp-adapter not registered in pi settings" 1 "expected=${gentle_settings}"
                 exit 1
@@ -3714,11 +3845,6 @@ uninstall_catalog() {
     printf 'path|node|/usr/local/bin/node|-|\n'
     printf 'path|node|/usr/local/bin/npm|-|\n'
     printf 'path|bun|%s|d|\n' "${HOME}/.bun"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/bin/pi"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/npm"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/node_modules"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/package.json"
-    printf 'path|pi|%s|-|\n' "${HOME}/.pi/agent/extensions/.npmrc"
     printf 'pi-package|pi-workflows|npm:pi-extensible-workflows|-|\n'
     printf 'pi-package|gentle-ai|npm:gentle-pi|-|\n'
     printf 'pi-package|gentle-ai|npm:pi-mcp-adapter|-|\n'
@@ -3863,26 +3989,55 @@ uninstall_remove_npm_global() {
     printf 'removed: %s\n' "${target}"
 }
 
+# Remove only the exact registration a valid, unchanged receipt vouches for. Anything
+# else (unowned, duplicated, changed, unreadable) stays, and so does the receipt
+# whenever the removal cannot be proven.
 uninstall_remove_pi_package() {
-    local target="$1" settings="${PI_AGENT_DIR}/settings.json"
+    local target="$1" state source path receipt
+    state="$(pi_package_ownership_state "${target}")"
+    case "${state}" in
+        absent)
+            printf 'skipped (not present): %s\n' "${target}"
+            return 0
+            ;;
+        unowned)
+            printf 'skipped (registered before setup-ai; not owned): %s\n' "${target}"
+            return 0
+            ;;
+        blocked:*)
+            log_event "ERROR" "uninstall" "pi_registration_blocked" \
+                "Pi registration and its receipt left in place" 1 "package=${target};reason=${state#blocked: }"
+            printf 'blocked (%s): %s\n' "${state#blocked: }" "${target}"
+            return 1
+            ;;
+    esac
+    source="${state#owned$'\t'}"
+    if (( DRY_RUN == 1 )); then
+        printf 'would remove: %s\n' "${source}"
+        return 0
+    fi
     if ! command -v pi >/dev/null 2>&1; then
         log_event "WARN" "uninstall" "pi_missing" \
-            "pi is unavailable; settings.json package entry left behind" 0 "package=${target};settings=${settings}"
+            "pi is unavailable; settings.json package entry left behind" 0 "package=${target}"
         printf 'skipped (pi unavailable): %s\n' "${target}"
         return 0
     fi
-    # One presence check for the whole catalog: never re-implement the settings.json
-    # lookup here, or the two answers drift.
-    if ! uninstall_entry_present "pi-package" "${target}" ""; then
-        printf 'skipped (not present): %s\n' "${target}"
-        return 0
+    path="$(pi_package_receipt_path "${target}")" || return 1
+    receipt="$(cat -- "${path}")" || return 1
+    run_cmd "uninstall" pi remove "${source}" || return 1
+    if [[ "$(pi_package_ownership_state "${target}")" != absent ]] \
+        || [[ "$(cat -- "${path}" 2>/dev/null)" != "${receipt}" ]]; then
+        log_event "ERROR" "uninstall" "pi_remove_unverified" \
+            "pi remove did not leave the registration absent, or the receipt changed meanwhile; receipt kept" 1 \
+            "package=${target};receipt=${path}"
+        return 1
     fi
-    if (( DRY_RUN == 1 )); then
-        printf 'would remove: %s\n' "${target}"
-        return 0
+    if ! rm -f -- "${path}"; then
+        log_event "ERROR" "uninstall" "pi_receipt_remove_failed" \
+            "Registration removed but its ownership receipt could not be deleted" 1 "receipt=${path}"
+        return 1
     fi
-    run_cmd "uninstall" pi remove "${target}" || return 1
-    printf 'removed: %s\n' "${target}"
+    printf 'removed: %s\n' "${source}"
 }
 
 uninstall_remove_systemd_unit() {
@@ -3998,11 +4153,7 @@ uninstall_entry_present() {
             npm_root="$(npm root -g 2>/dev/null)" || return 0
             [[ -e "${npm_root}/${target}" || -L "${npm_root}/${target}" ]] ;;
         pi-package)
-            if ! command -v pi >/dev/null 2>&1; then
-                return 0
-            fi
-            [[ -f "${PI_AGENT_DIR}/settings.json" ]] \
-                && grep -Fq "\"${target}\"" "${PI_AGENT_DIR}/settings.json" 2>/dev/null ;;
+            [[ "$(pi_package_ownership_state "${target}")" != absent ]] ;;
         shell-rc-line)
             for file in "${HOME}/.bashrc" "${HOME}/.zshrc" "${HOME}/.profile"; do
                 grep -Fqx -- "${target}" "${file}" 2>/dev/null && return 0
@@ -4018,13 +4169,17 @@ uninstall_entry_present() {
 }
 
 uninstall_print_inventory() {
-    local kind module target flags detail destructive
+    local kind module target flags detail destructive state
     printf '\nUninstall inventory:\n'
     printf '%-18s %-18s %-48s %s\n' 'module' 'kind' 'item' 'destructive'
     while IFS='|' read -r kind module target flags detail; do
         uninstall_entry_selected "${module}" || continue
         destructive="no"
         [[ "${flags}" == "d" ]] && destructive="yes"
+        if [[ "${kind}" == "pi-package" ]]; then
+            state="$(pi_package_ownership_state "${target}")"
+            destructive="no; ${state%%$'\t'*}"
+        fi
         printf '%-18s %-18s %-48s %s\n' "${module}" "${kind}" "${target}" "${destructive}"
     done < <(uninstall_catalog)
 }
@@ -4039,8 +4194,9 @@ uninstall_print_not_covered() {
     printf "  - Claude Code's vendor installer owns its native launcher and user configuration under %s; setup-ai never removes that auth/config state.\\n" "${HOME}/.claude"
     printf '  - extras: the shared skills, Impeccable files, and HyperFrames skill updates are left in place; global packages and %s/cli-anything are removed only with an exact setup-ai ownership marker.\n' \
         "${PI_EXTENSIONS_DIR}"
-    printf '  - %s/settings.json, %s/skills, %s/auth.json and %s/sessions are never removed.\n' \
+    printf '  - %s/settings.json, %s/skills, %s/auth.json, %s/sessions, the Pi package roots and the pi binary are never removed.\n' \
         "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}"
+    printf '  - A Pi package registration is removed only when the ownership receipt setup-ai published at install still matches its exact current entry.\n'
 }
 
 run_uninstall() {

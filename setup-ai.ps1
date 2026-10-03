@@ -979,36 +979,149 @@ function Get-PiPackageIdentity {
     return "local:" + $full.ToLowerInvariant()
 }
 
+# Exact registered sources whose identity equals $Spec's (issue #103). A missing
+# settings.json is an empty registry; an unreadable or malformed one throws, so every
+# caller fails closed. Mirrors pi_package_node `matches` in setup-ai.sh.
+function Get-PiPackageMatches {
+    param([string]$Spec)
+    $settings = Join-Path $PiAgentDir "settings.json"
+    if (-not (Test-Path -LiteralPath $settings)) { return @() }
+    $parsed = Get-Content -Raw -LiteralPath $settings -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+    $entries = @()
+    if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['packages']) {
+        if ($null -eq $parsed.packages) { return @() }
+        if ($parsed.packages -isnot [array]) { throw "pi settings.json packages is not an array ($settings)" }
+        $entries = @($parsed.packages)
+    }
+    $want = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
+    $found = @()
+    foreach ($entry in $entries) {
+        $source = if ($entry -is [string]) { $entry } elseif ($null -ne $entry -and $null -ne $entry.PSObject.Properties['source']) { $entry.source } else { $null }
+        if ($source -isnot [string] -or -not $source.Trim()) { throw "pi settings.json holds a package entry without a source ($settings)" }
+        if ((Get-PiPackageIdentity -Spec $source -BaseDir $PiAgentDir) -ieq $want) { $found += $source }
+    }
+    return $found
+}
+
+# Receipts live under setup-ai's own state directory, named by the sha256 of the
+# lower-case identity, so setup-ai.sh computes the same name.
+function Get-PiPackageReceiptPath {
+    param([string]$Spec)
+    if (-not $env:LOCALAPPDATA) { return $null }
+    $identity = (Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir).ToLowerInvariant()
+    $digest = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($identity))).ToLowerInvariant()
+    return Join-Path $env:LOCALAPPDATA 'setup-ai' 'ownership' 'pi-packages' "$digest.json"
+}
+
+# A link under setup-ai's own state directory could make a receipt claim, or clobber,
+# a file outside it.
+function Test-PiPackageReceiptLocation {
+    param([string]$Path)
+    $directory = Split-Path -Parent $Path
+    $ownership = Split-Path -Parent $directory
+    foreach ($item in @((Split-Path -Parent $ownership), $ownership, $directory, $Path)) {
+        if (-not (Test-Path -LiteralPath $item)) { continue }
+        $info = Get-Item -Force -LiteralPath $item
+        if ($info.LinkType -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint)) { return $false }
+        if ($info.PSIsContainer -eq ($item -eq $Path)) { return $false }
+    }
+    return $true
+}
+
+# One answer for install verification: State is absent | unowned | owned | blocked.
+# Mirrors pi_package_ownership_state in setup-ai.sh.
+function Get-PiPackageOwnershipState {
+    param([string]$Spec)
+    $result = { param($State, $Source = '', $Reason = '') [pscustomobject]@{ State = $State; Source = $Source; Reason = $Reason } }
+    try { $registered = @(Get-PiPackageMatches -Spec $Spec) } catch { return & $result 'blocked' '' 'Pi settings unreadable or malformed' }
+    if ($registered.Count -eq 0) { return & $result 'absent' }
+    $path = Get-PiPackageReceiptPath -Spec $Spec
+    if (-not $path -or -not (Test-PiPackageReceiptLocation -Path $path)) { return & $result 'blocked' '' 'ownership receipt path unsafe' }
+    if (-not (Test-Path -LiteralPath $path)) { return & $result 'unowned' }
+    if ($registered.Count -gt 1) { return & $result 'blocked' '' 'duplicate registrations' }
+    $want = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
+    try {
+        $receipt = Get-Content -Raw -LiteralPath $path -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $valid = $receipt.schemaVersion -eq 1 -and $receipt.identity -ieq $want -and $receipt.source -is [string] -and
+            ((Get-PiPackageIdentity -Spec $receipt.source -BaseDir $PiAgentDir) -ieq $want) -and
+            $receipt.agentDir -ieq [IO.Path]::GetFullPath($PiAgentDir)
+    } catch {
+        $valid = $false
+    }
+    if (-not $valid) { return & $result 'blocked' '' 'ownership receipt invalid' }
+    if ($receipt.source -cne $registered[0]) { return & $result 'blocked' '' 'registration changed since setup-ai installed it' }
+    return & $result 'owned' $receipt.source
+}
+
+# Publish without overwriting. A receipt that already exists is kept, and the caller's
+# ownership check decides whether it vouches for this registration.
+function Write-PiPackageReceipt {
+    param([string]$Spec, [string]$Source)
+    $path = Get-PiPackageReceiptPath -Spec $Spec
+    if (-not $path -or -not (Test-PiPackageReceiptLocation -Path $path)) { return $false }
+    if (Test-Path -LiteralPath $path) { return $true }
+    try {
+        New-Item -ItemType Directory -Force -Path (Split-Path -Parent $path) | Out-Null
+        if (-not (Test-PiPackageReceiptLocation -Path $path)) { return $false }
+        $json = [ordered]@{
+            schemaVersion = 1
+            identity = (Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir).ToLowerInvariant()
+            source = $Source
+            agentDir = [IO.Path]::GetFullPath($PiAgentDir)
+        } | ConvertTo-Json -Compress
+        # Without -Force, New-Item refuses to replace a file created in the meantime.
+        New-Item -ItemType File -Path $path -Value $json -ErrorAction Stop | Out-Null
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+# Own only a registration this exact install created: absent before, installed, and
+# read back as exactly one entry. A pre-existing, upgraded or duplicated one is never
+# claimed, and a registration whose receipt cannot be verified stays in place.
+function Install-PiPackageOwned {
+    param([string]$Phase, [string]$Spec)
+    try {
+        $before = @(Get-PiPackageMatches -Spec $Spec)
+    } catch {
+        Write-Log ERROR $Phase "settings_unreadable" "pi settings.json could not be parsed; cannot prove the package was absent before install" 1 "spec=$Spec;settings=$(Join-Path $PiAgentDir 'settings.json')"
+        throw "pi settings.json could not be parsed before installing $Spec"
+    }
+    $null = Invoke-Step -Phase $Phase -Action { pi install $Spec }
+    Assert-PiPackageRegistered -Phase $Phase -Spec $Spec
+    if ($before.Count -gt 0) {
+        Write-Log INFO $Phase "pi_registration_unowned" "The package was registered before this install; setup-ai does not claim it" 0 "spec=$Spec"
+        return
+    }
+    $after = @(Get-PiPackageMatches -Spec $Spec)
+    if ($after.Count -ne 1) {
+        Write-Log ERROR $Phase "pi_registration_ambiguous" "pi settings.json does not hold exactly one entry for the package; ownership not recorded" 1 "spec=$Spec;settings=$(Join-Path $PiAgentDir 'settings.json')"
+        throw "pi settings.json does not hold exactly one entry for $Spec"
+    }
+    $state = if (Write-PiPackageReceipt -Spec $Spec -Source $after[0]) { Get-PiPackageOwnershipState -Spec $Spec } else { $null }
+    if ($null -eq $state -or $state.State -ne 'owned' -or $state.Source -cne $after[0]) {
+        Write-Log ERROR $Phase "pi_receipt_unverified" "Could not publish a verified ownership receipt; the registration stays and uninstall will not remove it" 1 "spec=$Spec;receipt=$(Get-PiPackageReceiptPath -Spec $Spec)"
+        throw "Could not publish a verified ownership receipt for $Spec"
+    }
+    Write-Log INFO $Phase "pi_registration_owned" "Ownership receipt published for the registration this install created" 0 "spec=$Spec;source=$($after[0])"
+}
+
 function Assert-PiPackageRegistered {
     param([string]$Phase, [string]$Spec)
     $settings = Join-Path $PiAgentDir "settings.json"
-    $want = Get-PiPackageIdentity -Spec $Spec -BaseDir $PiAgentDir
 
     if (-not (Test-Path -LiteralPath $settings -PathType Leaf)) {
         Write-Log ERROR $Phase "settings_missing" "pi settings.json not found; cannot verify installed packages" 1 "path=$settings"
         throw "pi settings.json not found ($settings)"
     }
-    $entries = @()
     try {
-        $parsed = Get-Content -Raw -LiteralPath $settings | ConvertFrom-Json
-        if ($null -ne $parsed -and $null -ne $parsed.PSObject.Properties['packages']) { $entries = @($parsed.packages) }
+        $found = @(Get-PiPackageMatches -Spec $Spec).Count -gt 0
     } catch {
         # An unparsable registry cannot prove the registration: fail closed
-            # instead of reporting the package as missing.
-            Write-Log ERROR $Phase "settings_unreadable" "pi settings.json could not be parsed; cannot prove the package state" 1 "path=$settings"
-            throw "pi settings.json could not be parsed ($settings)"
-    }
-    $found = $false
-    foreach ($entry in $entries) {
-        if ($null -eq $entry) { continue }
-        $source = ""
-        if ($entry -is [string]) {
-            $source = $entry
-        } else {
-            $sourceProp = $entry.PSObject.Properties['source']
-            if ($null -ne $sourceProp) { $source = [string]$sourceProp.Value }
-        }
-        if ($source -and ((Get-PiPackageIdentity -Spec $source -BaseDir $PiAgentDir) -ieq $want)) { $found = $true; break }
+        # instead of reporting the package as missing.
+        Write-Log ERROR $Phase "settings_unreadable" "pi settings.json could not be parsed; cannot prove the package state" 1 "path=$settings"
+        throw "pi settings.json could not be parsed ($settings)"
     }
     if ($found) {
         Write-Log INFO $Phase "package_registered" "pi registered the package" 0 "spec=$Spec"
@@ -1300,10 +1413,9 @@ function Mod-PiWorkflows {
     }
     if (-not $ver) { throw "Could not resolve pi-extensible-workflows version" }
     Write-Log INFO "pi-workflows" "version" "Version $ver"
-    Invoke-Step -Phase "pi-workflows" -Action { pi install "npm:pi-extensible-workflows@$ver" }
     # Prove what Pi recorded instead of trusting the command: the quality gate below only
     # inspects the separate extensions-root copy.
-    Assert-PiPackageRegistered -Phase "pi-workflows" -Spec "npm:pi-extensible-workflows"
+    Install-PiPackageOwned -Phase "pi-workflows" -Spec "npm:pi-extensible-workflows@$ver"
     New-Item -ItemType Directory -Force -Path $PiExtDir | Out-Null
     # Append-only, so the npm 12 remote-source opt-in written above survives.
     Add-LineIfMissing -Path (Join-Path $PiExtDir ".npmrc") -Line "ignore-scripts=false"
@@ -1384,8 +1496,7 @@ function Mod-PiPackages {
             continue
         }
 
-        $null = Invoke-Step -Phase "pi-packages" -Action { pi install $line }
-        Assert-PiPackageRegistered -Phase "pi-packages" -Spec $line
+        Install-PiPackageOwned -Phase "pi-packages" -Spec $line
         $installed++
     }
 
@@ -1890,7 +2001,7 @@ function Mod-GentleAi {
     # Guarantee pi reads gentle-ai in its MCP list (/mcp): install the first-class
     # gentle-pi harness + pi-mcp-adapter, then verify the exact target file.
     if (Test-Cmd pi) {
-        Invoke-Step -Phase "gentle-ai" -Action { pi install npm:gentle-pi }
+        Install-PiPackageOwned -Phase "gentle-ai" -Spec "npm:gentle-pi"
         # Ensure the project marker exists even for -Only gentle-ai before the
         # npm 12 approval/rebuild check (issue #49).
         Enable-NpmRemoteSources -Dir $PiNpmDir
@@ -1898,12 +2009,13 @@ function Mod-GentleAi {
         # managed Pi root, so its package-local RDD review binary exists even if a
         # later module fails before the final convergence pass runs.
         Approve-NpmInstallScripts -Dir $PiNpmDir -Phase "gentle-ai"
-        Invoke-Step -Phase "gentle-ai" -Action { pi install npm:pi-mcp-adapter }
+        Install-PiPackageOwned -Phase "gentle-ai" -Spec "npm:pi-mcp-adapter"
         $piSettings = Join-Path $PiAgentDir "settings.json"
-        $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
-        if (($piSettingsRaw -match '"npm:gentle-pi"') -and ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
+        try {
+            Assert-PiPackageRegistered -Phase "gentle-ai" -Spec "npm:gentle-pi"
+            Assert-PiPackageRegistered -Phase "gentle-ai" -Spec "npm:pi-mcp-adapter"
             Write-Log INFO "gentle-ai" "pi_enabled" "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)"
-        } else {
+        } catch {
             Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
             throw "gentle-pi and/or pi-mcp-adapter not present in pi settings after install"
         }
@@ -2485,9 +2597,9 @@ function Mod-Rotator {
         # and cannot be removed with `pi remove`, which only matches installed packages.
         $extensionSource = "git:github.com/darkrei08/pi-cockpit-tools-sync"
         $piSettings = Join-Path $PiAgentDir "settings.json"
-        Invoke-Step -Phase "rotator" -Action { pi install $extensionSource }
-        if (-not (Test-Path -LiteralPath $piSettings -PathType Leaf) -or
-            -not (Select-String -LiteralPath $piSettings -SimpleMatch $extensionSource -Quiet)) {
+        try {
+            Install-PiPackageOwned -Phase "rotator" -Spec $extensionSource
+        } catch {
             Write-Log ERROR "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=$piSettings"
             throw "Pi did not register cockpit sync extension"
         }
@@ -2631,8 +2743,10 @@ function Invoke-QualityGates {
         }
         if (Test-Cmd pi) {
             $piSettings = Join-Path $PiAgentDir "settings.json"
-            $piSettingsRaw = if (Test-Path $piSettings) { Get-Content -Raw $piSettings } else { "" }
-            if (-not ($piSettingsRaw -match '"npm:gentle-pi"') -or -not ($piSettingsRaw -match '"npm:pi-mcp-adapter"')) {
+            try {
+                Assert-PiPackageRegistered -Phase "quality" -Spec "npm:gentle-pi"
+                Assert-PiPackageRegistered -Phase "quality" -Spec "npm:pi-mcp-adapter"
+            } catch {
                 throw "gentle-pi and/or pi-mcp-adapter not registered in pi settings ($piSettings)"
             }
             Write-Log INFO "quality" "gentle_ai_gate_passed" "gentle-ai verified (CLI present; gentle-pi + pi-mcp-adapter registered in pi)"
