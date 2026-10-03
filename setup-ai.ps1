@@ -2433,6 +2433,107 @@ function Get-RotatorExecutable {
     return $binPath
 }
 
+# Prefix identifying every scheduled task this installer creates. Each registration attempt
+# appends a fresh, unique suffix (see Register-RotatorTask), so two consecutive install runs
+# never carry the same ownership token and a stale token can never be mistaken for the one
+# the current attempt is about to create or roll back.
+$RotatorTaskMarkerPrefix = "setup-ai-rotator-task-v1"
+
+# Fingerprint the stable configuration a scheduled task readback carries: every action, every
+# trigger's type/enabled/user/boundaries/repetition, the principal, and the settings this
+# registration owns (enabled, instance policy, execution limits, battery/idle/wake/hidden/
+# priority). Volatile state and the task's own Description -- where the receipt itself lives
+# -- are excluded, so comparing this against the embedded receipt detects an edited task.
+function Get-RotatorTaskFingerprint {
+    param($Task)
+    $normalize = {
+        param($value)
+        if ($null -eq $value -or "$value" -eq "") { return "" }
+        if ($value -is [TimeSpan]) { return [System.Xml.XmlConvert]::ToString($value) }
+        $text = "$value".Trim()
+        if ($text -like "P*") { return $text }
+        try { return ([datetime]$text).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") } catch { return $text }
+    }
+    $actionsPart = @($Task.Actions) | ForEach-Object { @("$($_.Execute)", "$($_.Arguments)", "$($_.WorkingDirectory)") }
+    $triggersPart = @($Task.Triggers) | ForEach-Object {
+        $rep = $_.Repetition
+        $triggerUser = "$($_.UserId)"; if ($triggerUser -notmatch '\\' -and $env:USERDOMAIN) { $triggerUser = "$env:USERDOMAIN\$triggerUser" }
+        $repPart = if ($rep) { @((& $normalize $rep.Interval), (& $normalize $rep.Duration), [bool]$rep.StopAtDurationEnd) } else { @('', '', $false) }
+        @(
+            "$($_.CimClass.CimClassName)", [bool]$_.Enabled, $triggerUser.ToLowerInvariant(),
+            (& $normalize $_.StartBoundary), (& $normalize $_.EndBoundary), $repPart
+        )
+    }
+    $principal = $Task.Principal
+    $principalUser = "$($principal.UserId)"; if ($principalUser -notmatch '\\' -and $env:USERDOMAIN) { $principalUser = "$env:USERDOMAIN\$principalUser" }
+    $principalPart = @($principalUser.ToLowerInvariant(), "$($principal.LogonType)", "$($principal.RunLevel)")
+    $settings = $Task.Settings; $idle = $settings.IdleSettings
+    $idlePart = @((& $normalize $idle.IdleDuration), [bool]$idle.RestartOnIdle, [bool]$idle.StopOnIdleEnd, (& $normalize $idle.WaitTimeout))
+    $settingsPart = @(
+        [bool]$settings.Enabled, "$($settings.MultipleInstances)", (& $normalize $settings.ExecutionTimeLimit),
+        [bool]$settings.AllowStartIfOnBatteries, [bool]$settings.DontStopIfGoingOnBatteries,
+        [bool]$settings.Hidden, $settings.Priority, [bool]$settings.WakeToRun, $idlePart
+    )
+    # JSON-encoded as one array-of-arrays -- including task name/path -- rather than
+    # delimiter-joined text, so a "|" or ";" inside a user-controlled value can never be
+    # mistaken for a field boundary.
+    $canonical = (@("$($Task.TaskName)", "$($Task.TaskPath)", $actionsPart, $triggersPart, $principalPart, $settingsPart) | ConvertTo-Json -Depth 6 -Compress)
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($canonical)
+        return [System.BitConverter]::ToString($sha256.ComputeHash($bytes)).Replace("-", "").Substring(0, 16).ToLowerInvariant()
+    } finally {
+        $sha256.Dispose()
+    }
+}
+
+# Only "no such task" (cmdlet error id or HRESULT 0x80070002) means absent; any other query
+# failure is rethrown, so ownership decisions never run on an unreadable scheduler.
+function Get-RotatorTask {
+    try { Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction Stop }
+    catch {
+        if ($_.FullyQualifiedErrorId -notlike 'NoMatchingScheduledTaskFound*' -and $_.Exception.HResult -ne -2147024894 -and $_.Exception -isnot [System.Management.Automation.ItemNotFoundException]) { throw }
+    }
+}
+
+# Read back the marker and fingerprint embedded in a scheduled task's description. Returns
+# $null when the receipt is missing or malformed; callers treat that the same as "not ours"
+# and leave the task untouched rather than guess at ownership.
+function Get-RotatorTaskReceipt {
+    param($Task)
+    if (-not $Task -or -not $Task.PSObject.Properties['Description'] -or -not $Task.Description) { return $null }
+    if ($Task.Description -notmatch '\[(?<marker>[\w.-]+):fp=(?<fp>[0-9a-f]{16})\]\s*$') { return $null }
+    return [pscustomobject]@{ Marker = $Matches.marker; Fingerprint = $Matches.fp }
+}
+
+# Installer-owned means: this installer's marker family, and a receipt that still matches the task.
+function Test-RotatorTaskOwned {
+    param($Task)
+    $receipt = Get-RotatorTaskReceipt -Task $Task
+    return [bool]($receipt -and $receipt.Marker -like "$RotatorTaskMarkerPrefix-*" -and $receipt.Fingerprint -eq (Get-RotatorTaskFingerprint -Task $Task))
+}
+
+# Roll back a task this run registered moments ago. Fails closed: the current task is
+# re-queried and its receipt marker must still equal this attempt's unique token before
+# anything is removed. A pre-existing, replaced, or mismatching task is left exactly as found.
+function Remove-RotatorTaskRollback {
+    param([string]$ExpectedMarker)
+    try { $current = Get-RotatorTask } catch { Write-Log WARN "rotator" "task_rollback_query_failed" "Could not read the scheduled task before rollback; leaving it in place" 0 "error=$($_.Exception.Message)"; return }
+    $receipt = Get-RotatorTaskReceipt -Task $current
+    #NOTE: the marker is a fresh random token written moments ago, so a task carrying it is the
+    # half-applied registration itself; a foreign edit that keeps it inside that window is not handled.
+    if (-not $current -or -not $receipt -or $receipt.Marker -ne $ExpectedMarker) {
+        Write-Log WARN "rotator" "task_rollback_skipped" "A 'tuxevil-rotator' task exists but does not carry this run's ownership marker; leaving it in place rather than guessing at ownership" 0 "task=tuxevil-rotator"
+        return
+    }
+    try {
+        Unregister-ScheduledTask -TaskName "tuxevil-rotator" -Confirm:$false -ErrorAction Stop
+        Write-Log WARN "rotator" "task_rolled_back" "Removed the scheduled task this run just created after it failed verification" 0 "task=tuxevil-rotator"
+    } catch {
+        Write-Log WARN "rotator" "task_rollback_failed" "Could not remove the scheduled task this run just created after it failed verification; it may be left in a partial, unowned state" 0 "error=$($_.Exception.Message)"
+    }
+}
+
 # Register the gateway with the machine's own autostart so it survives a reboot: a logon
 # scheduled task, which runs hidden and needs no console. Registering only, not starting:
 # the process is started by its own step and only when nothing answers its port, so an
@@ -2443,8 +2544,23 @@ function Get-RotatorExecutable {
 # 51200 yet. IgnoreNew skips the tick while the gateway it started is still running, and
 # the tick's own probe skips it while a gateway started elsewhere holds the port.
 function Register-RotatorTask {
+    # A task with this installer's valid receipt is re-registered, so a moved shim or stale
+    # settings converge the way the Linux unit is rewritten on every run. Any other task under
+    # this name (a user's own, an edited one, or a pre-receipt install) is left exactly as found.
+    try {
+        $existingTask = Get-RotatorTask
+        $replaceOwned = [bool]($existingTask -and (Test-RotatorTaskOwned -Task $existingTask))
+    } catch { Write-Log WARN "rotator" "task_query_failed" "Could not read or validate the scheduled task before registration; leaving it unchanged" 0 "error=$($_.Exception.Message)"; return $false }
+    if ($existingTask -and -not $replaceOwned) {
+        Write-Log INFO "rotator" "task_preexisting" "A 'tuxevil-rotator' scheduled task already exists; this run did not create it and will not overwrite it or claim it" 0 "task=tuxevil-rotator"
+        return $false
+    }
     $binPath = Get-RotatorExecutable
     $watchdogMinutes = 5
+    $attemptMarker = $null
+    # Set only once Register-ScheduledTask itself has returned without throwing, so a throw
+    # from inside that call is never mistaken for ownership of whatever it may have half-applied.
+    $created = $false
     try {
         # The tick probes before it starts anything, because a manual or installer-detached
         # gateway owns the port without owning this task instance, and IgnoreNew alone cannot
@@ -2465,15 +2581,29 @@ function Register-RotatorTask {
         $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
         $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $watchdogMinutes)
         # A zero execution time limit is what keeps a long-running gateway from being killed
-        # at the scheduler's default three days.
+        # at the scheduler's default three days. The principal is set explicitly, rather than
+        # left to the scheduler's default, so the fingerprint has a known value to agree on.
         $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
             -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-        Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger @($atLogon, $watchdog) -Settings $taskSettings `
-            -Description "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200" -Force | Out-Null
+        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
+        # A fresh, unique token per attempt, so rollback can never mistake one attempt's task
+        # for another's even when both register the very same configuration.
+        $attemptMarker = "$($RotatorTaskMarkerPrefix)-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
+        $taskShape = [pscustomobject]@{ TaskName = "tuxevil-rotator"; TaskPath = "\"; Actions = @($action); Triggers = @($atLogon, $watchdog); Principal = $principal; Settings = $taskSettings }
+        $fingerprint = Get-RotatorTaskFingerprint -Task $taskShape
+        # The fingerprint and marker are the receipt: embedding them in the task's own
+        # Description is what lets a later run (or the npm removal work unit) tell this
+        # installer's task apart from one a user created or edited under the same name,
+        # without a side file that could drift from the task it describes.
+        $description = "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200 [$($attemptMarker):fp=$fingerprint]"
+        Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger @($atLogon, $watchdog) -Settings $taskSettings -Principal $principal `
+            -Description $description -Force:$replaceOwned | Out-Null
+        $created = $true
         # A registration can half-apply, and the promise is about the next logon rather than about
         # this run, so the task is read back and checked: what it runs, that it still starts at
-        # logon for this user, and the two settings the supervision rests on. This also covers the
-        # trap above, where a repetition attached to the wrong trigger reads back as no watchdog.
+        # logon for this user, the settings the supervision rests on, and the receipt this run
+        # just embedded. This also covers the trap above, where a repetition attached to the
+        # wrong trigger reads back as no watchdog.
         $registered = Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction Stop
         $actions = @($registered.Actions)
         $actionOk = $actions.Count -eq 1 -and $actions[0].Execute -eq $action.Execute -and $actions[0].Arguments -eq $action.Arguments
@@ -2497,15 +2627,25 @@ function Register-RotatorTask {
         $enabledOk = [bool]$registered.Settings.Enabled
         $instancesOk = $registered.Settings.MultipleInstances -eq "IgnoreNew"
         $limitOk = [System.Xml.XmlConvert]::ToTimeSpan($registered.Settings.ExecutionTimeLimit) -eq [TimeSpan]::Zero
-        if (-not ($actionOk -and $logonOk -and $watchdogOk -and $enabledOk -and $instancesOk -and $limitOk)) {
-            $flags = "task=tuxevil-rotator;action=$actionOk;logon=$logonOk;watchdog=$watchdogOk;enabled=$enabledOk;ignoreNew=$instancesOk;noTimeLimit=$limitOk"
-            Write-Log WARN "rotator" "task_unverified" "Scheduled task registered without the action, logon trigger, or watchdog settings this module relies on; the gateway may stay down until the next setup-ai run" 0 $flags
+        # Recomputed from the readback, so a half-apply that corrupts anything the fingerprint
+        # covers -- not just the action -- is caught the same way a changed command line is.
+        $actualFingerprint = Get-RotatorTaskFingerprint -Task $registered
+        $receipt = Get-RotatorTaskReceipt -Task $registered
+        $receiptOk = $receipt -and $receipt.Marker -eq $attemptMarker -and $receipt.Fingerprint -eq $fingerprint -and $actualFingerprint -eq $fingerprint
+        if (-not ($actionOk -and $logonOk -and $watchdogOk -and $enabledOk -and $instancesOk -and $limitOk -and $receiptOk)) {
+            $flags = "task=tuxevil-rotator;action=$actionOk;logon=$logonOk;watchdog=$watchdogOk;enabled=$enabledOk;ignoreNew=$instancesOk;noTimeLimit=$limitOk;receipt=$receiptOk"
+            Write-Log WARN "rotator" "task_unverified" "Scheduled task registered without the action, logon trigger, watchdog, or receipt this module relies on; rolling it back so an unowned, half-verified task is not left behind" 0 $flags
+            Remove-RotatorTaskRollback -ExpectedMarker $attemptMarker
             return $false
         }
-        Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes by a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m"
+        Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes by a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m;fp=$fingerprint"
         return $true
     } catch {
+        if ($created) { Remove-RotatorTaskRollback -ExpectedMarker $attemptMarker }
         Write-Log WARN "rotator" "task_failed" "Scheduled task registration or verification failed; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"
+        # A throw from Register-ScheduledTask itself lands here before $created is ever set, so
+        # this run never claims or removes whatever that call may have half-applied; it is left
+        # exactly as found for a later run or module to reconcile.
         return $false
     }
 }
@@ -2515,7 +2655,10 @@ function Register-RotatorTask {
 # anywhere it cannot run, the process is detached from this installer instead.
 function Start-RotatorGateway {
     param([string]$LogFile)
-    if (Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction SilentlyContinue) {
+    $task = try { Get-RotatorTask } catch { Write-Log WARN "rotator" "task_query_failed" "Could not read the scheduled task; falling back to a detached process" 0 "error=$($_.Exception.Message)"; $null }
+    $owned = $false
+    try { $owned = [bool]($task -and (Test-RotatorTaskOwned -Task $task)) } catch { Write-Log WARN "rotator" "task_validation_failed" "Could not validate the scheduled task; falling back to a detached process" 0 "error=$($_.Exception.Message)" }
+    if ($owned) {
         try {
             Start-ScheduledTask -TaskName "tuxevil-rotator"
             Write-Log INFO "rotator" "task_started" "tuxevil-rotator started through the logon scheduled task" 0 "task=tuxevil-rotator"
