@@ -113,6 +113,7 @@ for (const pkg of ['typescript-express-starter', '@alibaba-group/open-code-revie
 }
 for (const marker of ['setup-ai extras npm-global ', 'setup-ai extras CLI-Anything ']) {
   if (!sh.includes(marker) || !ps.includes(marker)) throw new Error(`Ownership marker drift: ${marker}`);
+}
 const bashAiMemory = sh.match(/mod_ai_memory\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
 const psAiMemory = ps.match(/function Mod-AiMemory \{([\s\S]*?)\n\}/)?.[1] ?? '';
 const bashMemoryInstallAt = bashAiMemory.indexOf('run_cmd "ai-memory" env AIMEM_REF=');

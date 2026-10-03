@@ -1514,8 +1514,10 @@ mod_ai_memory() {
     require_command curl
     run_cmd "ai-memory" curl -fsSL "https://raw.githubusercontent.com/darkrei08/ai-memory-kit/${AIMEM_REF}/install.sh" -o "${installer}"
     if [[ "${OS_FAMILY}" == "macos" ]]; then
+        # shellcheck disable=SC2016 # \$REF is a literal sed pattern token, not a shell expansion
         run_cmd "ai-memory" sed -i '' 's|/tar.gz/refs/heads/\$REF|/tar.gz/\$REF|g' "${installer}"
     else
+        # shellcheck disable=SC2016 # \$REF is a literal sed pattern token, not a shell expansion
         run_cmd "ai-memory" sed -i 's|/tar.gz/refs/heads/\$REF|/tar.gz/\$REF|g' "${installer}"
     fi
     run_cmd "ai-memory" env AIMEM_REF="${AIMEM_REF}" AIMEM_PREFIX="${AIMEM_PREFIX}" bash "${installer}" --no-skill
