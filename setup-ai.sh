@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 3.6.5
+# Version: 4.0.0
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -30,7 +30,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="3.6.5"
+SCRIPT_VERSION="4.0.0"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
@@ -72,6 +72,9 @@ VERBOSE="${VERBOSE:-0}"
 # so the non-interactive value also changes which vendor path runs.
 NONINTERACTIVE="${NONINTERACTIVE:-0}"
 PI_WORKFLOW_VERSION="${PI_WORKFLOW_VERSION:-}"
+AIMEM_REF="${AIMEM_REF:-v0.1.0}"
+AIMEM_VERSION="${AIMEM_VERSION:-0.1.0}"
+AIMEM_PREFIX="${AIMEM_PREFIX:-${HOME}/.local}"
 
 DOTENV_REPO="${DOTENV_REPO:-https://github.com/darkrei08/dotenv.git}"
 
@@ -781,18 +784,19 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi dotenv lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit rotator extras)
+MODULE_ORDER=(base node bun pi dotenv ai-memory lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit rotator extras)
 
 module_desc() {
     case "$1" in
         base) printf '%s\n' "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)" ;;
-        lazyvim) printf '%s\n' "Neovim and LazyVim starter (headless sync)" ;;
+        lazyvim) printf '%s\n' "Neovim x86_64 tarball and LazyVim starter (headless sync)" ;;
         node) printf '%s\n' "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" ;;
         bun) printf '%s\n' "Bun runtime" ;;
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
         pi-packages) printf '%s\n' "Extra Pi packages from a declarative manifest (pi-packages.txt)" ;;
         go) printf '%s\n' "Go toolchain" ;;
         dotenv) printf '%s\n' "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" ;;
+        ai-memory) printf '%s\n' "ai-memory-kit aimem CLI and templates" ;;
         ee) printf '%s\n' "Engineering Excellence skill (npx skills add, all detected agents)" ;;
         skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
         pi-workflows) printf '%s\n' "pi-extensible-workflows (published release + npm 12 remote sources for pi installs)" ;;
@@ -1492,6 +1496,46 @@ mod_base() {
     require_command python3
 }
 
+# --- ai-memory --------------------------------------------------------------
+mod_ai_memory() {
+    section "ai-memory"
+    local aimem_bin="${AIMEM_PREFIX}/bin/aimem"
+    local aimem_templates="${AIMEM_PREFIX}/share/ai-memory-kit/templates"
+    local installer="${TMP_DIR}/ai-memory-install.sh"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "ai-memory" "install ai-memory-kit ${AIMEM_REF} into ${AIMEM_PREFIX} and verify ${aimem_bin}"
+        return 0
+    fi
+    local installed_version=""
+    if [[ -x "${aimem_bin}" ]] && capture_cmd installed_version "ai-memory" --optional "${aimem_bin}" version && [[ "${installed_version}" == "aimem ${AIMEM_VERSION}" ]] && [[ -d "${aimem_templates}" ]]; then
+        log_event "INFO" "ai-memory" "cli_verified" "Verified ai-memory-kit CLI at its exact install path" 0 "version=${installed_version};path=${aimem_bin}"
+        return 0
+    fi
+    require_command curl
+    run_cmd "ai-memory" curl -fsSL "https://raw.githubusercontent.com/darkrei08/ai-memory-kit/${AIMEM_REF}/install.sh" -o "${installer}"
+    if [[ "${OS_FAMILY}" == "macos" ]]; then
+        # shellcheck disable=SC2016 # \$REF is a literal sed pattern token, not a shell expansion
+        run_cmd "ai-memory" sed -i '' 's|/tar.gz/refs/heads/\$REF|/tar.gz/\$REF|g' "${installer}"
+    else
+        # shellcheck disable=SC2016 # \$REF is a literal sed pattern token, not a shell expansion
+        run_cmd "ai-memory" sed -i 's|/tar.gz/refs/heads/\$REF|/tar.gz/\$REF|g' "${installer}"
+    fi
+    run_cmd "ai-memory" env AIMEM_REF="${AIMEM_REF}" AIMEM_PREFIX="${AIMEM_PREFIX}" bash "${installer}" --no-skill
+    if [[ ! -d "${aimem_templates}" ]]; then
+        log_event "ERROR" "ai-memory" "templates_missing" "ai-memory-kit templates directory missing after installation" 1 "expected=${aimem_templates}"
+        return 1
+    fi
+    if [[ ! -x "${aimem_bin}" ]]; then
+        log_event "ERROR" "ai-memory" "install_missing" "aimem binary missing after installation" 1 "expected=${aimem_bin}"
+        return 1
+    fi
+    capture_cmd installed_version "ai-memory" "${aimem_bin}" version || return 1
+    if [[ "${installed_version}" != "aimem ${AIMEM_VERSION}" ]]; then
+        log_event "ERROR" "ai-memory" "version_mismatch" "aimem version mismatch after repair" 1 "expected=aimem ${AIMEM_VERSION};actual=${installed_version};path=${aimem_bin}"
+        return 1
+    fi
+    log_event "INFO" "ai-memory" "cli_verified" "Verified ai-memory-kit CLI at its exact install path" 0 "version=${installed_version};path=${aimem_bin}"
+}
 # --- lazyvim ----------------------------------------------------------------
 mod_lazyvim() {
     section "Neovim + LazyVim"
@@ -3857,6 +3901,8 @@ uninstall_catalog() {
     printf 'path|rotator|%s|d|\n' "${HOME}/.tuxevil-rotator"
     printf 'appimage|cockpit|%s|-|\n' "${HOME}/.local/bin/cockpit-tools.AppImage"
     printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
+    printf 'path|ai-memory|%s|-|\n' "${AIMEM_PREFIX}/bin/aimem"
+    printf 'path|ai-memory|%s|-|\n' "${AIMEM_PREFIX}/share/ai-memory-kit"
     # extras entries carry their exact ownership marker; unmarked copies are never removed.
     printf 'npm-global|extras|typescript-express-starter|-|setup-ai extras npm-global typescript-express-starter\n'
     printf 'npm-global|extras|@alibaba-group/open-code-review|-|setup-ai extras npm-global @alibaba-group/open-code-review\n'

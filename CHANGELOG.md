@@ -15,7 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added the `ai-memory` module for the `ai-memory-kit` CLI and templates.
 - The opt-in `extras` module runs HyperFrames' non-interactive core skills update, keeps Impeccable hook-free, installs `typescript-express-starter` and `@alibaba-group/open-code-review` globally with exact `package.json` identity checks, and installs the CLI-Anything Pi extension pinned to `34f519533bc175d2fe287ab8316b0dd99bb9cc43` without overwriting an unverified target. Only items this run installs get a `.setup-ai-owned` marker; `--uninstall` removes an extras item only when that exact marker (and, for packages, the package name) matches, and the CLI-Anything directory additionally needs `--purge`. setup-ai never runs Open Code Review or configures a provider for it. Mirrored in `setup-ai.ps1` ([#98](https://github.com/darkrei08/setup-ai/issues/98)).
+
+### Changed
+
+- Updated LazyVim to install the official Neovim x86_64 tarball and aligned agent installation updates across platforms.
+
+### Fixed
+
+- Repaired stale `@juicesharp/rpiv-ask-user-question` registrations that conflict with `gentle-pi`, while preserving valid neighboring settings.
 
 ## [3.6.5] - 2026-09-19
 
