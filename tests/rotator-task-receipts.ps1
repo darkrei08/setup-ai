@@ -32,6 +32,7 @@ $script:FakeUnregisterCalls = 0
 $script:FakeRegisterCorruptsAction = $false
 $script:FakeRegisterCorruptsPrincipal = $false
 $script:FakeRegisterThrows = $false
+$script:FakeRegisterThrowsAfterCreate = $false
 $script:FakeGetThrows = $false
 $script:FakeReadbackThrows = $false
 $script:FakeStartTaskCalls = 0
@@ -105,6 +106,7 @@ function Register-ScheduledTask {
         Description = $Description
     }
     $script:FakeTasks[$TaskName] = $task
+    if ($script:FakeRegisterThrowsAfterCreate) { throw 'fake: registration reported failure after creating the task' }
     return $task
 }
 function Get-ScheduledTask {
@@ -163,6 +165,10 @@ Assert-True -Condition ($fpA -ne (Get-RotatorTaskFingerprint -Task $taskTriggerC
 $taskNamed = [pscustomobject]@{ TaskName = 'tuxevil-rotator'; TaskPath = '\'; Actions = $taskA.Actions; Triggers = $triggersA; Principal = $principalA; Settings = $settingsA }
 Assert-True -Condition ($fpA -ne (Get-RotatorTaskFingerprint -Task $taskNamed)) `
     -Message 'fingerprint changes when the task name differs even though every other field is identical'
+# ---- Delimiter collision: raw separators inside one argument never match two actions ----
+$taskTwoActions = [pscustomobject]@{ TaskName = 'task'; TaskPath = '\'; Actions = @((New-ScheduledTaskAction -Execute 'a' -Argument 'b'), (New-ScheduledTaskAction -Execute 'c' -Argument 'd')); Triggers = $triggersA; Principal = $principalA; Settings = $settingsA }
+$taskCollision = [pscustomobject]@{ TaskName = 'task'; TaskPath = '\'; Actions = @((New-ScheduledTaskAction -Execute 'a' -Argument 'b;c|d')); Triggers = $triggersA; Principal = $principalA; Settings = $settingsA }
+Assert-True -Condition ((Get-RotatorTaskFingerprint -Task $taskTwoActions) -ne (Get-RotatorTaskFingerprint -Task $taskCollision)) -Message 'fingerprint does not collide when an argument contains raw delimiter characters'
 # ---- Receipt parsing ----
 Assert-True -Condition ($null -eq (Get-RotatorTaskReceipt -Task $null)) -Message 'receipt is null for a null task'
 $noDescTask = [pscustomobject]@{ Description = $null }
@@ -218,6 +224,18 @@ $script:FakeRegisterCorruptsPrincipal = $false
 $script:FakeTasks = @{}; $script:FakeUnregisterCalls = 0; $script:FakeReadbackThrows = $true
 $result = Register-RotatorTask
 Assert-True -Condition ($result -eq $false -and -not $script:FakeTasks.ContainsKey('tuxevil-rotator') -and $script:FakeUnregisterCalls -eq 1) -Message 'a readback exception rolls back the task this run created'
+# ---- Registration throws before creating anything ----
+$script:FakeTasks = @{}; $script:FakeUnregisterCalls = 0; $script:FakeRegisterThrows = $true
+$result = Register-RotatorTask
+Assert-True -Condition ($result -eq $false -and $script:FakeUnregisterCalls -eq 0) -Message 'a registration error with nothing created never calls Unregister-ScheduledTask'
+# ---- A failed re-registration keeps the earlier installer-owned task ----
+$script:FakeRegisterThrows = $false; [void](Register-RotatorTask); $ownedMarker = (Get-RotatorTaskReceipt $script:FakeTasks['tuxevil-rotator']).Marker
+$script:FakeRegisterThrows = $true; $result = Register-RotatorTask; $script:FakeRegisterThrows = $false
+Assert-True -Condition ($result -eq $false -and $script:FakeUnregisterCalls -eq 0 -and (Get-RotatorTaskReceipt $script:FakeTasks['tuxevil-rotator']).Marker -eq $ownedMarker) -Message 'a failed re-registration never removes the task an earlier run wrote'
+# ---- Registration creates the task, then reports failure ----
+$script:FakeTasks = @{}; $script:FakeUnregisterCalls = 0; $script:FakeRegisterThrowsAfterCreate = $true
+$result = Register-RotatorTask; $script:FakeRegisterThrowsAfterCreate = $false
+Assert-True -Condition ($result -eq $false -and -not $script:FakeTasks.ContainsKey('tuxevil-rotator') -and $script:FakeUnregisterCalls -eq 1) -Message 'a task left by a registration that reported failure is rolled back by its unique marker'
 # ---- Mismatching marker is preserved ----
 $script:FakeTasks = @{ 'tuxevil-rotator' = [pscustomobject]@{ TaskName = 'tuxevil-rotator'; Description = "x [$($RotatorTaskMarkerPrefix)-deadbeefcafe:fp=abc0123456789def]" } }
 $script:FakeUnregisterCalls = 0

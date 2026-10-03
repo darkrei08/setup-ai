@@ -2522,7 +2522,8 @@ function Remove-RotatorTaskRollback {
     $receipt = Get-RotatorTaskReceipt -Task $current
     #NOTE: the marker is a fresh random token written moments ago, so a task carrying it is the
     # half-applied registration itself; a foreign edit that keeps it inside that window is not handled.
-    if (-not $current -or -not $receipt -or $receipt.Marker -ne $ExpectedMarker) {
+    if (-not $current) { return }
+    if (-not $receipt -or $receipt.Marker -ne $ExpectedMarker) {
         Write-Log WARN "rotator" "task_rollback_skipped" "A 'tuxevil-rotator' task exists but does not carry this run's ownership marker; leaving it in place rather than guessing at ownership" 0 "task=tuxevil-rotator"
         return
     }
@@ -2558,9 +2559,6 @@ function Register-RotatorTask {
     $binPath = Get-RotatorExecutable
     $watchdogMinutes = 5
     $attemptMarker = $null
-    # Set only once Register-ScheduledTask itself has returned without throwing, so a throw
-    # from inside that call is never mistaken for ownership of whatever it may have half-applied.
-    $created = $false
     try {
         # The tick probes before it starts anything, because a manual or installer-detached
         # gateway owns the port without owning this task instance, and IgnoreNew alone cannot
@@ -2598,7 +2596,6 @@ function Register-RotatorTask {
         $description = "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200 [$($attemptMarker):fp=$fingerprint]"
         Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger @($atLogon, $watchdog) -Settings $taskSettings -Principal $principal `
             -Description $description -Force:$replaceOwned | Out-Null
-        $created = $true
         # A registration can half-apply, and the promise is about the next logon rather than about
         # this run, so the task is read back and checked: what it runs, that it still starts at
         # logon for this user, the settings the supervision rests on, and the receipt this run
@@ -2641,11 +2638,11 @@ function Register-RotatorTask {
         Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes by a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m;fp=$fingerprint"
         return $true
     } catch {
-        if ($created) { Remove-RotatorTaskRollback -ExpectedMarker $attemptMarker }
         Write-Log WARN "rotator" "task_failed" "Scheduled task registration or verification failed; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"
-        # A throw from Register-ScheduledTask itself lands here before $created is ever set, so
-        # this run never claims or removes whatever that call may have half-applied; it is left
-        # exactly as found for a later run or module to reconcile.
+        # Register-ScheduledTask can create the task and still report failure. The marker is unique
+        # to this attempt, so a fresh readback carrying it proves this attempt wrote the task; any
+        # other task (none, an earlier owned one, or a user's) is left exactly as found.
+        if ($attemptMarker) { Remove-RotatorTaskRollback -ExpectedMarker $attemptMarker }
         return $false
     }
 }
