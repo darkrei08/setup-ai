@@ -490,7 +490,7 @@ function Test-WingetInstalled {
         # logged; a failed probe is treated as "not installed" and followed
         # by the mandatory install step.
         $listed = Invoke-Step -Phase $Phase -Optional -Verify -ExpectedExitCodes $wingetNoApplicationsFoundExitCode -Action {
-            winget list --id $Id -e | Out-File -LiteralPath $probe -Encoding utf8
+            winget list --id $Id -e --accept-source-agreements | Out-File -LiteralPath $probe -Encoding utf8
         }
         if ($null -eq $listed) {
             Write-Log INFO $Phase "not_installed" "$Id is not installed; will install"
@@ -513,6 +513,7 @@ function Install-Winget {
     if (-not (Test-Cmd winget)) {
         throw "winget not available; cannot install '$Id'"
     }
+    $wingetUpdateNotApplicableExitCode = -1978335189 # 0x8A15002B: package is already installed.
     if (Test-WingetInstalled -Id $Id -Phase $Phase) {
         if (-not $Upgrade) {
             Write-Log INFO $Phase "already_present" "$Id already installed"
@@ -523,8 +524,11 @@ function Install-Winget {
         }
         return
     }
-    Invoke-Step -Phase $Phase -Action {
+    $installed = Invoke-Step -Phase $Phase -ExpectedExitCodes $wingetUpdateNotApplicableExitCode -Action {
         winget install -e --id $Id --accept-package-agreements --accept-source-agreements --silent
+    }
+    if ($null -eq $installed) {
+        Write-Log INFO $Phase "already_present" "$Id already installed (winget reported UPDATE_NOT_APPLICABLE)"
     }
 }
 
