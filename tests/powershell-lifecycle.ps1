@@ -112,4 +112,5 @@ try {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+& (Get-Process -Id $PID).Path -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'rotator-task-receipts.ps1'); if ($LASTEXITCODE) { exit $LASTEXITCODE }
 Write-Host 'PowerShell lifecycle regression checks passed.'
