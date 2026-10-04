@@ -2464,7 +2464,9 @@ function Get-RotatorTaskFingerprint {
     $actionsPart = @($Task.Actions) | ForEach-Object { @("$($_.Execute)", "$($_.Arguments)", "$($_.WorkingDirectory)") }
     $triggersPart = @($Task.Triggers) | ForEach-Object {
         $rep = $_.Repetition
-        $triggerUser = "$($_.UserId)"; if ($triggerUser -notmatch '\\' -and $env:USERDOMAIN) { $triggerUser = "$env:USERDOMAIN\$triggerUser" }
+        # Only logon triggers carry UserId; a time trigger's CIM instance has no such property,
+        # and StrictMode throws on a missing one.
+        $triggerUser = if ($_.PSObject.Properties['UserId']) { "$($_.UserId)" } else { "" }; if ($triggerUser -notmatch '\\' -and $env:USERDOMAIN) { $triggerUser = "$env:USERDOMAIN\$triggerUser" }
         $repPart = if ($rep) { @((& $normalize $rep.Interval), (& $normalize $rep.Duration), [bool]$rep.StopAtDurationEnd) } else { @('', '', $false) }
         @(
             "$($_.CimClass.CimClassName)", [bool]$_.Enabled, $triggerUser.ToLowerInvariant(),
