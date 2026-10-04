@@ -1592,7 +1592,7 @@ function Mod-ClaudeCode {
         if (Test-NpmInstallScriptsSupport -Phase "claude-code") {
             $allowScripts = @('--allow-scripts=@anthropic-ai/claude-code')
         }
-        Invoke-Step -Phase "claude-code" -Action { npm install -g @anthropic-ai/claude-code @allowScripts }
+        Install-ExtrasGlobalPackage -Package '@anthropic-ai/claude-code' -Module 'claude-code' -ExtraArgs $allowScripts
         Update-SessionPath
         if (-not (Test-Cmd claude)) {
             Write-Log ERROR "claude-code" "install_missing" "claude not found on PATH after npm install"
@@ -2374,7 +2374,7 @@ function Mod-Opencode {
         if (-not $npmAvailable) {
             throw "npm not found; opencode cannot be installed"
         }
-        Invoke-Step -Phase "opencode" -Action { npm install -g opencode-ai @allowScripts }
+        Install-ExtrasGlobalPackage -Package 'opencode-ai' -Module 'opencode' -ExtraArgs $allowScripts
         # npm writes the shim into the user PATH; refresh this session so the
         # verification below sees it without a new shell (parity with setup-ai.sh).
         Update-SessionPath
@@ -2388,9 +2388,16 @@ function Mod-Opencode {
     # run's broken opencode would otherwise stay broken. Optional because an opencode
     # that comes from another package manager has nothing to rebuild; the CLI check below
     # is the gate that decides.
-    if ($npmAvailable) {
-        $null = Invoke-Step -Phase "opencode" -Optional -Action { npm rebuild -g opencode-ai @allowScripts --foreground-scripts }
+    $rootProbe = [IO.Path]::GetTempFileName(); $rootErrorProbe = [IO.Path]::GetTempFileName()
+    try {
+        if ($npmAvailable -and (Invoke-Step -Phase "opencode" -Optional -Verify -CaptureOutput $rootProbe -Action { npm root -g 2> $rootErrorProbe })) {
+            if ((Get-Item -Force -LiteralPath $rootErrorProbe).Length -gt 0) { Write-Log WARN 'opencode' 'npm_root_diagnostics' 'npm root emitted diagnostics; stdout remains the only accepted path' 0 }
+            $marker = Join-Path (Join-Path ((Get-Content -Raw -LiteralPath $rootProbe).Trim()) 'opencode-ai') '.setup-ai-owned'
+            if (Test-ExtrasMarker -Marker $marker -Expected 'setup-ai opencode npm-global opencode-ai') { $null = Invoke-Step -Phase "opencode" -Optional -Action { npm rebuild -g opencode-ai @allowScripts --foreground-scripts } }
+            else { Write-Log WARN 'opencode' 'package_unowned' 'Owned npm marker not found; repair skipped' 0 }
+        }
     }
+    finally { foreach ($probe in @($rootProbe, $rootErrorProbe)) { try { Remove-Item -Force -LiteralPath $probe -ErrorAction Stop } catch { Write-Log WARN 'opencode' 'cleanup_failed' 'Could not remove temporary npm-root probe' 0 "path=$probe;error=$($_.Exception.Message)" } } }
     # The stub exits 1 with its own message, so the exit code of the CLI - not the
     # existence of the shim - is what proves the real launcher is installed.
     $null = Invoke-Step -Phase "opencode" -Verify -Action { opencode --version }
@@ -2765,6 +2772,17 @@ function Test-ExtrasMarker {
     return [bool]($item -and -not $item.LinkType -and -not $item.PSIsContainer -and [IO.File]::ReadAllText($Marker) -ceq "$Expected`n")
 }
 
+function Write-ExtrasMarker {
+    param([string]$Marker, [string]$Expected)
+    $stream = [IO.File]::Open($Marker, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes("$Expected`n")
+        $stream.Write($bytes, 0, $bytes.Length)
+    } finally {
+        $stream.Dispose()
+    }
+}
+
 # A global package is verified only as a real directory whose package.json names it exactly.
 function Test-ExtrasNpmPackage {
     param([string]$Package, [string]$PackageDir)
@@ -2784,7 +2802,7 @@ function Test-ExtrasNpmPackage {
 # Only a package this run installed gets the ownership marker; an existing one is verified and left unowned.
 # -Module names the owning module (default: extras).
 function Install-ExtrasGlobalPackage {
-    param([string]$Package, [string]$Module = 'extras')
+    param([string]$Package, [string]$Module = 'extras', [string[]]$ExtraArgs = @())
     $rootProbe = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-npm-root-" + [guid]::NewGuid().ToString('N') + '.txt')
     $rootErrorProbe = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-npm-root-error-" + [guid]::NewGuid().ToString('N') + '.txt')
     try {
@@ -2808,9 +2826,11 @@ function Install-ExtrasGlobalPackage {
         Write-Log INFO $Module 'package_preserved' 'Existing global package verified and left in place' 0 "path=$packageDir"
         return
     }
-    Invoke-Step -Phase $Module -Action { npm install -g $Package }
+    Invoke-Step -Phase $Module -Action { npm install -g $Package @ExtraArgs }
     if (-not (Test-ExtrasNpmPackage -Package $Package -PackageDir $packageDir)) { throw "Installed global package identity could not be verified ($packageDir)" }
-    [IO.File]::WriteAllText($marker, "$expected`n")
+    $markerItem = Get-Item -Force -LiteralPath $marker -ErrorAction SilentlyContinue
+    if ($markerItem -and ($markerItem.LinkType -or ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw "Global package ownership marker is a link ($marker)" }
+    Write-ExtrasMarker -Marker $marker -Expected $expected
     if (-not (Test-ExtrasMarker -Marker $marker -Expected $expected)) { throw "Global package ownership marker could not be verified ($marker)" }
     Write-Log INFO $Module 'package_verified' 'Global package installed and marked as setup-ai-owned' 0 "path=$packageDir"
 }
@@ -2818,6 +2838,7 @@ function Install-ExtrasGlobalPackage {
 function Install-CliAnything {
     $repo = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-cli-anything-" + [guid]::NewGuid().ToString('N'))
     $source = Join-Path $repo '.pi-extension\cli-anything'
+    $headProbe = Join-Path $repo '.head'
     $target = Join-Path $PiExtDir 'cli-anything'
     $marker = Join-Path $target '.setup-ai-owned'
     $expected = "setup-ai extras CLI-Anything $CliAnythingRef"
@@ -2825,7 +2846,8 @@ function Install-CliAnything {
         Invoke-Step -Phase 'extras' -Action { git init -q $repo }
         Invoke-Step -Phase 'extras' -Action { git -C $repo fetch --depth 1 https://github.com/HKUDS/CLI-Anything.git $CliAnythingRef }
         Invoke-Step -Phase 'extras' -Action { git -C $repo checkout -q --detach FETCH_HEAD }
-        $head = (git -C $repo rev-parse HEAD | Out-String).Trim()
+        Invoke-Step -Phase 'extras' -Verify -CaptureOutput $headProbe -Action { git -C $repo rev-parse HEAD } | Out-Null
+        $head = (Get-Content -Raw -LiteralPath $headProbe).Trim()
         if ($head -cne $CliAnythingRef) { throw "CLI-Anything checkout does not match the pin ($head)" }
         if (-not (Test-Path -LiteralPath $source -PathType Container)) { throw "Pinned Pi extension assets are missing ($source)" }
         $existing = Get-Item -Force -LiteralPath $target -ErrorAction SilentlyContinue
@@ -2837,7 +2859,9 @@ function Install-CliAnything {
         New-Item -ItemType Directory -Force -Path $PiExtDir | Out-Null
         Invoke-Step -Phase 'extras' -Action { Copy-Item -LiteralPath $source -Destination $target -Recurse }
         if (-not (Test-DirectoryContentEqual $source $target)) { throw "Copied Pi extension differs from the pinned source ($target)" }
-        [IO.File]::WriteAllText($marker, "$expected`n")
+        $markerItem = Get-Item -Force -LiteralPath $marker -ErrorAction SilentlyContinue
+        if ($markerItem -and ($markerItem.LinkType -or ($markerItem.Attributes -band [IO.FileAttributes]::ReparsePoint))) { throw "CLI-Anything ownership marker is a link ($marker)" }
+        Write-ExtrasMarker -Marker $marker -Expected $expected
         if (-not (Test-ExtrasMarker -Marker $marker -Expected $expected)) { throw "CLI-Anything ownership marker could not be verified ($marker)" }
         Write-Log INFO 'extras' 'cli_anything_installed' 'CLI-Anything Pi extension installed at the pin' 0 "path=$target;ref=$CliAnythingRef"
     } finally {
@@ -3136,11 +3160,71 @@ function Invoke-QualityGates {
     Write-Log INFO "quality" "gates_done" "Quality gates completed for selected modules"
 }
 
+# Receipt-backed npm-global removal: revalidate identity+marker immediately before `npm
+# uninstall -g`, verify absence after. Like the Bash uninstall, npm or its global root being
+# unavailable is a WARN+skip, not a failure. Shared by the rotator's npm leg and the
+# claude-code/opencode uninstall paths.
+function Invoke-ExtrasNpmGlobalUninstall {
+    param([string]$Package, [string]$Module, [string]$Expected, [switch]$Confirmed)
+    $packageDir = $null
+    $packageOwned = $false
+    $rootProbe = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-npm-root-" + [guid]::NewGuid().ToString('N') + '.txt')
+    $rootErrorProbe = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-npm-root-error-" + [guid]::NewGuid().ToString('N') + '.txt')
+    try {
+        if (-not (Test-Cmd npm)) {
+            Write-Log WARN 'uninstall' 'npm_missing' 'npm is unavailable; global package left behind' 0 "package=$Package"
+            Write-Host "  skipped (npm unavailable): $Package"
+            return $true
+        }
+        $npmRoot = ''
+        if (Invoke-Step -Phase 'uninstall' -Verify -Optional -CaptureOutput $rootProbe -Action { npm root -g 2> $rootErrorProbe }) {
+            $npmRoot = (Get-Content -Raw -LiteralPath $rootProbe).Trim()
+        }
+        if ((Test-Path -LiteralPath $rootErrorProbe) -and (Get-Item -Force -LiteralPath $rootErrorProbe).Length -gt 0) {
+            Write-Log WARN 'uninstall' 'npm_root_diagnostics' 'npm root emitted diagnostics; stdout remains the only accepted path' 0
+        }
+        if (-not $npmRoot) {
+            Write-Log WARN 'uninstall' 'npm_root_unavailable' 'Could not locate the global npm root; package left behind' 0 "package=$Package"
+            Write-Host "  skipped (npm root unavailable): $Package"
+            return $true
+        }
+        $packageDir = Join-Path $npmRoot ($Package.Replace('/', [IO.Path]::DirectorySeparatorChar))
+        $packageOwned = [bool]((Test-Path -LiteralPath $packageDir -PathType Container) -and
+            (Test-ExtrasNpmPackage -Package $Package -PackageDir $packageDir) -and
+            (Test-ExtrasMarker -Marker (Join-Path $packageDir '.setup-ai-owned') -Expected $Expected))
+    } catch {
+        Write-Log ERROR 'uninstall' "${Module}_package_state_unknown" "Could not verify the $Package npm package; nothing removed" 1 "error=$($_.Exception.Message)"
+        Write-Host "  ERROR: $Package package state is unknown ($($_.Exception.Message)); nothing removed."
+        return $false
+    } finally {
+        foreach ($probe in @($rootProbe, $rootErrorProbe)) {
+            if (-not (Test-Path -LiteralPath $probe)) { continue }
+            try { Remove-Item -Force -LiteralPath $probe -ErrorAction Stop }
+            catch { Write-Log WARN 'uninstall' 'npm_root_probe_cleanup_failed' 'Could not remove the temporary npm-root probe' 0 "path=$probe;error=$($_.Exception.Message)" }
+        }
+    }
+    Write-Host "  $Package npm package: $(if ($packageOwned) { 'setup-ai-owned' } else { 'absent or not owned (protected)' })"
+    if (-not $packageOwned -or -not $Confirmed) { return $true }
+    try {
+        if (-not (Test-ExtrasNpmPackage -Package $Package -PackageDir $packageDir) -or
+            -not (Test-ExtrasMarker -Marker (Join-Path $packageDir '.setup-ai-owned') -Expected $Expected)) {
+            throw 'the npm package changed before removal'
+        }
+        Invoke-Step -Phase 'uninstall' -Action { npm uninstall -g $Package } | Out-Null
+        if (Test-Path -LiteralPath $packageDir) { throw 'the npm package is still present' }
+    } catch {
+        Write-Log ERROR 'uninstall' "${Module}_removal_failed" "$Package removal stopped; remaining state preserved" 1 "error=$($_.Exception.Message)"
+        Write-Host "  ERROR: $Package removal stopped ($($_.Exception.Message)); remaining state preserved."
+        return $false
+    }
+    Write-Host "  removed: $Package npm package"
+    return $true
+}
+
 # The scheduled task goes before the npm package it runs. A task that is unowned, changed, or
 # unreadable, or one whose removal cannot be proven, keeps the package in place.
 function Invoke-RotatorUninstall {
     param([switch]$Confirmed)
-    $packageDir = $null
     try { $task = Get-RotatorTask; $taskOwned = [bool]($task -and (Test-RotatorTaskOwned -Task $task)) }
     catch {
         Write-Log ERROR 'uninstall' 'rotator_task_state_unknown' 'Could not verify the tuxevil-rotator scheduled task; nothing removed' 1 "error=$($_.Exception.Message)"
@@ -3148,49 +3232,9 @@ function Invoke-RotatorUninstall {
         return $false
     }
     if ($task -and -not $taskOwned) { Write-Host "  tuxevil-rotator task: not setup-ai-owned (protected); the npm package is kept for it."; return $true }
-    # Like the Bash uninstall: without npm or its global root the package is skipped with a
-    # WARN and left in place; only the receipt-owned task can still be removed.
-    $packageOwned = $false
-    $rootProbe = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-npm-root-" + [guid]::NewGuid().ToString('N') + '.txt')
-    $rootErrorProbe = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-npm-root-error-" + [guid]::NewGuid().ToString('N') + '.txt')
-    try {
-        if (-not (Test-Cmd npm)) {
-            Write-Log WARN 'uninstall' 'npm_missing' 'npm is unavailable; global package left behind' 0 'package=tuxevil-rotator'
-            Write-Host '  skipped (npm unavailable): tuxevil-rotator'
-        } else {
-            $npmRoot = ''
-            if (Invoke-Step -Phase 'uninstall' -Verify -Optional -CaptureOutput $rootProbe -Action { npm root -g 2> $rootErrorProbe }) {
-                $npmRoot = (Get-Content -Raw -LiteralPath $rootProbe).Trim()
-            }
-            if ((Test-Path -LiteralPath $rootErrorProbe) -and (Get-Item -Force -LiteralPath $rootErrorProbe).Length -gt 0) {
-                Write-Log WARN 'uninstall' 'npm_root_diagnostics' 'npm root emitted diagnostics; stdout remains the only accepted path' 0
-            }
-            if (-not $npmRoot) {
-                Write-Log WARN 'uninstall' 'npm_root_unavailable' 'Could not locate the global npm root; package left behind' 0 'package=tuxevil-rotator'
-                Write-Host '  skipped (npm root unavailable): tuxevil-rotator'
-            } else {
-                $packageDir = Join-Path $npmRoot 'tuxevil-rotator'
-                $packageOwned = [bool]((Test-Path -LiteralPath $packageDir -PathType Container) -and
-                    (Test-ExtrasNpmPackage -Package 'tuxevil-rotator' -PackageDir $packageDir) -and
-                    (Test-ExtrasMarker -Marker (Join-Path $packageDir '.setup-ai-owned') -Expected 'setup-ai rotator npm-global tuxevil-rotator'))
-            }
-        }
-    } catch {
-        Write-Log ERROR 'uninstall' 'rotator_package_state_unknown' 'Could not verify the tuxevil-rotator npm package; nothing removed' 1 "error=$($_.Exception.Message)"
-        Write-Host "  ERROR: tuxevil-rotator package state is unknown ($($_.Exception.Message)); nothing removed."
-        return $false
-    }
-    finally {
-        foreach ($probe in @($rootProbe, $rootErrorProbe)) {
-            if (-not (Test-Path -LiteralPath $probe)) { continue }
-            try { Remove-Item -Force -LiteralPath $probe -ErrorAction Stop }
-            catch { Write-Log WARN 'uninstall' 'npm_root_probe_cleanup_failed' 'Could not remove the temporary npm-root probe' 0 "path=$probe;error=$($_.Exception.Message)" }
-        }
-    }
-    Write-Host "  tuxevil-rotator task: $(if ($task) { 'setup-ai-owned' } else { 'absent' }); npm package: $(if ($packageOwned) { 'setup-ai-owned' } else { 'absent or not owned (protected)' })"
-    if (-not $Confirmed) { return $true }
-    try {
-        if ($task) {
+    Write-Host "  tuxevil-rotator task: $(if ($task) { 'setup-ai-owned' } else { 'absent' })"
+    if ($Confirmed -and $task) {
+        try {
             $currentTask = Get-RotatorTask
             if (-not $currentTask -or -not (Test-RotatorTaskOwned -Task $currentTask)) { throw 'the scheduled task changed before removal' }
             Invoke-Step -Phase 'uninstall' -Action {
@@ -3200,29 +3244,20 @@ function Invoke-RotatorUninstall {
                 if (Get-RotatorTask) { throw 'the scheduled task is still present' }
             } | Out-Null
             Write-Host '  removed: tuxevil-rotator scheduled task'
+        } catch {
+            Write-Log ERROR 'uninstall' 'rotator_removal_failed' 'Receipt-backed tuxevil-rotator removal stopped; remaining state preserved' 1 "error=$($_.Exception.Message)"
+            Write-Host "  ERROR: tuxevil-rotator removal stopped ($($_.Exception.Message)); remaining state preserved."
+            return $false
         }
-        if ($packageOwned) {
-            if (-not (Test-ExtrasNpmPackage -Package 'tuxevil-rotator' -PackageDir $packageDir) -or
-                -not (Test-ExtrasMarker -Marker (Join-Path $packageDir '.setup-ai-owned') -Expected 'setup-ai rotator npm-global tuxevil-rotator')) {
-                throw 'the npm package changed before removal'
-            }
-            Invoke-Step -Phase 'uninstall' -Action { npm uninstall -g tuxevil-rotator } | Out-Null
-            if (Test-Path -LiteralPath $packageDir) { throw 'the npm package is still present' }
-            Write-Host '  removed: tuxevil-rotator npm package'
-        }
-    } catch {
-        Write-Log ERROR 'uninstall' 'rotator_removal_failed' 'Receipt-backed tuxevil-rotator removal stopped; remaining state preserved' 1 "error=$($_.Exception.Message)"
-        Write-Host "  ERROR: tuxevil-rotator removal stopped ($($_.Exception.Message)); remaining state preserved."
-        return $false
     }
-    return $true
+    return (Invoke-ExtrasNpmGlobalUninstall -Package 'tuxevil-rotator' -Module 'rotator' -Expected 'setup-ai rotator npm-global tuxevil-rotator' -Confirmed:$Confirmed)
 }
 
 function Invoke-WindowsEnvironmentUninstall {
-    $supported = @('opencode', 'gentle-ai', 'rotator')
+    $supported = @('claude-code', 'opencode', 'gentle-ai', 'rotator')
     $requested = $supported
     if ($All) {
-        Write-Host '-Uninstall supports only Windows environment and rotator state; use -Only opencode, gentle-ai, or rotator.' -ForegroundColor Red
+        Write-Host '-Uninstall supports only Windows environment and rotator state; use -Only claude-code, opencode, gentle-ai, or rotator.' -ForegroundColor Red
         return 2
     }
     if ($OnlySpecified) {
@@ -3254,14 +3289,19 @@ function Invoke-WindowsEnvironmentUninstall {
     $failed = $false
     foreach ($module in $requested) {
         switch ($module) {
+            'claude-code' {
+                Write-Host "  module 'claude-code': only the marked @anthropic-ai/claude-code npm package is removable; a vendor-installed CLI is protected."
+                if (-not (Invoke-ExtrasNpmGlobalUninstall -Package '@anthropic-ai/claude-code' -Module 'claude-code' -Expected 'setup-ai claude-code npm-global @anthropic-ai/claude-code' -Confirmed:$Yes)) { $failed = $true }
+            }
             'opencode' {
-                Write-Host "  module 'opencode': only receipt-backed User OPENCODE_PI_BIN state is removable; the CLI, credentials, and other environment values remain protected."
+                Write-Host "  module 'opencode': only receipt-backed User OPENCODE_PI_BIN state and the marked opencode-ai npm package are removable; the CLI, credentials, and other environment values remain protected."
                 $status = Get-OpenCodeEnvInventoryStatus
                 if ($Yes) {
                     if (Remove-OpenCodeUserEnvironment -Confirmed:$Yes) { Write-Host '  removed: User OPENCODE_PI_BIN environment value' }
                     elseif ($script:SetupAiEnvironmentRemovalFailed) { Write-Host '  ERROR: User OPENCODE_PI_BIN removal failed; ownership receipt preserved.'; $failed = $true }
                     else { Write-Host "  User OPENCODE_PI_BIN: $($status.Message)" }
                 } else { Write-Host "  User OPENCODE_PI_BIN: $($status.Message)" }
+                if (-not (Invoke-ExtrasNpmGlobalUninstall -Package 'opencode-ai' -Module 'opencode' -Expected 'setup-ai opencode npm-global opencode-ai' -Confirmed:$Yes)) { $failed = $true }
             }
             'rotator' {
                 Write-Host "  module 'rotator': only the receipt-owned scheduled task and the marked npm package are removable; accounts, logs, and unowned tasks remain protected."

@@ -2303,11 +2303,11 @@ mod_claude_code() {
         local npm_version npm_major
         capture_cmd npm_version "claude-code" npm --version
         npm_major="${npm_version%%.*}"
+        local -a extra_args=()
         if [[ "${npm_major}" =~ ^[0-9]+$ ]] && (( npm_major >= 12 )); then
-            run_cmd "claude-code" npm install -g @anthropic-ai/claude-code --allow-scripts=@anthropic-ai/claude-code
-        else
-            run_cmd "claude-code" npm install -g @anthropic-ai/claude-code
+            extra_args=(--allow-scripts=@anthropic-ai/claude-code)
         fi
+        install_extras_global_package '@anthropic-ai/claude-code' claude-code ${extra_args[@]+"${extra_args[@]}"}
         export PATH="${HOME}/.local/bin:${PATH}"
     fi
     require_command claude
@@ -3052,6 +3052,30 @@ refresh_opencode_path() {
     return 1
 }
 
+repair_opencode_npm() {
+    (( DRY_RUN == 1 )) && { dry_run_note "opencode" "npm rebuild -g opencode-ai for an existing setup-ai-owned package"; return 0; }
+    command -v npm >/dev/null 2>&1 || return 0
+    local npm_root marker npm_version npm_major
+    local -a allow_scripts=()
+    if ! capture_cmd npm_root "opencode" --optional npm root -g; then
+        return 0
+    fi
+    marker="${npm_root}/opencode-ai/.setup-ai-owned"
+    if extras_marker_matches "${marker}" "setup-ai opencode npm-global opencode-ai"; then
+        # npm 12 blocks the postinstall this rebuild exists to re-run unless it is approved,
+        # the same approval the npm fallback install passes (and Mod-Opencode mirrors).
+        if capture_cmd npm_version "opencode" --optional npm --version; then
+            npm_major="${npm_version%%.*}"
+            if [[ "${npm_major}" =~ ^[0-9]+$ ]] && (( npm_major >= 12 )); then
+                allow_scripts=(--allow-scripts=opencode-ai)
+            fi
+        fi
+        run_optional "opencode" npm rebuild -g opencode-ai ${allow_scripts[@]+"${allow_scripts[@]}"} --foreground-scripts
+    else
+        log_event "WARN" "opencode" "package_unowned" "Owned npm marker not found; repair skipped" 0 "path=${marker}"
+    fi
+}
+
 mod_opencode() {
     section "opencode"
     if command -v opencode >/dev/null 2>&1; then
@@ -3130,11 +3154,11 @@ mod_opencode() {
                     local npm_version npm_major
                     capture_cmd npm_version "opencode" npm --version
                     npm_major="${npm_version%%.*}"
+                    local -a extra_args=()
                     if [[ "${npm_major}" =~ ^[0-9]+$ ]] && (( npm_major >= 12 )); then
-                        run_cmd "opencode" npm install -g opencode-ai --allow-scripts=opencode-ai
-                    else
-                        run_cmd "opencode" npm install -g opencode-ai
+                        extra_args=(--allow-scripts=opencode-ai)
                     fi
+                    install_extras_global_package opencode-ai opencode ${extra_args[@]+"${extra_args[@]}"}
                     log_event "INFO" "opencode" "npm_install_succeeded" \
                         "Installed opencode from the npm registry" 0
                 fi
@@ -3146,6 +3170,7 @@ mod_opencode() {
         fi
         require_command opencode
     fi
+    repair_opencode_npm
     verify_opencode_spawn
 
     log_event "INFO" "opencode" "zen_hint" "OpenCode Go / Zen provider hint" 0
@@ -3628,11 +3653,15 @@ extras_npm_package_verified() {
 }
 
 # Only a package this run installed gets the ownership marker; an existing one is verified and left unowned.
-# The optional second argument names the owning module (default: extras).
+# The optional second argument names the owning module (default: extras); any further
+# arguments are passed straight through to `npm install -g` (e.g. --allow-scripts=<pkg>).
 install_extras_global_package() {
     local package="$1" module="${2:-extras}" npm_root package_dir
+    shift; (( $# > 0 )) && shift
     local expected="setup-ai ${module} npm-global ${package}"
-    capture_cmd npm_root "${module}" npm root -g
+    # capture_cmd already logs the failure; a bare unset read on the next line would
+    # otherwise crash the run with "unbound variable" under set -u instead of failing cleanly.
+    capture_cmd npm_root "${module}" npm root -g || return 1
     package_dir="${npm_root}/${package}"
     if [[ -e "${package_dir}" || -L "${package_dir}" ]]; then
         if ! extras_npm_package_verified "${package}" "${package_dir}"; then
@@ -3643,7 +3672,7 @@ install_extras_global_package() {
         log_event "INFO" "${module}" "package_preserved" "Existing global package verified and left in place" 0 "path=${package_dir}"
         return 0
     fi
-    run_cmd "${module}" npm install -g "${package}"
+    run_cmd "${module}" npm install -g "${package}" "$@"
     # A dry run installed nothing, so there is nothing to verify or mark.
     (( DRY_RUN == 0 )) || return 0
     if ! extras_npm_package_verified "${package}" "${package_dir}"; then
@@ -3651,7 +3680,16 @@ install_extras_global_package() {
             "Installed global package identity could not be verified" 1 "path=${package_dir}"
         return 1
     fi
-    printf '%s\n' "${expected}" > "${package_dir}/.setup-ai-owned"
+    if [[ -L "${package_dir}/.setup-ai-owned" ]]; then
+        log_event "ERROR" "${module}" "package_marker_unverified" \
+            "Global package ownership marker is a link" 1 "path=${package_dir}/.setup-ai-owned"
+        return 1
+    fi
+    if ! ( set -o noclobber; printf '%s\n' "${expected}" > "${package_dir}/.setup-ai-owned" ) 2>/dev/null; then
+        log_event "ERROR" "${module}" "package_marker_unverified" \
+            "Global package ownership marker could not be created safely" 1 "path=${package_dir}/.setup-ai-owned"
+        return 1
+    fi
     if ! extras_marker_matches "${package_dir}/.setup-ai-owned" "${expected}"; then
         log_event "ERROR" "${module}" "package_marker_unverified" \
             "Global package ownership marker could not be verified" 1 "path=${package_dir}/.setup-ai-owned"
@@ -3690,7 +3728,16 @@ install_cli_anything() {
         log_event "ERROR" "extras" "cli_anything_copy_unverified" "Copied Pi extension differs from the pinned source" 1 "path=${target}"
         return 1
     fi
-    printf '%s\n' "${expected}" > "${target}/.setup-ai-owned"
+    if [[ -L "${target}/.setup-ai-owned" ]]; then
+        log_event "ERROR" "extras" "cli_anything_marker_unverified" \
+            "CLI-Anything ownership marker is a link" 1 "path=${target}/.setup-ai-owned"
+        return 1
+    fi
+    if ! ( set -o noclobber; printf '%s\n' "${expected}" > "${target}/.setup-ai-owned" ) 2>/dev/null; then
+        log_event "ERROR" "extras" "cli_anything_marker_unverified" \
+            "CLI-Anything ownership marker could not be created safely" 1 "path=${target}/.setup-ai-owned"
+        return 1
+    fi
     if ! extras_marker_matches "${target}/.setup-ai-owned" "${expected}"; then
         log_event "ERROR" "extras" "cli_anything_marker_unverified" "CLI-Anything ownership marker could not be verified" 1 "path=${target}"
         return 1
@@ -3940,6 +3987,8 @@ uninstall_catalog() {
     # platform-specific exception is approved by issue #104 U2; Windows owns a receipt-backed task.
     printf 'npm-global|rotator|tuxevil-rotator|-|setup-ai rotator npm-global tuxevil-rotator\n'
     printf 'path|rotator|%s|d|\n' "${HOME}/.tuxevil-rotator"
+    printf 'npm-global|claude-code|@anthropic-ai/claude-code|-|setup-ai claude-code npm-global @anthropic-ai/claude-code\n'
+    printf 'npm-global|opencode|opencode-ai|-|setup-ai opencode npm-global opencode-ai\n'
     printf 'appimage|cockpit|%s|-|\n' "${HOME}/.local/bin/cockpit-tools.AppImage"
     printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
     printf 'path|ai-memory|%s|-|\n' "${AIMEM_PREFIX}/bin/aimem"

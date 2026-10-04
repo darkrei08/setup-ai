@@ -254,10 +254,16 @@ only when setup-ai installed it. Bash leaves the systemd user unit untouched and
 package only when that unit is absent and the user manager proves it inactive; an unavailable
 or uncertain manager preserves the package.
 
+The `claude-code` and `opencode` npm-registry fallbacks (`@anthropic-ai/claude-code`,
+`opencode-ai`) use the same `setup-ai <module> npm-global <package>` marker and the same
+revalidate-before-remove uninstall as the rotator and extras packages: a pre-existing or
+reinstalled package without a matching marker is always preserved.
+
 On Windows, `setup-ai.ps1` refuses `-DryRun` with exit 2. `-Uninstall` covers the
-receipt-backed environment values (`-Only opencode`, `gentle-ai`) and `-Only rotator`: the
-scheduled task is removed first, and only when its receipt matches; the marked npm package
-follows only after that removal is proven. Anything else stays and is reported.
+receipt-backed environment values (`-Only opencode`, `gentle-ai`), the marked npm packages
+(`-Only claude-code`, `opencode`), and `-Only rotator`: the scheduled task is removed first,
+and only when its receipt matches; the marked npm package follows only after that removal is
+proven. Anything else stays and is reported.
 
 Back to the [README](../README.md) · Related:
 [install matrix](./install-matrix.md) · [logs](./logs.md) ·

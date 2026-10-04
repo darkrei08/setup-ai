@@ -148,18 +148,40 @@ for (const needle of [
   if (!sh.includes(needle)) throw new Error(`Bash missing ${needle}`);
 }
 const powershellClaude = ps.match(/function Mod-ClaudeCode \{([\s\S]*?)\n\}/)?.[1] ?? '';
-if (!powershellClaude.includes('npm install -g @anthropic-ai/claude-code') ||
+if (!powershellClaude.includes("Install-ExtrasGlobalPackage -Package '@anthropic-ai/claude-code' -Module 'claude-code'") ||
     powershellClaude.includes('https://claude.ai/install.ps1') ||
     powershellClaude.includes('Invoke-RemoteScriptNoPrompt')) {
   throw new Error('Claude Code PowerShell install must use npm directly');
 }
 for (const needle of [
-  'npm install -g @anthropic-ai/claude-code',
+  "Install-ExtrasGlobalPackage -Package '@anthropic-ai/claude-code' -Module 'claude-code'",
   'function Mod-ClaudeCode',
   'nvim --headless "+Lazy! sync" +qa',
   '$script:LazyVimCloned',
 ]) {
   if (!ps.includes(needle)) throw new Error(`PowerShell missing ${needle}`);
+}
+const bashClaude = sh.match(/mod_claude_code\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+const bashOpencodeMod = sh.match(/mod_opencode\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+const psOpencodeMod = ps.match(/function Mod-Opencode \{([\s\S]*?)\n\}/)?.[1] ?? ''; const psExistingOpencode = psOpencodeMod.match(/if \(Test-Cmd opencode\) \{([\s\S]*?)\n    \} else/)?.[1] ?? '';
+if (!bashClaude.includes("install_extras_global_package '@anthropic-ai/claude-code' claude-code") ||
+    !bashOpencodeMod.includes('install_extras_global_package opencode-ai opencode') ||
+    !sh.includes('npm-global|claude-code|@anthropic-ai/claude-code|-|setup-ai claude-code npm-global @anthropic-ai/claude-code') ||
+    !sh.includes('npm-global|opencode|opencode-ai|-|setup-ai opencode npm-global opencode-ai') ||
+    !bashOpencodeMod.includes('repair_opencode_npm') ||
+    !psOpencodeMod.includes("Install-ExtrasGlobalPackage -Package 'opencode-ai' -Module 'opencode'") || psExistingOpencode.includes('npm rebuild -g opencode-ai') ||
+    !psOpencodeMod.includes('Test-ExtrasMarker -Marker $marker -Expected \'setup-ai opencode npm-global opencode-ai\'') ||
+    !psOpencodeMod.includes('npm rebuild -g opencode-ai') ||
+    !ps.includes('function Invoke-ExtrasNpmGlobalUninstall') ||
+    !ps.includes("@('claude-code', 'opencode', 'gentle-ai', 'rotator')")) {
+  throw new Error('claude-code and opencode must install, mark, catalog, and uninstall their npm-global fallback the same way in both scripts');
+}
+// The owned-package repair re-runs a postinstall npm 12 blocks; both scripts must approve it.
+const bashRepair = sh.match(/repair_opencode_npm\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+if (!bashRepair.includes('allow_scripts=(--allow-scripts=opencode-ai)') ||
+    !bashRepair.includes('npm rebuild -g opencode-ai ${allow_scripts[@]+"${allow_scripts[@]}"} --foreground-scripts') ||
+    !psOpencodeMod.includes('npm rebuild -g opencode-ai @allowScripts --foreground-scripts')) {
+  throw new Error('the opencode npm rebuild must pass the npm 12 install-script approval in both scripts');
 }
 console.log(`PASS: ${bashModules.length} module entries match across Bash, PowerShell, and Node`);
 NODE
