@@ -126,7 +126,9 @@ function Get-ScheduledTask {
     if ($script:FakeGetThrows) { throw 'fake: task query failed' }
     if ($script:FakeReadbackThrows -and $script:FakeTasks.ContainsKey($TaskName)) { $script:FakeReadbackThrows = $false; throw 'fake: readback failed' }
     if ($script:FakeTasks.ContainsKey($TaskName)) { return $script:FakeTasks[$TaskName] }
-    return $null
+    # The real cmdlet throws a CIM not-found error for a missing task under -ErrorAction Stop.
+    $notFound = [System.Management.Automation.ErrorRecord]::new([Exception]::new("No MSFT_ScheduledTask objects found with property 'TaskName' equal to '$TaskName'."), 'CmdletizationQuery_NotFound_TaskName,Get-ScheduledTask', 'ObjectNotFound', $TaskName)
+    throw $notFound
 }
 function Unregister-ScheduledTask {
     param([string]$TaskName, $Confirm, $ErrorAction)
