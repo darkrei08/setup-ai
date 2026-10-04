@@ -2471,9 +2471,21 @@ function Get-RotatorTaskFingerprint {
     $principalPart = @($principalUser.ToLowerInvariant(), "$($principal.LogonType)", "$($principal.RunLevel)")
     $settings = $Task.Settings; $idle = $settings.IdleSettings
     $idlePart = @((& $normalize $idle.IdleDuration), [bool]$idle.RestartOnIdle, [bool]$idle.StopOnIdleEnd, (& $normalize $idle.WaitTimeout))
+    # Get-ScheduledTask exposes the inverse names on its CIM readback object; the fake
+    # uses the constructor names, so normalize both to the same semantic values.
+    $allowStartOnBattery = if ($settings.PSObject.Properties['DisallowStartIfOnBatteries']) {
+        -not [bool]$settings.DisallowStartIfOnBatteries
+    } elseif ($settings.PSObject.Properties['AllowStartIfOnBatteries']) {
+        [bool]$settings.AllowStartIfOnBatteries
+    } else { $false }
+    $dontStopOnBattery = if ($settings.PSObject.Properties['StopIfGoingOnBatteries']) {
+        -not [bool]$settings.StopIfGoingOnBatteries
+    } elseif ($settings.PSObject.Properties['DontStopIfGoingOnBatteries']) {
+        [bool]$settings.DontStopIfGoingOnBatteries
+    } else { $false }
     $settingsPart = @(
         [bool]$settings.Enabled, "$($settings.MultipleInstances)", (& $normalize $settings.ExecutionTimeLimit),
-        [bool]$settings.AllowStartIfOnBatteries, [bool]$settings.DontStopIfGoingOnBatteries,
+        $allowStartOnBattery, $dontStopOnBattery,
         [bool]$settings.Hidden, $settings.Priority, [bool]$settings.WakeToRun, $idlePart
     )
     # JSON-encoded as one array-of-arrays -- including task name/path -- rather than
