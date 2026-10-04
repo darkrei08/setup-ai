@@ -85,8 +85,9 @@ function New-ScheduledTaskSettingsSet {
         Enabled                    = $true
         MultipleInstances          = $MultipleInstances
         ExecutionTimeLimit         = [System.Xml.XmlConvert]::ToString($ExecutionTimeLimit)
-        AllowStartIfOnBatteries    = [bool]$AllowStartIfOnBatteries
-        DontStopIfGoingOnBatteries = [bool]$DontStopIfGoingOnBatteries
+        # Native Get-ScheduledTask exposes the inverse property names on readback.
+        DisallowStartIfOnBatteries = -not [bool]$AllowStartIfOnBatteries
+        StopIfGoingOnBatteries     = -not [bool]$DontStopIfGoingOnBatteries
         Hidden                     = $false
         Priority                   = 7
         WakeToRun                  = $false
