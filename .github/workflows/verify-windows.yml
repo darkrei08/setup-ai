@@ -1,0 +1,102 @@
+name: verify-windows
+
+# Temporary native Windows verification for a candidate branch. This file lives only on
+# throwaway verify/windows-* branches and is never merged.
+on:
+  push:
+    branches: ["verify/windows-**"]
+
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse setup-ai.ps1
+        run: $null = [ScriptBlock]::Create((Get-Content -Raw setup-ai.ps1)); "parse-ok"
+      - name: PowerShell lifecycle regression
+        run: pwsh -NoLogo -NoProfile -File tests/powershell-lifecycle.ps1
+      - name: Launcher list and dry-run
+        run: |
+          node bin/setup-ai.mjs --list
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node bin/setup-ai.mjs --all --dry-run
+          exit $LASTEXITCODE
+
+  rotator-native:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install rotator through the launcher (first run)
+        run: node bin/setup-ai.mjs --only rotator --yes; exit $LASTEXITCODE
+      - name: Read back the scheduled task receipt
+        id: first
+        run: |
+          $t = Get-ScheduledTask -TaskName tuxevil-rotator -ErrorAction Stop
+          $t | Format-List TaskName,TaskPath,State,Description
+          $t.Actions | Format-List Execute,Arguments
+          $t.Triggers | Format-List
+          if ($t.Description -notmatch '\[(?<m>[\w.-]+):fp=(?<fp>[0-9a-f]{16})\]\s*$') { throw "task has no setup-ai receipt" }
+          "desc=$($t.Description)" | Out-File -Append $env:GITHUB_OUTPUT
+      - name: Rerun preserves the existing task
+        run: |
+          node bin/setup-ai.mjs --only rotator --yes
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $t = Get-ScheduledTask -TaskName tuxevil-rotator -ErrorAction Stop
+          if ($t.Description -ne '${{ steps.first.outputs.desc }}') { throw "rerun replaced the task: $($t.Description)" }
+          "task preserved: $($t.Description)"
+      - name: Uninstall inventory and removal
+        run: |
+          node bin/setup-ai.mjs --uninstall --only rotator
+          node bin/setup-ai.mjs --uninstall --only rotator --yes
+          $code = $LASTEXITCODE
+          $t = Get-ScheduledTask -TaskName tuxevil-rotator -ErrorAction SilentlyContinue
+          "task after uninstall: $([bool]$t)"
+          "npm package: $(npm ls -g tuxevil-rotator --depth 0 2>&1 | Out-String)"
+          exit $code
+      - name: Foreign task is never claimed or removed
+        run: |
+          $action = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c exit 0"
+          $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddDays(1)
+          Register-ScheduledTask -TaskName tuxevil-rotator -Action $action -Trigger $trigger -Description "user task" -Force | Out-Null
+          node bin/setup-ai.mjs --only rotator --yes
+          node bin/setup-ai.mjs --uninstall --only rotator --yes
+          $t = Get-ScheduledTask -TaskName tuxevil-rotator -ErrorAction Stop
+          if ($t.Description -ne "user task" -or $t.Actions[0].Execute -ne "cmd.exe") { throw "foreign task was modified" }
+          "foreign task preserved"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rotator-logs
+          path: logs/
+
+  classic-install:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Classic install (core set, unattended)
+        run: node bin/setup-ai.mjs --yes; exit $LASTEXITCODE
+      - name: Summarize JSONL results
+        if: always()
+        run: |
+          Get-ChildItem logs -Filter *.jsonl -ErrorAction SilentlyContinue | ForEach-Object {
+            Get-Content $_.FullName | ConvertFrom-Json | Where-Object { $_.lvl -in 'WARN','ERROR' } |
+              Select-Object lvl,ph,ev,rc,msg,meta | Format-Table -AutoSize -Wrap
+          }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: classic-install-logs
+          path: logs/
