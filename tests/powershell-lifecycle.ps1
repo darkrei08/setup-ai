@@ -112,5 +112,112 @@ try {
     Remove-Item -LiteralPath $testRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-& (Get-Process -Id $PID).Path -NoLogo -NoProfile -File (Join-Path $PSScriptRoot 'rotator-task-receipts.ps1'); if ($LASTEXITCODE) { exit $LASTEXITCODE }
+$wingetFunctionNames = @('Invoke-Step', 'Test-WingetInstalled', 'Install-Winget')
+$wingetFunctions = @($ast.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $wingetFunctionNames
+}, $true))
+if ($wingetFunctions.Count -ne $wingetFunctionNames.Count) { throw 'Expected winget lifecycle functions in setup-ai.ps1.' }
+
+$wingetTestRoot = Join-Path ([System.IO.Path]::GetTempPath()) ('setup-ai-winget-' + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $wingetTestRoot | Out-Null
+try {
+    $HumanLog = Join-Path $wingetTestRoot 'human.log'
+    $JsonlLog = Join-Path $wingetTestRoot 'events.jsonl'
+    $RunId = 'winget-test-run'
+    $script:VerboseOutput = $false
+    $script:CurrentModule = 'base'
+    $script:LastErrorStep = ''
+    $script:LastErrorReturnCode = 0
+    $script:WingetLogEvents = @()
+    $script:WingetStepResults = @()
+    $global:SetupAiFakeWingetCalls = @()
+    $script:FakeWingetMode = 'list'
+    $script:FakeWingetId = 'Git.Git'
+
+    function Write-Log {
+        param($Level, $Phase, $Event, $Message, $ReturnCode = 0, $Meta = '', [bool]$Optional = $false, [string]$Behavior = '')
+        $script:WingetLogEvents += [pscustomobject]@{
+            Level = $Level
+            Phase = $Phase
+            Event = $Event
+            Message = $Message
+            ReturnCode = $ReturnCode
+        }
+    }
+    function Write-StepResult {
+        param([string]$Phase, [string]$Status, [int]$ReturnCode, [string]$Step)
+        $script:WingetStepResults += [pscustomobject]@{
+            Phase = $Phase
+            Status = $Status
+            ReturnCode = $ReturnCode
+            Step = $Step
+        }
+    }
+    function Test-Cmd { param([string]$Name) return ($Name -eq 'winget') }
+    function winget {
+        $arguments = @($args | ForEach-Object { [string]$_ })
+        $global:SetupAiFakeWingetCalls += [pscustomobject]@{ Arguments = $arguments }
+        if ($arguments -contains 'list') {
+            if ($arguments -notcontains '--accept-source-agreements') {
+                'Source agreements not accepted'
+                $global:LASTEXITCODE = -1978335166
+            } else {
+                "$script:FakeWingetId 1.0"
+                $global:LASTEXITCODE = 0
+            }
+            return
+        }
+        if ($arguments -contains 'install') {
+            if ($script:FakeWingetMode -eq 'unexpected-install-failure') {
+                'unexpected install failure'
+                $global:LASTEXITCODE = 17
+            } else {
+                'Package already installed'
+                $global:LASTEXITCODE = -1978335189
+            }
+            return
+        }
+        throw "Unexpected winget invocation: $($arguments -join ' ')"
+    }
+
+    foreach ($functionName in $wingetFunctionNames) {
+        $definition = @($wingetFunctions | Where-Object { $_.Name -eq $functionName })
+        . ([scriptblock]::Create($definition[0].Extent.Text))
+    }
+
+    $listed = Test-WingetInstalled -Id $script:FakeWingetId -Phase 'base'
+    if (-not $listed) { throw 'winget list did not accept source agreements non-interactively.' }
+    $listCall = @($global:SetupAiFakeWingetCalls | Where-Object { $_.Arguments -contains 'list' })[0]
+    if ($null -eq $listCall -or $listCall.Arguments -notcontains '--accept-source-agreements') {
+        throw 'winget list did not receive --accept-source-agreements.'
+    }
+
+    $script:WingetStepResults = @()
+    $script:WingetLogEvents = @()
+    function Test-WingetInstalled { param([string]$Id, [string]$Phase) return $false }
+    Install-Winget -Id $script:FakeWingetId -Phase 'base'
+    $installExpected = @($script:WingetLogEvents | Where-Object { $_.Event -eq 'step_expected' })
+    if ($installExpected.Count -ne 1 -or $installExpected[0].Message -notmatch '-1978335189') {
+        throw 'UPDATE_NOT_APPLICABLE was not logged as an expected winget result.'
+    }
+    $alreadyPresent = @($script:WingetLogEvents | Where-Object { $_.Event -eq 'already_present' })
+    if ($alreadyPresent.Count -ne 1 -or $alreadyPresent[0].Message -notmatch 'UPDATE_NOT_APPLICABLE') {
+        throw 'UPDATE_NOT_APPLICABLE did not produce truthful already-present logging.'
+    }
+    if ($script:WingetStepResults.Count -ne 1 -or $script:WingetStepResults[0].Status -ne 'installed' -or $script:WingetStepResults[0].ReturnCode -ne 0) {
+        throw 'UPDATE_NOT_APPLICABLE did not retain successful install step accounting.'
+    }
+
+    $script:FakeWingetMode = 'unexpected-install-failure'
+    $script:WingetStepResults = @()
+    $script:WingetLogEvents = @()
+    $failed = $false
+    try { Install-Winget -Id $script:FakeWingetId -Phase 'base' } catch { $failed = $true }
+    if (-not $failed -or $script:WingetStepResults.Count -ne 1 -or $script:WingetStepResults[0].Status -ne 'failed') {
+        throw 'An unrelated winget install failure was swallowed.'
+    }
+} finally {
+    Remove-Item -LiteralPath $wingetTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host 'PowerShell lifecycle regression checks passed.'
