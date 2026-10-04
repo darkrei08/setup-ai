@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- The rotator's npm package and Windows scheduled task are removed only when their setup-ai ownership receipts still match: the task carries a per-install marker and configuration fingerprint, the npm package a `.setup-ai-owned` marker written only on a fresh install. The task is removed before its package, and Linux leaves the systemd unit untouched while preserving the package whenever the unit exists or manager state is uncertain. `setup-ai.ps1 -Uninstall -Only rotator` covers this on Windows ([#104](https://github.com/darkrei08/setup-ai/issues/104)).
+
 ### Changed
 
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).

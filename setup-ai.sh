@@ -3399,7 +3399,7 @@ mod_rotator() {
     if command -v tuxevil-rotator >/dev/null 2>&1; then
         log_event "INFO" "rotator" "already_present" "tuxevil-rotator already installed" 0
     else
-        run_cmd "rotator" npm install --global tuxevil-rotator
+        install_extras_global_package tuxevil-rotator rotator
         require_command tuxevil-rotator
     fi
     # Register boot persistence first: enabling the unit or the task never starts a
@@ -3594,32 +3594,36 @@ extras_npm_package_verified() {
 }
 
 # Only a package this run installed gets the ownership marker; an existing one is verified and left unowned.
+# The optional second argument names the owning module (default: extras).
 install_extras_global_package() {
-    local package="$1" npm_root package_dir expected="setup-ai extras npm-global $1"
-    capture_cmd npm_root "extras" npm root -g
+    local package="$1" module="${2:-extras}" npm_root package_dir
+    local expected="setup-ai ${module} npm-global ${package}"
+    capture_cmd npm_root "${module}" npm root -g
     package_dir="${npm_root}/${package}"
     if [[ -e "${package_dir}" || -L "${package_dir}" ]]; then
         if ! extras_npm_package_verified "${package}" "${package_dir}"; then
-            log_event "ERROR" "extras" "package_unverified" \
+            log_event "ERROR" "${module}" "package_unverified" \
                 "Preserving an existing global package whose identity could not be verified" 1 "path=${package_dir}"
             return 1
         fi
-        log_event "INFO" "extras" "package_preserved" "Existing global package verified and left in place" 0 "path=${package_dir}"
+        log_event "INFO" "${module}" "package_preserved" "Existing global package verified and left in place" 0 "path=${package_dir}"
         return 0
     fi
-    run_cmd "extras" npm install -g "${package}"
+    run_cmd "${module}" npm install -g "${package}"
+    # A dry run installed nothing, so there is nothing to verify or mark.
+    (( DRY_RUN == 0 )) || return 0
     if ! extras_npm_package_verified "${package}" "${package_dir}"; then
-        log_event "ERROR" "extras" "package_unverified" \
+        log_event "ERROR" "${module}" "package_unverified" \
             "Installed global package identity could not be verified" 1 "path=${package_dir}"
         return 1
     fi
     printf '%s\n' "${expected}" > "${package_dir}/.setup-ai-owned"
     if ! extras_marker_matches "${package_dir}/.setup-ai-owned" "${expected}"; then
-        log_event "ERROR" "extras" "package_marker_unverified" \
+        log_event "ERROR" "${module}" "package_marker_unverified" \
             "Global package ownership marker could not be verified" 1 "path=${package_dir}/.setup-ai-owned"
         return 1
     fi
-    log_event "INFO" "extras" "package_verified" "Global package installed and marked as setup-ai-owned" 0 "path=${package_dir}"
+    log_event "INFO" "${module}" "package_verified" "Global package installed and marked as setup-ai-owned" 0 "path=${package_dir}"
 }
 
 install_cli_anything() {
@@ -3898,8 +3902,9 @@ uninstall_catalog() {
     printf 'env-file-line|gentle-ai|%s|-|GENTLE_PI_QUIET_TOOLS=0\n' \
         "${HOME}/.config/environment.d/50-gentle-pi.conf"
     printf 'pi-package|rotator|git:github.com/darkrei08/pi-cockpit-tools-sync|-|\n'
-    printf 'npm-global|rotator|tuxevil-rotator|-|\n'
-    printf 'systemd-unit|rotator|tuxevil-rotator.service|-|\n'
+    # The Linux unit is a read-only dependency guard, never an uninstall target. This
+    # platform-specific exception is approved by issue #104 U2; Windows owns a receipt-backed task.
+    printf 'npm-global|rotator|tuxevil-rotator|-|setup-ai rotator npm-global tuxevil-rotator\n'
     printf 'path|rotator|%s|d|\n' "${HOME}/.tuxevil-rotator"
     printf 'appimage|cockpit|%s|-|\n' "${HOME}/.local/bin/cockpit-tools.AppImage"
     printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
@@ -4006,8 +4011,21 @@ uninstall_remove_appimage() {
     fi
 }
 
+uninstall_rotator_systemd_dependency_present() {
+    local unit="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/tuxevil-rotator.service" rc
+    [[ -e "${unit}" || -L "${unit}" ]] && return 0
+    # No manager means dependency state is unknown, so preserve the package.
+    command -v systemctl >/dev/null 2>&1 || return 0
+    systemctl --user is-active --quiet tuxevil-rotator.service && return 0
+    rc=$?
+    # systemd's exit code 3 is the only affirmative inactive result. Every other
+    # failure leaves the manager state uncertain and therefore protected.
+    [[ "${rc}" -eq 3 ]] && return 1
+    return 0
+}
+
 uninstall_remove_npm_global() {
-    local target="$1" expected="$2" npm_root
+    local target="$1" expected="$2" npm_root package_dir
     if ! command -v npm >/dev/null 2>&1; then
         log_event "WARN" "uninstall" "npm_missing" \
             "npm is unavailable; global package left behind" 0 "package=${target}"
@@ -4020,13 +4038,20 @@ uninstall_remove_npm_global() {
         printf 'skipped (npm root unavailable): %s\n' "${target}"
         return 0
     fi
-    if [[ ! -e "${npm_root}/${target}" && ! -L "${npm_root}/${target}" ]]; then
+    package_dir="${npm_root}/${target}"
+    if [[ ! -e "${package_dir}" && ! -L "${package_dir}" ]]; then
         printf 'skipped (not present): %s\n' "${target}"
         return 0
     fi
-    if [[ -n "${expected}" ]] && { ! extras_npm_package_verified "${target}" "${npm_root}/${target}" \
-        || ! extras_marker_matches "${npm_root}/${target}/.setup-ai-owned" "${expected}"; }; then
+    if [[ -n "${expected}" ]] && { ! extras_npm_package_verified "${target}" "${package_dir}" \
+        || ! extras_marker_matches "${package_dir}/.setup-ai-owned" "${expected}"; }; then
         printf 'skipped (not verified as setup-ai-owned): %s\n' "${target}"
+        return 0
+    fi
+    # Read-only dependency guard: never remove the rotator while its user unit is
+    # present or the user manager cannot prove it is inactive.
+    if [[ "${target}" == tuxevil-rotator ]] && uninstall_rotator_systemd_dependency_present; then
+        printf 'skipped (systemd unit or manager state protects it): %s\n' "${target}"
         return 0
     fi
     if (( DRY_RUN == 1 )); then
@@ -4034,6 +4059,12 @@ uninstall_remove_npm_global() {
         return 0
     fi
     run_cmd "uninstall" npm uninstall -g "${target}" || return 1
+    if [[ -e "${package_dir}" || -L "${package_dir}" ]]; then
+        log_event "ERROR" "uninstall" "npm_remove_unverified" \
+            "npm uninstall completed but the global package is still present" 1 "package=${target}"
+        printf 'ERROR: package still present after uninstall: %s\n' "${target}" >&2
+        return 1
+    fi
     printf 'removed: %s\n' "${target}"
 }
 
@@ -4086,28 +4117,6 @@ uninstall_remove_pi_package() {
         return 1
     fi
     printf 'removed: %s\n' "${source}"
-}
-
-uninstall_remove_systemd_unit() {
-    local target="$1" unit="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/$1"
-    if [[ ! -e "${unit}" && ! -L "${unit}" ]]; then
-        printf 'skipped (not present): %s\n' "${target}"
-        return 0
-    fi
-    if (( DRY_RUN == 1 )); then
-        printf 'would remove: %s\n' "${target}"
-        return 0
-    fi
-    if command -v systemctl >/dev/null 2>&1; then
-        run_optional "uninstall" systemctl --user disable --now "${target}"
-    fi
-    if rm -f -- "${unit}"; then
-        printf 'removed: %s\n' "${target}"
-    else
-        log_event "ERROR" "uninstall" "systemd_unit_remove_failed" \
-            "Could not remove catalogued systemd user unit" 1 "unit=${unit}"
-        return 1
-    fi
 }
 
 uninstall_remove_shell_rc_line() {
@@ -4192,7 +4201,7 @@ uninstall_entry_selected() {
 uninstall_entry_present() {
     local kind="$1" target="$2" detail="$3" file npm_root
     case "${kind}" in
-        path|owned-path|appimage|systemd-unit)
+        path|owned-path|appimage)
             [[ -e "${target}" || -L "${target}" ]] ;;
         npm-global)
             if ! command -v npm >/dev/null 2>&1; then
@@ -4245,6 +4254,7 @@ uninstall_print_not_covered() {
     printf '  - %s/settings.json, %s/skills, %s/auth.json, %s/sessions, the Pi package roots and the pi binary are never removed.\n' \
         "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}" "${PI_AGENT_DIR}"
     printf '  - A Pi package registration is removed only when the ownership receipt setup-ai published at install still matches its exact current entry.\n'
+    printf '  - rotator: the tuxevil-rotator.service systemd user unit is never removed; while it exists or systemd cannot prove it inactive, the marked tuxevil-rotator npm package is kept too (setup-ai.ps1 removes only its receipt-owned scheduled task).\n'
 }
 
 run_uninstall() {
@@ -4283,7 +4293,6 @@ run_uninstall() {
             appimage)      uninstall_remove_appimage "${target}" || rc=1 ;;
             npm-global)    uninstall_remove_npm_global "${target}" "${detail}" || rc=1 ;;
             pi-package)    uninstall_remove_pi_package "${target}" || rc=1 ;;
-            systemd-unit)  uninstall_remove_systemd_unit "${target}" || rc=1 ;;
             shell-rc-line) uninstall_remove_shell_rc_line "${target}" || rc=1 ;;
             env-file-line) uninstall_remove_env_file_line "${target}" "${detail}" || rc=1 ;;
             *)

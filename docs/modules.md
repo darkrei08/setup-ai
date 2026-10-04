@@ -245,8 +245,15 @@ directory only when its marker names the pinned revision and `--purge` is given.
 Anything else is reported as `skipped (not verified as setup-ai-owned)`. The shared
 skills, Impeccable files, and HyperFrames skill updates are not removed.
 
-On Windows, `setup-ai.ps1` refuses `-DryRun` and `-Uninstall` with exit 2 and points
-users to `setup-ai.sh`; Windows lifecycle operations are not implemented yet.
+The rotator npm package carries the marker `setup-ai rotator npm-global tuxevil-rotator`
+only when setup-ai installed it. Bash leaves the systemd user unit untouched and removes the
+package only when that unit is absent and the user manager proves it inactive; an unavailable
+or uncertain manager preserves the package.
+
+On Windows, `setup-ai.ps1` refuses `-DryRun` with exit 2. `-Uninstall` covers the
+receipt-backed environment values (`-Only opencode`, `gentle-ai`) and `-Only rotator`: the
+scheduled task is removed first, and only when its receipt matches; the marked npm package
+follows only after that removal is proven. Anything else stays and is reported.
 
 Back to the [README](../README.md) · Related:
 [install matrix](./install-matrix.md) · [logs](./logs.md) ·

@@ -33,12 +33,22 @@ $script:FakeRegisterCorruptsAction = $false
 $script:FakeRegisterCorruptsPrincipal = $false
 $script:FakeRegisterThrows = $false
 $script:FakeRegisterThrowsAfterCreate = $false
+$script:FakeUnregisterThrows = $false
+$script:FakeNpmUninstallThrows = $false
+$script:FakeNpmRootThrows = $false
+$script:RemovalOrder = New-Object System.Collections.Generic.List[string]
 $script:FakeGetThrows = $false
 $script:FakeReadbackThrows = $false
 $script:FakeStartTaskCalls = 0
 $script:FakeProcessCalls = 0
 function Write-Log {
     param([string]$Level, [string]$Phase, [string]$Event, [string]$Message, [int]$ReturnCode = 0, [string]$Meta = "")
+}
+function Invoke-Step {
+    param([string]$Phase, [scriptblock]$Action, [switch]$Verify, [switch]$Optional, [string]$CaptureOutput = '')
+    try { if ($CaptureOutput) { & $Action | Set-Content -LiteralPath $CaptureOutput } else { & $Action | Out-Null } }
+    catch { if ($Optional) { return $false }; throw }
+    return $true
 }
 function New-ScheduledTaskAction {
     param([string]$Execute, [string]$Argument)
@@ -120,8 +130,10 @@ function Get-ScheduledTask {
 function Unregister-ScheduledTask {
     param([string]$TaskName, $Confirm, $ErrorAction)
     if (-not $script:FakeTasks.ContainsKey($TaskName)) { throw "fake: no such task '$TaskName'" }
+    if ($script:FakeUnregisterThrows) { throw 'fake: unregister failed' }
     $script:FakeTasks.Remove($TaskName)
     $script:FakeUnregisterCalls++
+    $script:RemovalOrder.Add('task')
 }
 function Start-ScheduledTask { param([string]$TaskName) $script:FakeStartTaskCalls++ }
 function Start-Process { param($FilePath,$ArgumentList,$WindowStyle,$RedirectStandardOutput,$RedirectStandardError) $script:FakeProcessCalls++ }
@@ -130,7 +142,7 @@ $env:USERNAME = 'test-user'
 $markerLine = Get-SingleLine -Lines $SourceLines -Pattern '^\$RotatorTaskMarkerPrefix\s*='
 Assert-True -Condition ([bool]$markerLine) -Message 'setup-ai.ps1 defines $RotatorTaskMarkerPrefix'
 if ($markerLine) { Invoke-Expression $markerLine }
-foreach ($name in @('Get-RotatorExecutable', 'Get-RotatorTask', 'Get-RotatorTaskFingerprint', 'Get-RotatorTaskReceipt', 'Test-RotatorTaskOwned', 'Remove-RotatorTaskRollback', 'Register-RotatorTask', 'Start-RotatorGateway')) {
+foreach ($name in @('Get-RotatorExecutable', 'Get-RotatorTask', 'Get-RotatorTaskFingerprint', 'Get-RotatorTaskReceipt', 'Test-RotatorTaskOwned', 'Remove-RotatorTaskRollback', 'Register-RotatorTask', 'Start-RotatorGateway', 'Test-Cmd', 'Test-ExtrasMarker', 'Test-ExtrasNpmPackage', 'Invoke-RotatorUninstall')) {
     $src = Get-FunctionSource -Lines $SourceLines -Name $name
     Assert-True -Condition ([bool]$src) -Message "setup-ai.ps1 defines $name"
     if ($src) { Invoke-Expression $src }
@@ -245,6 +257,42 @@ Assert-True -Condition ($script:FakeUnregisterCalls -eq 0) -Message 'rollback do
 $script:FakeTasks = @{}; [void](Register-RotatorTask); $script:FakeTasks['tuxevil-rotator'].Description = $script:FakeTasks['tuxevil-rotator'].Description -replace 'fp=[0-9a-f]{16}', 'fp=0000000000000000'
 $script:FakeStartTaskCalls = 0; $script:FakeProcessCalls = 0; [void](Start-RotatorGateway -LogFile 'ignored')
 Assert-True -Condition ($script:FakeStartTaskCalls -eq 0 -and $script:FakeProcessCalls -eq 1) -Message 'an unowned task is not started by the gateway helper'
+# ---- Uninstall: task before package, and only receipt-owned state ----
+$script:NpmRoot = Join-Path ([IO.Path]::GetTempPath()) ('setup-ai-rotator-npm-' + [guid]::NewGuid().ToString('N'))
+$pkgDir = Join-Path $script:NpmRoot 'tuxevil-rotator'
+function npm {
+    if ($args[0] -eq 'root') { if ($script:FakeNpmRootThrows) { throw 'fake: npm root failed' }; return $script:NpmRoot }
+    if ($args[0] -eq 'uninstall') {
+        $script:RemovalOrder.Add('npm')
+        if ($script:FakeNpmUninstallThrows) { throw 'fake: npm uninstall failed' }
+        Remove-Item -Recurse -Force -LiteralPath $pkgDir
+    }
+}
+function Reset-RotatorState { param([string]$Marker, [switch]$OwnedTask, $Task)
+    $script:FakeTasks = @{}; $script:RemovalOrder.Clear(); $script:FakeUnregisterThrows = $false; $script:FakeNpmUninstallThrows = $false; $script:FakeNpmRootThrows = $false; $script:FakeGetThrows = $false
+    if ($OwnedTask) { [void](Register-RotatorTask) } elseif ($Task) { $script:FakeTasks['tuxevil-rotator'] = $Task }
+    Remove-Item -Recurse -Force -LiteralPath $pkgDir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path $pkgDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $pkgDir 'package.json') -Value '{"name":"tuxevil-rotator"}'
+    if ($Marker) { [IO.File]::WriteAllText((Join-Path $pkgDir '.setup-ai-owned'), "$Marker`n") } }
+$owned = 'setup-ai rotator npm-global tuxevil-rotator'
+try {
+    Reset-RotatorState -Marker $owned -OwnedTask; $r = Invoke-RotatorUninstall -Confirmed 6>$null
+    Assert-True -Condition ($r -and ($script:RemovalOrder -join ',') -eq 'task,npm' -and -not (Test-Path $pkgDir)) -Message 'uninstall removes the owned task before the marked npm package'
+    Reset-RotatorState -Marker $owned -OwnedTask; $r = Invoke-RotatorUninstall 6>$null
+    Assert-True -Condition ($r -and $script:RemovalOrder.Count -eq 0 -and (Test-Path $pkgDir)) -Message 'uninstall without -Yes only reports'
+    Reset-RotatorState -Marker $owned -Task ([pscustomobject]@{ TaskName = 'tuxevil-rotator'; Description = 'a user-made task' }); $r = Invoke-RotatorUninstall -Confirmed 6>$null
+    Assert-True -Condition ($r -and $script:RemovalOrder.Count -eq 0 -and (Test-Path $pkgDir)) -Message 'an unowned task keeps itself and the npm package'
+    Reset-RotatorState -Marker $owned -OwnedTask; $script:FakeGetThrows = 'query-failed'; $r = Invoke-RotatorUninstall -Confirmed 6>$null; $script:FakeGetThrows = $false
+    Assert-True -Condition (-not $r -and $script:RemovalOrder.Count -eq 0 -and (Test-Path $pkgDir)) -Message 'unknown task state fails without removing anything'
+    Reset-RotatorState -Marker $owned -OwnedTask; $script:FakeUnregisterThrows = $true; $r = Invoke-RotatorUninstall -Confirmed 6>$null
+    Assert-True -Condition (-not $r -and (Test-Path $pkgDir)) -Message 'a failed task removal keeps the npm package'
+    Reset-RotatorState -Marker 'setup-ai extras npm-global tuxevil-rotator'; $r = Invoke-RotatorUninstall -Confirmed 6>$null
+    Assert-True -Condition ($r -and $script:RemovalOrder.Count -eq 0 -and (Test-Path $pkgDir)) -Message 'a package without the rotator marker is preserved'
+    Reset-RotatorState -Marker $owned -OwnedTask; $script:FakeNpmUninstallThrows = $true; $r = Invoke-RotatorUninstall -Confirmed 6>$null
+    Assert-True -Condition (-not $r -and (Test-Path $pkgDir) -and (Test-Path (Join-Path $pkgDir '.setup-ai-owned'))) -Message 'a failed npm removal preserves the package and receipt'
+    Reset-RotatorState -Marker $owned -OwnedTask; $script:FakeNpmRootThrows = $true; $r = Invoke-RotatorUninstall -Confirmed 6>$null
+    Assert-True -Condition ($r -and ($script:RemovalOrder -join ',') -eq 'task' -and (Test-Path $pkgDir)) -Message 'an unavailable npm root skips the package like Bash and still removes the owned task'
+} finally { Remove-Item -Recurse -Force -LiteralPath $script:NpmRoot -ErrorAction SilentlyContinue }
 if ($failures.Count -gt 0) {
     Write-Host "FAIL ($($failures.Count)):" -ForegroundColor Red
     foreach ($f in $failures) { Write-Host "  - $f" -ForegroundColor Red }

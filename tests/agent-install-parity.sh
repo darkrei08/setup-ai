@@ -73,7 +73,7 @@ const bashAgentRoots = sh.match(/agent_skill_root\(\) \{([\s\S]*?)\n\}/)?.[1] ??
 if (!bashLink.includes('for agent in claude-code codex opencode gemini-cli antigravity-cli') ||
     !bashLink.includes('root="$(agent_skill_root "${agent}")"') ||
     !bashLink.includes('"${canonical}/SKILL.md"') || !bashLink.includes('skill_link_conflict') ||
-    /for agent in pi\\b/.test(bashLink) ||
+    /for agent in pi\b/.test(bashLink) ||
     !bashAgentRoots.includes('"${HOME}/.gemini/antigravity-cli/skills"') ||
     bashAgentRoots.includes('"${HOME}/.antigravity/skills"') ||
     bashLink.includes('link-skills.mjs') || !bashLink.includes('if ! link_target=') ||
@@ -111,7 +111,10 @@ for (const pkg of ['typescript-express-starter', '@alibaba-group/open-code-revie
     throw new Error(`extras must install, mark, and catalog ${pkg} in both scripts`);
   }
 }
-for (const marker of ['setup-ai extras npm-global ', 'setup-ai extras CLI-Anything ']) {
+if (!sh.includes('expected="setup-ai ${module} npm-global ${package}"') || !ps.includes('"setup-ai $Module npm-global $Package"')) {
+  throw new Error('npm-global ownership marker template drift between Bash and PowerShell');
+}
+for (const marker of ['setup-ai rotator npm-global tuxevil-rotator', 'setup-ai extras CLI-Anything ']) {
   if (!sh.includes(marker) || !ps.includes(marker)) throw new Error(`Ownership marker drift: ${marker}`);
 }
 const bashAiMemory = sh.match(/mod_ai_memory\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
