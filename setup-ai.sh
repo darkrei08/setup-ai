@@ -3264,6 +3264,33 @@ mod_cockpit() {
 # installing a unit nobody can start is worse than failing loudly.
 # The unit bounds its own restart loop: while no account is logged in the gateway
 # exits at once, and Restart=on-failure would respawn it every 5s forever.
+write_rotator_unit() {
+    local path="$1" bin_path="$2"
+    if ! cat >"${path}" <<UNIT
+[Unit]
+Description=tuxevil-rotator multi-account Gemini/Antigravity gateway
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+ExecStart="${bin_path}" start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target
+UNIT
+    then
+        return 1
+    fi
+}
+rotator_unit_matches() {
+    local unit="$1" bin_path="$2"
+    local expected="${TMP_DIR}/tuxevil-rotator.service.expected"
+    write_rotator_unit "${expected}" "${bin_path}" || return 1
+    [[ -f "${unit}" && ! -L "${unit}" ]] || return 1
+    cmp -s "${expected}" "${unit}"
+}
 ensure_rotator_unit() {
     # XDG_CONFIG_HOME is not set on every distro or session, so the standard default
     # stays the fallback; the user manager reads the same path.
@@ -3282,21 +3309,22 @@ ensure_rotator_unit() {
         return 0
     fi
     mkdir -p "${unit_dir}"
-    # Rewritten on every run so a moved binary or a stale unit converges here.
-    cat >"${unit}" <<UNIT
-[Unit]
-Description=tuxevil-rotator multi-account Gemini/Antigravity gateway
-StartLimitIntervalSec=300
-StartLimitBurst=5
-
-[Service]
-ExecStart="${bin_path}" start
-Restart=on-failure
-RestartSec=5
-
-[Install]
-WantedBy=default.target
-UNIT
+    # Bash noclobber uses an exclusive create, so a concurrent file or symlink cannot
+    # be replaced. A symlink is never considered setup-ai-owned.
+    if (set -C; write_rotator_unit "${unit}" "${bin_path}"); then
+        :
+    elif [[ -e "${unit}" || -L "${unit}" ]]; then
+        :
+    else
+        log_event "ERROR" "rotator" "service_create_failed" \
+            "Could not create the setup-ai systemd user unit" 1 "unit=${unit}"
+        return 1
+    fi
+    if ! rotator_unit_matches "${unit}" "${bin_path}"; then
+        log_event "INFO" "rotator" "service_preserved" \
+            "The systemd user unit changed before verification; using a detached process" 0 "unit=${unit}"
+        return 0
+    fi
     if run_cmd "rotator" systemctl --user enable tuxevil-rotator.service; then
         log_event "INFO" "rotator" "service_enabled" \
             "tuxevil-rotator is enabled as a systemd user service and starts at boot" 0 "unit=${unit}"
@@ -3313,20 +3341,26 @@ UNIT
 # from this installer instead.
 start_rotator_gateway() {
     local log_file="$1"
+    local unit="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/tuxevil-rotator.service"
+    local bin_path
     if (( DRY_RUN == 1 )); then
         dry_run_note "rotator" "start tuxevil-rotator gateway"
         return 0
     fi
 
-    # A unit that exhausted its start limit stays failed and refuses every later start
-    # until that rate-limit state is cleared, so clear it before asking again. A machine
-    # without systemctl never wrote a unit, so it has no start limit to clear.
-    if command -v systemctl >/dev/null 2>&1; then
+    # A foreign or modified unit is never reset or started. Recheck immediately before
+    # starting so a concurrent replacement after registration still uses the fallback.
+    if command -v systemctl >/dev/null 2>&1 \
+        && systemctl --user show-environment >/dev/null 2>&1 \
+        && bin_path="$(command -v tuxevil-rotator)" \
+        && rotator_unit_matches "${unit}" "${bin_path}"; then
+        # A unit that exhausted its start limit stays failed and refuses every later start
+        # until that rate-limit state is cleared.
         run_optional "rotator" systemctl --user reset-failed tuxevil-rotator.service
-    fi
-    if systemctl --user start tuxevil-rotator.service >/dev/null 2>&1; then
-        log_event "INFO" "rotator" "service_started" "tuxevil-rotator started through the systemd user unit" 0 "unit=tuxevil-rotator.service"
-        return 0
+        if systemctl --user start tuxevil-rotator.service >/dev/null 2>&1; then
+            log_event "INFO" "rotator" "service_started" "tuxevil-rotator started through the systemd user unit" 0 "unit=tuxevil-rotator.service"
+            return 0
+        fi
     fi
     # macOS has no setsid and a shell without job control refuses disown; setsid or nohup
     # has already detached the process, so a refused disown is informational.
