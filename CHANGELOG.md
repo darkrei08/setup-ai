@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - The rotator's npm package and Windows scheduled task are removed only when their setup-ai ownership receipts still match: the task carries a per-install marker and configuration fingerprint, the npm package a `.setup-ai-owned` marker written only on a fresh install. The task is removed before its package, and Linux leaves the systemd unit untouched while preserving the package whenever the unit exists or manager state is uncertain. `setup-ai.ps1 -Uninstall -Only rotator` covers this on Windows ([#104](https://github.com/darkrei08/setup-ai/issues/104)).
+- The `claude-code` and `opencode` npm-registry fallbacks now share the same ownership-marker install and revalidate-before-remove uninstall as the rotator and extras packages, so a pre-existing or externally reinstalled `@anthropic-ai/claude-code`/`opencode-ai` is never overwritten or removed; `setup-ai.ps1 -Uninstall -Only claude-code` is new, and `-Only opencode` now also covers its npm package ([#105](https://github.com/darkrei08/setup-ai/issues/105)).
 
 ### Changed
 

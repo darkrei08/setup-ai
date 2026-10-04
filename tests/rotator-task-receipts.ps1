@@ -35,7 +35,15 @@ $script:FakeRegisterThrows = $false
 $script:FakeRegisterThrowsAfterCreate = $false
 $script:FakeUnregisterThrows = $false
 $script:FakeNpmUninstallThrows = $false
+$script:FakeNpmUninstallLeavesPackage = $false
 $script:FakeNpmRootThrows = $false
+$script:FakeNpmUnavailable = $false
+$script:FakeNpmInstallThrows = $false
+$script:FakeNpmInstallLog = New-Object System.Collections.Generic.List[string]
+$script:FakeNpmRootCalls = 0
+$script:FakeNpmInstallCalls = 0
+$script:FakeNpmUninstallCalls = 0
+$script:FakeTestCmdCalls = 0
 $script:RemovalOrder = New-Object System.Collections.Generic.List[string]
 $script:FakeGetThrows = $false
 $script:FakeReadbackThrows = $false
@@ -146,11 +154,21 @@ $env:USERNAME = 'test-user'
 $markerLine = Get-SingleLine -Lines $SourceLines -Pattern '^\$RotatorTaskMarkerPrefix\s*='
 Assert-True -Condition ([bool]$markerLine) -Message 'setup-ai.ps1 defines $RotatorTaskMarkerPrefix'
 if ($markerLine) { Invoke-Expression $markerLine }
-foreach ($name in @('Get-RotatorExecutable', 'Get-RotatorTask', 'Get-RotatorTaskFingerprint', 'Get-RotatorTaskReceipt', 'Test-RotatorTaskOwned', 'Remove-RotatorTaskRollback', 'Register-RotatorTask', 'Start-RotatorGateway', 'Test-Cmd', 'Test-ExtrasMarker', 'Test-ExtrasNpmPackage', 'Invoke-RotatorUninstall')) {
+foreach ($name in @('Get-RotatorExecutable', 'Get-RotatorTask', 'Get-RotatorTaskFingerprint', 'Get-RotatorTaskReceipt', 'Test-RotatorTaskOwned', 'Remove-RotatorTaskRollback', 'Register-RotatorTask', 'Start-RotatorGateway', 'Test-Cmd', 'Test-ExtrasMarker', 'Test-ExtrasNpmPackage', 'Write-ExtrasMarker', 'Install-ExtrasGlobalPackage', 'Invoke-ExtrasNpmGlobalUninstall', 'Invoke-RotatorUninstall')) {
     $src = Get-FunctionSource -Lines $SourceLines -Name $name
     Assert-True -Condition ([bool]$src) -Message "setup-ai.ps1 defines $name"
     if ($src) { Invoke-Expression $src }
 }
+$script:RealTestCmd = (Get-Command Test-Cmd -CommandType Function).ScriptBlock
+function Test-Cmd {
+    param([string]$Name)
+    if ($Name -eq 'npm') { $script:FakeTestCmdCalls++ }
+    if ($Name -eq 'npm' -and $script:FakeNpmUnavailable) { return $false }
+    & $script:RealTestCmd -Name $Name
+}
+$windowsUninstall = Get-FunctionSource -Lines $SourceLines -Name 'Invoke-WindowsEnvironmentUninstall'
+Assert-True -Condition ($windowsUninstall -and $windowsUninstall.Contains("@('claude-code', 'opencode', 'gentle-ai', 'rotator')")) -Message 'Windows uninstall supports both npm-global fallback modules'
+Assert-True -Condition ($windowsUninstall -and $windowsUninstall.Contains("-Package '@anthropic-ai/claude-code'") -and $windowsUninstall.Contains("-Package 'opencode-ai'")) -Message 'Windows uninstall routes both npm-global fallback modules through the shared remover'
 # ---- Fingerprint stability ----
 $script:FakeGetThrows = 'not-found'
 Assert-True -Condition ($null -eq (Get-RotatorTask)) -Message 'Get-RotatorTask treats the native missing-task HRESULT as absence'
@@ -267,12 +285,50 @@ Assert-True -Condition ($script:FakeStartTaskCalls -eq 0 -and $script:FakeProces
 $script:NpmRoot = Join-Path ([IO.Path]::GetTempPath()) ('setup-ai-rotator-npm-' + [guid]::NewGuid().ToString('N'))
 $pkgDir = Join-Path $script:NpmRoot 'tuxevil-rotator'
 function npm {
-    if ($args[0] -eq 'root') { if ($script:FakeNpmRootThrows) { throw 'fake: npm root failed' }; return $script:NpmRoot }
-    if ($args[0] -eq 'uninstall') {
-        $script:RemovalOrder.Add('npm')
-        if ($script:FakeNpmUninstallThrows) { throw 'fake: npm uninstall failed' }
-        Remove-Item -Recurse -Force -LiteralPath $pkgDir
+    if ($args[0] -eq 'root') {
+        $script:FakeNpmRootCalls++
+        if ($script:FakeNpmUnavailable) { throw 'fake: npm unavailable' }
+        if ($script:FakeNpmRootThrows) { throw 'fake: npm root failed' }
+        return $script:NpmRoot
     }
+    if ($args[0] -eq 'install') {
+        $script:FakeNpmInstallCalls++
+        $script:FakeNpmInstallLog.Add(($args -join ' '))
+        if ($script:FakeNpmUnavailable) { throw 'fake: npm unavailable' }
+        if ($script:FakeNpmInstallThrows) { throw 'fake: npm install failed' }
+        $dir = Join-Path $script:NpmRoot $args[2]
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Set-Content -LiteralPath (Join-Path $dir 'package.json') -Value "{`"name`":`"$($args[2])`"}"
+    }
+    if ($args[0] -eq 'uninstall') {
+        $script:FakeNpmUninstallCalls++
+        $script:RemovalOrder.Add('npm')
+        if ($script:FakeNpmUnavailable) { throw 'fake: npm unavailable' }
+        if ($script:FakeNpmUninstallThrows) { throw 'fake: npm uninstall failed' }
+        if (-not $script:FakeNpmUninstallLeavesPackage) { Remove-Item -Recurse -Force -LiteralPath (Join-Path $script:NpmRoot $args[2]) }
+    }
+}
+function Reset-NpmFake {
+    $script:FakeNpmUnavailable = $false; $script:FakeNpmRootThrows = $false; $script:FakeNpmInstallThrows = $false; $script:FakeNpmUninstallThrows = $false; $script:FakeNpmUninstallLeavesPackage = $false
+    $script:FakeNpmRootCalls = 0; $script:FakeNpmInstallCalls = 0; $script:FakeNpmUninstallCalls = 0; $script:FakeTestCmdCalls = 0
+    $script:FakeNpmInstallLog.Clear(); $script:RemovalOrder.Clear()
+}
+function Assert-NpmCalls {
+    param([int]$Root, [int]$Install, [int]$Uninstall, [int]$TestCmd, [string]$Message)
+    Assert-True -Condition ($script:FakeNpmRootCalls -eq $Root -and $script:FakeNpmInstallCalls -eq $Install -and $script:FakeNpmUninstallCalls -eq $Uninstall -and $script:FakeTestCmdCalls -eq $TestCmd) -Message $Message
+}
+function Set-NpmPackage {
+    param([string]$Package, [string]$Dir, [string]$Expected, [switch]$Marker)
+    Remove-Item -Recurse -Force -LiteralPath $Dir -ErrorAction SilentlyContinue; New-Item -ItemType Directory -Force -Path $Dir | Out-Null
+    Set-Content -LiteralPath (Join-Path $Dir 'package.json') -Value "{`"name`":`"$Package`"}"
+    if ($Marker) { [IO.File]::WriteAllText((Join-Path $Dir '.setup-ai-owned'), "$Expected`n") }
+}
+function Invoke-NpmCase {
+    param([scriptblock]$Setup, [scriptblock]$Action, [scriptblock]$Check, [int]$Root, [int]$Install, [int]$Uninstall, [int]$TestCmd)
+    Reset-NpmFake; & $Setup | Out-Null; $threw = $false
+    try { $result = @(& $Action 6>$null) } catch { $threw = $true; $result = @() }
+    & $Check $threw $result
+    Assert-NpmCalls -Root $Root -Install $Install -Uninstall $Uninstall -TestCmd $TestCmd -Message 'npm operation counters'
 }
 function Reset-RotatorState { param([string]$Marker, [switch]$OwnedTask, $Task)
     $script:FakeTasks = @{}; $script:RemovalOrder.Clear(); $script:FakeUnregisterThrows = $false; $script:FakeNpmUninstallThrows = $false; $script:FakeNpmRootThrows = $false; $script:FakeGetThrows = $false
@@ -298,6 +354,23 @@ try {
     Assert-True -Condition (-not $r -and (Test-Path $pkgDir) -and (Test-Path (Join-Path $pkgDir '.setup-ai-owned'))) -Message 'a failed npm removal preserves the package and receipt'
     Reset-RotatorState -Marker $owned -OwnedTask; $script:FakeNpmRootThrows = $true; $r = Invoke-RotatorUninstall -Confirmed 6>$null
     Assert-True -Condition ($r -and ($script:RemovalOrder -join ',') -eq 'task' -and (Test-Path $pkgDir)) -Message 'an unavailable npm root skips the package like Bash and still removes the owned task'
+    # ---- #105: the same lifecycle matrix runs for both new npm-global call sites ----
+    foreach ($case in @(@{ Package = '@anthropic-ai/claude-code'; Module = 'claude-code' }, @{ Package = 'opencode-ai'; Module = 'opencode' })) {
+        $pkg = $case.Package; $mod = $case.Module; $expected = "setup-ai $mod npm-global $pkg"; $dir = Join-Path $script:NpmRoot $pkg; $marker = Join-Path $dir '.setup-ai-owned'
+        $empty = { Remove-Item -Recurse -Force -LiteralPath $dir -ErrorAction SilentlyContinue }
+        $owned = { Set-NpmPackage $pkg $dir $expected -Marker }; $unmarked = { Set-NpmPackage $pkg $dir $expected }
+        Invoke-NpmCase $empty { Install-ExtrasGlobalPackage -Package $pkg -Module $mod } { param($e,$r) Assert-True (Test-Path $marker) "$pkg fresh install" } 1 1 0 0
+        Invoke-NpmCase $empty { Install-ExtrasGlobalPackage -Package $pkg -Module $mod -ExtraArgs @("--allow-scripts=$pkg") } { param($e,$r) Assert-True ((Test-Path $marker) -and ($script:FakeNpmInstallLog -join ';') -like "*--allow-scripts=$pkg*") "$pkg allow-scripts passthrough" } 1 1 0 0
+        Invoke-NpmCase $unmarked { Install-ExtrasGlobalPackage -Package $pkg -Module $mod } { param($e,$r) Assert-True ((-not (Test-Path $marker)) -and $script:FakeNpmInstallLog.Count -eq 0) "$pkg preserves pre-existing" } 1 0 0 0
+        Invoke-NpmCase { & $empty; $script:FakeNpmInstallThrows = $true } { Install-ExtrasGlobalPackage -Package $pkg -Module $mod } { param($e,$r) Assert-True ($e -and -not (Test-Path $dir)) "$pkg install failure" } 1 1 0 0
+        Invoke-NpmCase { & $empty; $script:FakeNpmUnavailable = $true } { Install-ExtrasGlobalPackage -Package $pkg -Module $mod } { param($e,$r) Assert-True ($e -and -not (Test-Path $dir)) "$pkg actual npm-unavailable install" } 1 0 0 0
+        Invoke-NpmCase { & $owned; $script:FakeNpmUnavailable = $true } { Invoke-ExtrasNpmGlobalUninstall -Package $pkg -Module $mod -Expected $expected -Confirmed } { param($e,$r) Assert-True ($r[0] -and (Test-Path $marker)) "$pkg npm-unavailable uninstall" } 0 0 0 1
+        Invoke-NpmCase { & $owned; $script:FakeNpmRootThrows = $true } { Invoke-ExtrasNpmGlobalUninstall -Package $pkg -Module $mod -Expected $expected -Confirmed } { param($e,$r) Assert-True ($r[0] -and (Test-Path $marker)) "$pkg npm-root unavailable" } 1 0 0 1
+        Invoke-NpmCase { & $owned; $script:FakeNpmUninstallThrows = $true } { Invoke-ExtrasNpmGlobalUninstall -Package $pkg -Module $mod -Expected $expected -Confirmed } { param($e,$r) Assert-True (-not $r[0] -and (Test-Path $marker)) "$pkg uninstall failure" } 1 0 1 1
+        Invoke-NpmCase { & $owned; $script:FakeNpmUninstallLeavesPackage = $true } { Invoke-ExtrasNpmGlobalUninstall -Package $pkg -Module $mod -Expected $expected -Confirmed } { param($e,$r) Assert-True (-not $r[0] -and (Test-Path $marker)) "$pkg post-uninstall non-removal" } 1 0 1 1
+        Invoke-NpmCase $owned { Invoke-ExtrasNpmGlobalUninstall -Package $pkg -Module $mod -Expected $expected -Confirmed } { param($e,$r) Assert-True ($r[0] -and -not (Test-Path $dir)) "$pkg successful owned removal" } 1 0 1 1
+        Invoke-NpmCase $unmarked { Invoke-ExtrasNpmGlobalUninstall -Package $pkg -Module $mod -Expected $expected -Confirmed } { param($e,$r) Assert-True ($r[0] -and (Test-Path $dir)) "$pkg unmarked preservation" } 1 0 0 1
+    }
 } finally { Remove-Item -Recurse -Force -LiteralPath $script:NpmRoot -ErrorAction SilentlyContinue }
 if ($failures.Count -gt 0) {
     Write-Host "FAIL ($($failures.Count)):" -ForegroundColor Red
