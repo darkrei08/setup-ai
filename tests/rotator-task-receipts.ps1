@@ -166,6 +166,10 @@ Assert-True -Condition ($fpA -ne (Get-RotatorTaskFingerprint -Task $taskTriggerC
 $taskNamed = [pscustomobject]@{ TaskName = 'tuxevil-rotator'; TaskPath = '\'; Actions = $taskA.Actions; Triggers = $triggersA; Principal = $principalA; Settings = $settingsA }
 Assert-True -Condition ($fpA -ne (Get-RotatorTaskFingerprint -Task $taskNamed)) `
     -Message 'fingerprint changes when the task name differs even though every other field is identical'
+# ---- Delimiter collision: raw separators inside one argument never match two actions ----
+$taskTwoActions = [pscustomobject]@{ TaskName = 'task'; TaskPath = '\'; Actions = @((New-ScheduledTaskAction -Execute 'a' -Argument 'b'), (New-ScheduledTaskAction -Execute 'c' -Argument 'd')); Triggers = $triggersA; Principal = $principalA; Settings = $settingsA }
+$taskCollision = [pscustomobject]@{ TaskName = 'task'; TaskPath = '\'; Actions = @((New-ScheduledTaskAction -Execute 'a' -Argument 'b;c|d')); Triggers = $triggersA; Principal = $principalA; Settings = $settingsA }
+Assert-True -Condition ((Get-RotatorTaskFingerprint -Task $taskTwoActions) -ne (Get-RotatorTaskFingerprint -Task $taskCollision)) -Message 'fingerprint does not collide when an argument contains raw delimiter characters'
 # ---- Receipt parsing ----
 Assert-True -Condition ($null -eq (Get-RotatorTaskReceipt -Task $null)) -Message 'receipt is null for a null task'
 $noDescTask = [pscustomobject]@{ Description = $null }
