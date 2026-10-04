@@ -2487,12 +2487,13 @@ function Get-RotatorTaskFingerprint {
     }
 }
 
-# Only "no such task" (cmdlet error id or HRESULT 0x80070002) means absent; any other query
-# failure is rethrown, so ownership decisions never run on an unreadable scheduler.
+# Only "no such task" (the CIM query's not-found error id, as Windows reports it, or HRESULT
+# 0x80070002) means absent; any other query failure is rethrown, so ownership decisions never
+# run on an unreadable scheduler.
 function Get-RotatorTask {
     try { Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction Stop }
     catch {
-        if ($_.FullyQualifiedErrorId -notlike 'NoMatchingScheduledTaskFound*' -and $_.Exception.HResult -ne -2147024894 -and $_.Exception -isnot [System.Management.Automation.ItemNotFoundException]) { throw }
+        if ($_.FullyQualifiedErrorId -notlike 'CmdletizationQuery_NotFound_TaskName,*' -and $_.Exception.HResult -ne -2147024894) { throw }
     }
 }
 
