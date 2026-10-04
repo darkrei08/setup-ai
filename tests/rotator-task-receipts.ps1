@@ -56,10 +56,10 @@ function New-ScheduledTaskTrigger {
             Repetition    = $null
         }
     }
+    # Like the real MSFT_TaskTimeTrigger, a time trigger has no UserId property at all.
     return [pscustomobject]@{
         CimClass   = [pscustomobject]@{ CimClassName = 'MSFT_TaskTimeTrigger' }
         Enabled    = $true
-        UserId       = $null
         StartBoundary = $At
         EndBoundary   = $null
         Repetition    = [pscustomobject]@{ Interval = $RepetitionInterval; Duration = $null; StopAtDurationEnd = $false }
