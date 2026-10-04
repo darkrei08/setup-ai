@@ -224,8 +224,12 @@ process and the module logs `INFO rotator service_skipped`. On the dotenv side t
 Pi extension does the same at session start when the port is dead, so the
 `gemini-*` aliases keep working; concurrent sessions coordinate through one start
 claim (one start, not one per session) and the detached process log is
-`~/.tuxevil-rotator/gateway.log`. Both registrations also bring back a gateway
-that dies, by different means: the Linux unit leaves it to systemd
+`~/.tuxevil-rotator/gateway.log`. Reruns preserve an existing unit or task
+rather than replacing it; Linux uses the systemd unit only while its exact
+setup-ai-generated content matches the current executable, otherwise it leaves the
+unit untouched and uses the detached fallback. Windows uses the scheduled task only
+while its setup-ai receipt still matches. Both registrations also bring back a
+gateway that dies, by different means: the Linux unit leaves it to systemd
 (`Restart=on-failure`, `RestartSec=5`), while the Windows task repeats every five
 minutes with `-MultipleInstances IgnoreNew`, so a tick is skipped while the
 gateway it started still runs, and each tick checks the port first so a gateway

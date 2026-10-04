@@ -32,6 +32,7 @@ $script:FakeUnregisterCalls = 0
 $script:FakeRegisterCorruptsAction = $false
 $script:FakeRegisterCorruptsPrincipal = $false
 $script:FakeRegisterThrows = $false
+$script:FakeRegisterThrowsAfterCreate = $false
 $script:FakeGetThrows = $false
 $script:FakeReadbackThrows = $false
 $script:FakeStartTaskCalls = 0
@@ -84,9 +85,10 @@ function New-ScheduledTaskSettingsSet {
 }
 # Existing tasks must be guarded before registration.
 function Register-ScheduledTask {
-    param([string]$TaskName, $Action, $Trigger, $Settings, $Principal, [string]$Description, [switch]$Force)
+    param([string]$TaskName, $Action, $Trigger, $Settings, $Principal, [string]$Description)
     $script:FakeRegisterCalls++
-    if ($script:FakeTasks.ContainsKey($TaskName) -and -not $Force) { throw "fake: task '$TaskName' already exists" }
+    # Guard: mirrors the real cmdlet without -Force, so an accidental overwrite fails loudly.
+    if ($script:FakeTasks.ContainsKey($TaskName)) { throw "fake: task '$TaskName' already exists" }
     if ($script:FakeRegisterThrows) { throw "fake: registration failed" }
     $actions = @($Action)
     if ($script:FakeRegisterCorruptsAction) {
@@ -105,6 +107,7 @@ function Register-ScheduledTask {
         Description = $Description
     }
     $script:FakeTasks[$TaskName] = $task
+    if ($script:FakeRegisterThrowsAfterCreate) { throw 'fake: registration reported failure after creating the task' }
     return $task
 }
 function Get-ScheduledTask {
@@ -184,11 +187,14 @@ Assert-True -Condition ($script:FakeTasks.ContainsKey('tuxevil-rotator')) -Messa
 $receipt = Get-RotatorTaskReceipt -Task $script:FakeTasks['tuxevil-rotator']
 Assert-True -Condition ($receipt -and $receipt.Marker -like "$($RotatorTaskMarkerPrefix)-*") -Message 'the created task carries this installer''s marker family'
 $firstMarker = if ($receipt) { $receipt.Marker } else { $null }
-# ---- Installer-owned task converges with a fresh marker ----
+# ---- Existing installer-owned task is preserved ----
+$ownedTask = $script:FakeTasks['tuxevil-rotator']
+$script:FakeRegisterCalls = 0
 $result2 = Register-RotatorTask
-Assert-True -Condition ($result2 -eq $true) -Message 'Register-RotatorTask re-registers a task carrying this installer''s valid receipt'
-$receipt2 = Get-RotatorTaskReceipt -Task $script:FakeTasks['tuxevil-rotator']
-Assert-True -Condition ($receipt2 -and $firstMarker -and $receipt2.Marker -ne $firstMarker) -Message 'each registration attempt embeds a distinct, unique ownership marker'
+Assert-True -Condition ($result2 -eq $false) -Message 'Register-RotatorTask fails closed when an installer-owned task already exists'
+Assert-True -Condition ($script:FakeRegisterCalls -eq 0) -Message 'Register-RotatorTask does not replace an existing installer-owned task'
+Assert-True -Condition ([object]::ReferenceEquals($script:FakeTasks['tuxevil-rotator'], $ownedTask)) -Message 'an existing installer-owned task is left byte-for-byte untouched'
+Assert-True -Condition ((Get-RotatorTaskReceipt -Task $script:FakeTasks['tuxevil-rotator']).Marker -eq $firstMarker) -Message 'preserving an installer-owned task keeps its existing marker'
 # ---- Pre-existing task ----
 $preexisting = [pscustomobject]@{ TaskName = 'tuxevil-rotator'; Description = 'a user-made task'; Actions = @(); Triggers = @(); Settings = $null }
 $script:FakeTasks = @{ 'tuxevil-rotator' = $preexisting }
@@ -218,12 +224,23 @@ $script:FakeRegisterCorruptsPrincipal = $false
 $script:FakeTasks = @{}; $script:FakeUnregisterCalls = 0; $script:FakeReadbackThrows = $true
 $result = Register-RotatorTask
 Assert-True -Condition ($result -eq $false -and -not $script:FakeTasks.ContainsKey('tuxevil-rotator') -and $script:FakeUnregisterCalls -eq 1) -Message 'a readback exception rolls back the task this run created'
+# ---- Registration fails before creating anything ----
+$script:FakeTasks = @{}; $script:FakeUnregisterCalls = 0; $script:FakeRegisterThrows = $true
+$result = Register-RotatorTask; $script:FakeRegisterThrows = $false
+Assert-True -Condition ($result -eq $false -and -not $script:FakeTasks.ContainsKey('tuxevil-rotator') -and $script:FakeUnregisterCalls -eq 0) -Message 'a registration that creates nothing has nothing to roll back'
+# ---- Registration creates the task, then reports failure ----
+$script:FakeTasks = @{}; $script:FakeUnregisterCalls = 0; $script:FakeRegisterThrowsAfterCreate = $true
+$result = Register-RotatorTask; $script:FakeRegisterThrowsAfterCreate = $false
+Assert-True -Condition ($result -eq $false -and -not $script:FakeTasks.ContainsKey('tuxevil-rotator') -and $script:FakeUnregisterCalls -eq 1) -Message 'a task left by a registration error is rolled back by its marker and fingerprint'
 # ---- Mismatching marker is preserved ----
 $script:FakeTasks = @{ 'tuxevil-rotator' = [pscustomobject]@{ TaskName = 'tuxevil-rotator'; Description = "x [$($RotatorTaskMarkerPrefix)-deadbeefcafe:fp=abc0123456789def]" } }
 $script:FakeUnregisterCalls = 0
-Remove-RotatorTaskRollback -ExpectedMarker "$($RotatorTaskMarkerPrefix)-000000000000"
+Remove-RotatorTaskRollback -ExpectedMarker "$($RotatorTaskMarkerPrefix)-000000000000" -ExpectedFingerprint 'abc0123456789def'
 Assert-True -Condition ($script:FakeTasks.ContainsKey('tuxevil-rotator')) -Message 'rollback never removes a task carrying a different ownership marker'
 Assert-True -Condition ($script:FakeUnregisterCalls -eq 0) -Message 'rollback does not call Unregister-ScheduledTask for a mismatched marker'
+$script:FakeTasks = @{ 'tuxevil-rotator' = [pscustomobject]@{ TaskName = 'tuxevil-rotator'; Description = "x [$($RotatorTaskMarkerPrefix)-000000000000:fp=badbadbadbadbadb]" } }
+Remove-RotatorTaskRollback -ExpectedMarker "$($RotatorTaskMarkerPrefix)-000000000000" -ExpectedFingerprint 'abc0123456789def'
+Assert-True -Condition ($script:FakeTasks.ContainsKey('tuxevil-rotator')) -Message 'rollback never removes a task with a mismatched expected fingerprint'
 $script:FakeTasks = @{}; [void](Register-RotatorTask); $script:FakeTasks['tuxevil-rotator'].Description = $script:FakeTasks['tuxevil-rotator'].Description -replace 'fp=[0-9a-f]{16}', 'fp=0000000000000000'
 $script:FakeStartTaskCalls = 0; $script:FakeProcessCalls = 0; [void](Start-RotatorGateway -LogFile 'ignored')
 Assert-True -Condition ($script:FakeStartTaskCalls -eq 0 -and $script:FakeProcessCalls -eq 1) -Message 'an unowned task is not started by the gateway helper'
