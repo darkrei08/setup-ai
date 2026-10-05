@@ -2,7 +2,7 @@
 
 ## 2026-10-05 — Release alignment
 
-GitHub `main` is `1423116`, and `setup-ai` v4.0.0 is released and published. The old dirty branch remains a preserved candidate and is not the release branch. Native Windows/macOS runtime verification is still unavailable. Gentle/Engram integration is pinned globally for agent workflows, but is not committed source.
+GitHub `main` contains the v4.0.0 release line, and `setup-ai` v4.0.0 is released and published. The old dirty branch remains a preserved candidate and is not the release branch. Native Windows/macOS runtime verification is still unavailable. Gentle/Engram integration is pinned globally for agent workflows, but is not committed source.
 
 ## 2026-10-04 — Historical issue #105 review
 

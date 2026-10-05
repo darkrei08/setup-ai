@@ -4,7 +4,7 @@
 `@darkrei08/setup-ai` is a dependency-free cross-platform installer for an AI coding toolchain. It exposes a Node ESM launcher and parallel Bash and PowerShell implementations.
 
 ## Current status
-GitHub `main` is `1423116`, and `setup-ai` v4.0.0 is released and published. The old dirty branch is a preserved candidate, not the release branch. Native Windows/macOS runtime verification remains unavailable. Gentle/Engram integration is pinned globally for agent workflows, but is not committed source.
+GitHub `main` contains the v4.0.0 release line, and `setup-ai` v4.0.0 is released and published. The old dirty branch is a preserved candidate, not the release branch. Native Windows/macOS runtime verification remains unavailable. Gentle/Engram integration is pinned globally for agent workflows, but is not committed source.
 
 ## Architecture & structure
 - `bin/setup-ai.mjs` — Node launcher, OS detection, module menu, and fallback behavior.
