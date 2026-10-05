@@ -1,0 +1,34 @@
+# .ai/manifest.yml — declarative memory manifest
+# Read by `aimem bootstrap`. Human-facing and diffable. No secrets here.
+schema: 1
+
+project:
+  # Canonical Engram project name. Engram derives it from the directory basename
+  # (lowercased); pin it here so a differently-named clone still resolves.
+  engram_name: setup-ai
+
+memory:
+  markdown_root: .ai       # human source of truth (authoritative)
+  engram_chunks: .engram   # machine-readable cache, not source
+
+sync:
+  transport: git           # git (default, offline, zero-infra) | cloud
+  cloud:
+    enabled: false         # opt-in only; see docs/security-privacy.md
+    server: ""             # ENGRAM_CLOUD_SERVER when enabled
+    project: ""            # project slug enrolled with `engram cloud enroll`
+
+# Local, NON-committed state to (re)generate at bootstrap. Put the actual
+# commands as executable scripts in .ai/bootstrap.d/*.sh — this list documents
+# intent so a human knows what will run and why.
+regenerate:
+  - name: engram-cache
+    what: "Rehydrate ~/.engram from available .engram/chunks/"
+    how: "engram sync --import (run automatically by aimem bootstrap)"
+  # - name: codegraph-index
+  #   what: "Local code index for fast symbol lookup"
+  #   how: ".ai/bootstrap.d/10-codegraph.sh"
+
+staleness:
+  # Memory entries older than this are advisory-only; confirm against code.
+  review_after_days: 180
