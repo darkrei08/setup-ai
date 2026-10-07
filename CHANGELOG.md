@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `setup-ai.sh` opencode module now approves and rebuilds opencode-ai's blocked npm 12 postinstall and fails unless `opencode --version` exits 0, matching `setup-ai.ps1` ([#57](https://github.com/darkrei08/setup-ai/issues/57)).
+
 ### Changed
 
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).
