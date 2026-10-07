@@ -56,9 +56,17 @@ const MODULES = [
   { name: "extras",       core: false, category: "Extras", desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
 ];
 
+// Registry entries of the Extras module (ids mirror SKILL_REGISTRY in setup-ai.sh and
+// $SkillRegistry in setup-ai.ps1). Menu-only: picked one by one, passed as --extras.
+const EXTRA_ITEMS = [
+  { extra: true, name: "taste", core: false, category: "Extras", desc: "Taste skill (design-taste-frontend)" },
+  { extra: true, name: "humanizer", core: false, category: "Extras", desc: "Humanizer skill" },
+  { extra: true, name: "heroui", core: false, category: "Extras", desc: "HeroUI skill (heroui-react)" },
+];
+
 // dotenv is Linux-only; drop it from the Windows menu.
 const isWin = process.platform === "win32";
-const menuModules = MODULES.filter((m) => !(isWin && m.name === "dotenv"));
+const menuModules = [...MODULES.filter((m) => !(isWin && m.name === "dotenv")), ...EXTRA_ITEMS];
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
@@ -106,7 +114,7 @@ function runScript(passArgs) {
 }
 
 // Translate a chosen module list into the platform script's flag.
-function toScriptArgs(mode, csv, unattended = false) {
+function toScriptArgs(mode, csv, unattended = false, extras = getVal("--extras")) {
   let args;
   if (isWin) {
     if (mode === "all") args = ["-All"];
@@ -123,6 +131,7 @@ function toScriptArgs(mode, csv, unattended = false) {
     else if (mode === "help") args = ["--help"];
     else args = [];
   }
+  if (extras) args.push(isWin ? "-Extras" : "--extras", extras);
   if (unattended) args.push(isWin ? "-Yes" : "--yes");
   if (has("--verbose") || has("-v")) args.push(isWin ? "-Verbose" : "--verbose");
   if (has("--dry-run")) args.push(isWin ? "-DryRun" : "--dry-run");
@@ -197,9 +206,10 @@ async function main() {
 
   // An unknown flag is a mistake, not a reason to open the module menu: `--verbose`
   // used to be forwarded while the run still turned interactive.
-  const knownFlags = new Set(["--help", "-h", "--list", "--all", "--only", "--yes", "-y", "--verbose", "-v", "--dry-run", "--uninstall", "--purge"]);
+  const knownFlags = new Set(["--help", "-h", "--list", "--all", "--only", "--extras", "--yes", "-y", "--verbose", "-v", "--dry-run", "--uninstall", "--purge"]);
   const unknown = argv.filter((arg, i) => {
     if (arg === "--only" || arg.startsWith("--only=") || argv[i - 1] === "--only") return false;
+    if (arg.startsWith("--extras=") || argv[i - 1] === "--extras") return false;
     return !knownFlags.has(arg);
   });
   if (unknown.length > 0) {
@@ -210,6 +220,18 @@ async function main() {
 
   if (has("--purge") && !has("--uninstall")) {
     console.error("--purge is only valid with --uninstall.");
+    process.exitCode = 2;
+    return;
+  }
+
+  const hasExtras = argv.some((arg) => arg === "--extras" || arg.startsWith("--extras="));
+  if (hasExtras && !getVal("--extras")?.trim()) {
+    console.error("--extras requires a non-empty comma-separated entry list.");
+    process.exitCode = 2;
+    return;
+  }
+  if (hasExtras && has("--uninstall")) {
+    console.error("--extras cannot be combined with --uninstall.");
     process.exitCode = 2;
     return;
   }
@@ -245,7 +267,7 @@ async function main() {
   }
 
   // --verbose and --dry-run ask for output, not for a menu: they run the core set unattended.
-  if (has("--yes") || has("-y") || has("--verbose") || has("-v") || has("--dry-run")) return runScript(toScriptArgs("yes")); // toScriptArgs forwards --dry-run.
+  if (has("--yes") || has("-y") || has("--verbose") || has("-v") || has("--dry-run") || hasExtras) return runScript(toScriptArgs("yes")); // toScriptArgs forwards --dry-run.
 
   // No selection flag: try the interactive menu; fall back cleanly if the
   // terminal/stdin can't drive it (common under some npx/CI shells).
@@ -273,7 +295,12 @@ async function main() {
     console.log("Nothing selected — exiting.");
     process.exit(0);
   }
-  return runScript(toScriptArgs("only", chosen.join(","), unattended));
+  // Items are redundant when the whole extras module is chosen; otherwise they ride on --extras.
+  const itemNames = new Set(EXTRA_ITEMS.map((i) => i.name));
+  const items = chosen.includes("extras") ? [] : chosen.filter((n) => itemNames.has(n));
+  const modules = chosen.filter((n) => !itemNames.has(n));
+  if (items.length && !modules.includes("extras")) modules.push("extras");
+  return runScript(toScriptArgs("only", modules.join(","), unattended, items.join(",")));
 }
 
 main().catch((err) => {

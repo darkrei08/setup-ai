@@ -61,9 +61,9 @@ const nodeExtras = mjs.match(/\{ name: "extras",\s*core: (true|false)/);
 if (!nodeExtras || nodeExtras[1] !== 'false') throw new Error('Node extras must be unchecked by default');
 const bashStage = sh.match(/install_extras_skill\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
 const psStage = ps.match(/function Install-ExtrasSkill \{([\s\S]*?)\n\}/)?.[1] ?? '';
-if (!bashStage.includes('cd "${stage_home}"') || /skills@latest add[^\n]*--global/.test(bashStage) ||
+if (!bashStage.includes('cd "${stage_cwd}"') || !/skills@latest add[^\n]*--global --agent/.test(bashStage) ||
     !bashStage.includes('"${stage_home}/.agents/skills/${skill}"') ||
-    !psStage.includes('Push-Location -LiteralPath $stageHome') || /skills@latest add[^\n]*--global/.test(psStage) ||
+    !psStage.includes('Push-Location -LiteralPath $stageHome') || !/skills@latest add[^\n]*--global --agent/.test(psStage) ||
     !psStage.includes('Join-Path $stageHome ".agents\\\\skills\\\\$Skill"')) {
   throw new Error('extras skills must be staged locally before canonical installation');
 }
@@ -92,7 +92,7 @@ for (const skill of [
   'blader/humanizer', 'humanizer',
   'heroui-inc/heroui', 'heroui-react',
 ]) {
-  if (!bashExtras.includes(skill) || !psExtras.includes(skill)) throw new Error(`Missing extras skill ${skill}`);
+  if (!sh.includes(skill) || !ps.includes(skill)) throw new Error(`Missing extras skill ${skill}`);
 }
 const impeccableInstallArgs = 'impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks';
 if (!bashExtras.includes(impeccableInstallArgs) || !psExtras.includes(impeccableInstallArgs)) {

@@ -134,6 +134,13 @@ The herdr terminal multiplexer, through its official installer.
 
 ## extras *(opt-in)*
 
+Skills come from one declarative registry (`SKILL_REGISTRY` in `setup-ai.sh`,
+`$SkillRegistry` in `setup-ai.ps1`; entries `id|module|source|skills|agents`). Each
+install runs `npx skills@latest add <source> --skill <skill> --global --agent <agent>
+--copy --yes` (extras agents default to `pi`). `--extras taste,humanizer,heroui`
+(`-Extras` on Windows) installs only the chosen entries; `--only extras` installs
+everything below. The menu lists each entry under Extras.
+
 Stages Taste (`design-taste-frontend`), Humanizer, and HeroUI (`heroui-react`) in
 `~/.agents/skills`, the canonical shared-skill root. Existing canonical or
 agent-specific copies and links are preserved when they conflict; matching

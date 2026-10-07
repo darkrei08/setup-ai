@@ -86,16 +86,34 @@ GENTLE_AI_INSTALL="${GENTLE_AI_INSTALL:-https://raw.githubusercontent.com/Gentle
 ENGINEERING_EXCELLENCE_SLUG="${ENGINEERING_EXCELLENCE_SLUG:-darkrei08/Engineering-Excellence}"
 ENGINEERING_EXCELLENCE_SKILL="engineering-excellence"
 
-# Upstream agent-skill stack mirrored from darkrei08/dotenv setup_env.sh so the
-# same skills land on every OS (dotenv itself is Linux-only). Each entry is
-# "<source> <skill> [<skill>...]" installed via `npx skills add`.
-UPSTREAM_SKILL_SOURCES=(
-    "herdrdev/herdr herdr"
-    "mattpocock/skills triage grill-me grilling wayfinder domain-modeling prototype research"
-    "https://github.com/pedronauck/skills typescript-advanced"
-    "humanlayer/skills show-me"
+# Declarative `npx skills add` registry, mirrored in setup-ai.ps1 ($SkillRegistry).
+# Entry: "<id>|<module>|<source>|<skill>[,<skill>...]|<agent>[,<agent>...]".
+# module "skills" is the upstream stack mirrored from darkrei08/dotenv setup_env.sh;
+# its agent "*" means every detected agent. module "extras" entries are selectable one
+# by one (--extras <id>[,<id>...]); their agents must be universal (shared
+# ~/.agents/skills root) because they are staged before the canonical copy.
+# Every install runs: npx skills@latest add <source> --skill <skill> --global --agent <agent> --copy --yes
+SKILL_REGISTRY=(
+    "herdr|skills|herdrdev/herdr|herdr|*"
+    "mattpocock|skills|mattpocock/skills|triage,grill-me,grilling,wayfinder,domain-modeling,prototype,research|*"
+    "pedronauck|skills|https://github.com/pedronauck/skills|typescript-advanced|*"
+    "humanlayer|skills|humanlayer/skills|show-me|*"
+    "taste|extras|Leonxlnx/taste-skill|design-taste-frontend|pi"
+    "humanizer|extras|blader/humanizer|humanizer|pi"
+    "heroui|extras|heroui-inc/heroui|heroui-react|pi"
 )
-UPSTREAM_SKILL_NAMES=(herdr triage grill-me grilling wayfinder domain-modeling prototype research typescript-advanced show-me)
+# Set by --extras: restricts the extras module to these registry ids.
+EXTRAS_ONLY=""
+
+UPSTREAM_SKILL_NAMES=()
+for _entry in "${SKILL_REGISTRY[@]}"; do
+    IFS='|' read -r _id _mod _src _skills _agents <<< "${_entry}"
+    if [[ "${_mod}" == "skills" ]]; then
+        IFS=',' read -r -a _names <<< "${_skills}"
+        UPSTREAM_SKILL_NAMES+=("${_names[@]}")
+    fi
+done
+unset _entry _id _mod _src _skills _agents _names
 
 PI_AGENT_DIR="${PI_CODING_AGENT_DIR:-${HOME}/.pi/agent}"
 PI_EXTENSIONS_DIR="${PI_AGENT_DIR}/extensions"
@@ -2043,15 +2061,19 @@ mod_skills() {
     # pi is created by mod_pi; guarantee at least pi so the stack always lands.
     (( ${#agents[@]} == 0 )) && agents=(pi)
 
-    local source_spec source skill_csv
-    local -a skill_list
-    for source_spec in "${UPSTREAM_SKILL_SOURCES[@]}"; do
-        source="${source_spec%% *}"
-        skill_csv="${source_spec#* }"
-        # The script keeps global IFS at newline/tab for safe line reads;
-        # explicitly restore spaces for this space-separated skill list.
-        IFS=' ' read -r -a skill_list <<< "${skill_csv}"
-        for agent in "${agents[@]}"; do
+    local entry entry_module source skill_csv agent_csv
+    local -a skill_list entry_agents
+    for entry in "${SKILL_REGISTRY[@]}"; do
+        IFS='|' read -r _ entry_module source skill_csv agent_csv <<< "${entry}"
+        [[ "${entry_module}" == "skills" ]] || continue
+        IFS=',' read -r -a skill_list <<< "${skill_csv}"
+        # "*" means every detected agent; anything else is the entry's own list.
+        if [[ "${agent_csv}" == "*" ]]; then
+            entry_agents=("${agents[@]}")
+        else
+            IFS=',' read -r -a entry_agents <<< "${agent_csv}"
+        fi
+        for agent in "${entry_agents[@]}"; do
             run_cmd "skills" \
                 npx --yes skills@latest add "${source}" \
                 --skill "${skill_list[@]}" --global --agent "${agent}" --copy --yes </dev/null
@@ -3528,17 +3550,21 @@ export GOPATH="$HOME/go"
 export PATH="$BUN_INSTALL/bin:$HOME/.pi/bin:$HOME/.local/bin:$GOPATH/bin:$HOME/.cargo/bin:$PATH"'
 
 install_extras_skill() {
-    local source="$1" skill="$2"
+    local source="$1" skill="$2" agent="$3"
     local stage_home="${TMP_DIR}/extras-${skill}"
     local staged="${stage_home}/.agents/skills/${skill}" canonical="${HOME}/.agents/skills"
     local target="${canonical}/${skill}"
 
+    local stage_cwd="${stage_home}"
+    # A dry run creates no stage directory, so it plans the install from the current one.
+    (( DRY_RUN == 1 )) && stage_cwd="${PWD}"
     run_cmd "extras" mkdir -p "${stage_home}"
     (
-        cd "${stage_home}"
+        cd "${stage_cwd}"
         run_cmd "extras" env HOME="${stage_home}" USERPROFILE="${stage_home}" \
-            npx --yes skills@latest add "${source}" --skill "${skill}" --agent codex --copy --yes </dev/null
+            npx --yes skills@latest add "${source}" --skill "${skill}" --global --agent "${agent}" --copy --yes </dev/null
     )
+    (( DRY_RUN == 1 )) && return 0
     [[ -f "${staged}/SKILL.md" ]] || {
         log_event "ERROR" "extras" "skill_missing" "Staged skill has no SKILL.md" 1 "path=${staged}"
         return 1
@@ -3558,7 +3584,7 @@ install_extras_skill() {
         return 0
     fi
     run_cmd "extras" cp -R "${staged}" "${target}"
-    if ! diff -qr "${staged}" "${target}" >/dev/null; then
+    if [[ ! -f "${target}/SKILL.md" ]] || ! diff -qr "${staged}" "${target}" >/dev/null; then
         log_event "ERROR" "extras" "skill_copy_unverified" \
             "Copied skill differs from the staged source" 1 "path=${target}"
         return 1
@@ -3694,35 +3720,48 @@ install_cli_anything() {
     log_event "INFO" "extras" "cli_anything_installed" "CLI-Anything Pi extension installed at the pin" 0 "path=${target};ref=${CLI_ANYTHING_REF}"
 }
 
+# Installs the registry's extras entries (all, or only the ids in EXTRAS_ONLY).
+install_extras_registry() {
+    local entry id entry_module source skill_csv agent_csv skill agent
+    local -a skill_list agent_list
+    for entry in "${SKILL_REGISTRY[@]}"; do
+        IFS='|' read -r id entry_module source skill_csv agent_csv <<< "${entry}"
+        [[ "${entry_module}" == "extras" ]] || continue
+        [[ -z "${EXTRAS_ONLY}" || ",${EXTRAS_ONLY}," == *",${id},"* ]] || continue
+        IFS=',' read -r -a skill_list <<< "${skill_csv}"
+        IFS=',' read -r -a agent_list <<< "${agent_csv}"
+        for skill in "${skill_list[@]}"; do
+            for agent in "${agent_list[@]}"; do
+                install_extras_skill "${source}" "${skill}" "${agent}"
+            done
+            if (( DRY_RUN == 1 )); then
+                dry_run_note "extras" "link ${skill} from ${HOME}/.agents/skills into the five agent roots"
+            else
+                link_extras_skill "${skill}"
+            fi
+        done
+    done
+}
+
 mod_extras() {
     section "Optional shared skills and tools"
+    if (( DRY_RUN == 0 )); then
+        require_command node
+        require_command npx
+        [[ -n "${EXTRAS_ONLY}" ]] || { require_command npm; require_command git; }
+    fi
+    install_extras_registry
+    # --extras narrows the module to the chosen registry entries.
+    [[ -z "${EXTRAS_ONLY}" ]] || return 0
+
+    run_cmd "extras" npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks </dev/null
+    run_cmd "extras" npx --yes hyperframes skills update </dev/null
     if (( DRY_RUN == 1 )); then
-        dry_run_note "extras" "stage Taste, Humanizer, and HeroUI under ${HOME}/.agents/skills and link the five agent roots"
-        run_cmd "extras" npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks </dev/null
-        run_cmd "extras" npx --yes hyperframes skills update </dev/null
         run_cmd "extras" npm install -g typescript-express-starter
         run_cmd "extras" npm install -g @alibaba-group/open-code-review
         dry_run_note "extras" "copy CLI-Anything ${CLI_ANYTHING_REF} .pi-extension/cli-anything into ${PI_EXTENSIONS_DIR}/cli-anything with an ownership marker"
         return 0
     fi
-    require_command node
-    require_command npx
-    require_command npm
-    require_command git
-
-    local spec source skill
-    for spec in \
-        "Leonxlnx/taste-skill design-taste-frontend" \
-        "blader/humanizer humanizer" \
-        "heroui-inc/heroui heroui-react"; do
-        source="${spec%% *}"
-        skill="${spec#* }"
-        install_extras_skill "${source}" "${skill}"
-        link_extras_skill "${skill}"
-    done
-
-    run_cmd "extras" npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks </dev/null
-    run_cmd "extras" npx --yes hyperframes skills update </dev/null
     install_extras_global_package typescript-express-starter
     install_extras_global_package @alibaba-group/open-code-review
     install_cli_anything
@@ -4352,7 +4391,7 @@ print_list() {
         if module_is_optional "${m}"; then tag="optional"; else tag="core    "; fi
         printf '  [%s] %-14s %s\n' "${tag}" "${m}" "$(module_desc "${m}")"
     done
-    printf '\nUse: --only <csv> | --all | --dry-run | --verbose | (default = core)\n'
+    printf '\nUse: --only <csv> | --extras <ids> | --all | --dry-run | --verbose | (default = core)\n'
     printf 'Lifecycle: --dry-run (plan only) | --uninstall [--yes] [--purge] [--only <csv>]\n'
 }
 
@@ -4376,7 +4415,7 @@ print_help() {
 }
 
 parse_args() {
-    local mode="default" only_csv="" all_requested=0
+    local mode="default" only_csv="" all_requested=0 extras_csv="" extras_given=0
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --all)        mode="all"; all_requested=1; shift ;;
@@ -4385,6 +4424,11 @@ parse_args() {
                 mode="only"; only_csv="$2"; shift 2
                 ;;
             --only=*)     mode="only"; only_csv="${1#*=}"; shift ;;
+            --extras)
+                [[ $# -ge 2 ]] || { printf '%s\n' '--extras requires a non-empty comma-separated entry list.' >&2; exit 2; }
+                extras_csv="$2"; extras_given=1; shift 2
+                ;;
+            --extras=*)   extras_csv="${1#*=}"; extras_given=1; shift ;;
             --yes|-y)     NONINTERACTIVE=1; UNINSTALL_YES=1; shift ;;
             --dry-run)    DRY_RUN=1; shift ;;
             --uninstall)  UNINSTALL=1; shift ;;
@@ -4402,6 +4446,34 @@ parse_args() {
     if (( UNINSTALL_PURGE == 1 && UNINSTALL == 0 )); then
         printf '%s\n' '--purge is only valid with --uninstall.' >&2
         exit 2
+    fi
+
+    if (( extras_given == 1 )); then
+        (( all_requested == 0 )) || { printf '%s\n' '--extras cannot be combined with --all.' >&2; exit 2; }
+        (( UNINSTALL == 0 )) || { printf '%s\n' '--extras cannot be combined with --uninstall.' >&2; exit 2; }
+        local ex ex_entry ex_id ex_mod known ex_clean=""
+        local -a ex_raw
+        IFS=',' read -r -a ex_raw <<< "${extras_csv}"
+        for ex in "${ex_raw[@]}"; do
+            ex="${ex#"${ex%%[![:space:]]*}"}"
+            ex="${ex%"${ex##*[![:space:]]}"}"
+            [[ -z "${ex}" ]] && continue
+            known=0
+            for ex_entry in "${SKILL_REGISTRY[@]}"; do
+                IFS='|' read -r ex_id ex_mod _ <<< "${ex_entry}"
+                [[ "${ex_mod}" == "extras" && "${ex}" == "${ex_id}" ]] && known=1
+            done
+            (( known == 1 )) || { printf 'Unknown extras entry: %s\n' "${ex}" >&2; exit 2; }
+            ex_clean="${ex_clean:+${ex_clean},}${ex}"
+        done
+        [[ -n "${ex_clean}" ]] || { printf '%s\n' '--extras requires a non-empty comma-separated entry list.' >&2; exit 2; }
+        EXTRAS_ONLY="${ex_clean}"
+        if [[ "${mode}" == "default" ]]; then
+            mode="only"; only_csv="extras"
+        else
+            [[ -n "${only_csv//[[:space:],]/}" ]] || { printf '%s\n' '--only requires a non-empty comma-separated module list.' >&2; exit 2; }
+            only_csv="${only_csv},extras"
+        fi
     fi
 
     local requested=()
