@@ -37,7 +37,7 @@ Three details worth knowing:
 
 - **Use the npm package above.** `npx github:darkrei08/setup-ai` also works, but many npm setups block git fetches (`EALLOWGIT`); the published package avoids that. Run it from any folder except the repo's own source dir.
 - **Windows PowerShell 7.3+**: one command per line (no bash `\`). If node or git was just installed, open a **new terminal** so PATH refreshes.
-- **What it does**: detects your OS and runs `setup-ai.sh` (macOS/Linux) or `setup-ai.ps1` (Windows). Each module and command is shown with live output, so prompts such as `sudo` remain visible; `--list` shows modules; menu keys: arrows/`j`/`k` move · Space toggle · `a` all · Enter.
+- **What it does**: detects your OS and runs `setup-ai.sh` (macOS/Linux) or `setup-ai.ps1` (Windows). Each module and command is shown with live output, so prompts such as `sudo` remain visible; `--list` shows modules; menu: pick a preset (Core, Everything, Custom, Minimal), drill into categories with Enter, then confirm the summary; keys: arrows/`j`/`k` move · Space toggle · `a` all/none · Esc back · `q` quit.
 - **Lifecycle flags**: `--dry-run` writes nothing, never prompts, and discards its log/report when the plan ends. `--uninstall` prints the inventory first and requires `--yes`; destructive items additionally require `--purge`. The uninstall path never touches `~/.pi/agent/auth.json` or `~/.pi/agent/sessions/`.
 
 ### npm vs npx
