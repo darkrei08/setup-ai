@@ -403,11 +403,19 @@ function Test-Cmd { param([string]$Name) [bool](Get-Command $Name -ErrorAction S
 
 function Resolve-GentleAiCli {
     if (Test-Cmd gentle-ai) { return }
-    $directory = Join-Path $env:LOCALAPPDATA "gentle-ai\bin"
-    $binary = Join-Path $directory "gentle-ai.exe"
-    if (Test-Path -LiteralPath $binary -PathType Leaf) {
-        $env:Path = "$directory;$env:Path"
-        Write-Log INFO "gentle-ai" "cli_resolved" "Resolved gentle-ai CLI outside PATH" 0 "directory=$directory"
+    # The vendor install.ps1 uses `go install` (GOBIN, else GOPATH\bin, else the default
+    # %USERPROFILE%\go\bin); the legacy %LOCALAPPDATA% layout is kept for older installs.
+    $candidates = @($env:GOBIN)
+    $candidates += @($env:GOPATH -split [IO.Path]::PathSeparator | Where-Object { $_ } | ForEach-Object { Join-Path $_ "bin" })
+    if ($env:USERPROFILE) { $candidates += Join-Path $env:USERPROFILE "go\bin" }
+    if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA "gentle-ai\bin" }
+    foreach ($directory in ($candidates | Where-Object { $_ })) {
+        $binary = Join-Path $directory "gentle-ai.exe"
+        if (Test-Path -LiteralPath $binary -PathType Leaf) {
+            $env:Path = "$directory;$env:Path"
+            Write-Log INFO "gentle-ai" "cli_resolved" "Resolved gentle-ai CLI outside PATH" 0 "directory=$directory"
+            return
+        }
     }
 }
 

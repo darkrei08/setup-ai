@@ -1,5 +1,9 @@
 # Change & refactor log
 
+## 2026-10-06 — Issue #83 Windows gentle-ai resolver
+
+`Resolve-GentleAiCli` now probes `GOBIN`, `GOPATH\bin`, `%USERPROFILE%\go\bin` (where the vendor `go install` writes) before the legacy `%LOCALAPPDATA%\gentle-ai\bin`. Covered by `tests/gentle-ai-cli-resolution-pwsh.sh` (Linux pwsh). Native Windows verification not run.
+
 ## 2026-10-05 — Release alignment
 
 GitHub `main` contains the v4.0.0 release line, and `setup-ai` v4.0.0 is released and published. The old dirty branch remains a preserved candidate and is not the release branch. Native Windows/macOS runtime verification is still unavailable. Gentle/Engram integration is pinned globally for agent workflows, but is not committed source.
