@@ -17,6 +17,8 @@ $script:RunningServices = @()
 $script:ProjectIds = @()
 $script:WorkingDirs = @()
 function Test-Cmd { param([string]$Name) return ($Name -ne 'docker' -or $script:FakeDockerAvailable) }
+$script:Restricted = @()
+function icacls { $script:Restricted += ,($args -join ' '); $global:LASTEXITCODE = 0 }
 function docker {
     $call = $args -join ' '
     $script:Calls += ,$call
@@ -37,15 +39,43 @@ function Invoke-Step {
 }
 
 $TestDir = Join-Path ([IO.Path]::GetTempPath()) ([guid]::NewGuid().ToString('N'))
-$script:DotenvDir = $TestDir
+$ScriptDir = $RepoRoot
 $env:CLIPROXYAPI_DIR = Join-Path $TestDir 'cliproxyapi'
 $script:PostInstallActions = @()
 $script:HumanLog = Join-Path $TestDir 'human.log'
 New-Item -ItemType Directory -Path $TestDir | Out-Null
 try {
-    # Missing configuration is reported without invoking Docker.
+    # An absent directory is seeded with local example templates without invoking Docker;
+    # a second run never overwrites what the user edited.
     Mod-Cliproxyapi
-    if ($script:Calls.Count -ne 0 -or -not ($script:Events -match '^configuration_missing\|')) { throw 'Missing configuration was not safely skipped' }
+    if ($script:Calls.Count -ne 0 -or -not ($script:Events -match '^configuration_seeded\|')) { throw 'Missing configuration was not safely seeded' }
+    foreach ($f in 'docker-compose.yml', 'config.yaml', 'keeper.env') {
+        if (-not (Test-Path -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR $f))) { throw "$f was not seeded" }
+    }
+    if (-not (Select-String -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml') -Pattern 'REPLACE_WITH' -Quiet)) { throw 'Seeded config lost its placeholders' }
+    if (@($script:Restricted).Count -ne 2) { throw "Credential files were not restricted: $($script:Restricted -join '; ')" }
+    Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml') -Value 'edited'
+    $script:Events = @()
+    Mod-Cliproxyapi
+    if ((Get-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml')) -ne 'edited') { throw 'Seeding overwrote a user file' }
+    if ($script:Events -match '^configuration_seeded\|') { throw 'Nothing was missing but seeding ran' }
+    Remove-Item -LiteralPath $env:CLIPROXYAPI_DIR -Recurse -Force
+
+    # The Git-backed layout is selectable and seeds a single .env with placeholders.
+    $env:CLIPROXYAPI_STORAGE = 'gitstore'
+    Mod-Cliproxyapi
+    if (-not (Select-String -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR '.env') -Pattern 'YOUR_USER' -Quiet)) { throw 'Gitstore .env was not seeded' }
+    if (Test-Path -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml')) { throw 'Gitstore seeded local files' }
+    Remove-Item Env:CLIPROXYAPI_STORAGE
+    # A directory that only has .env is detected as gitstore without any variable.
+    Mod-Cliproxyapi
+    if (Test-Path -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml')) { throw '.env-only directory was treated as local' }
+    Remove-Item -LiteralPath $env:CLIPROXYAPI_DIR -Recurse -Force
+    $env:CLIPROXYAPI_STORAGE = 'bogus'
+    try { Mod-Cliproxyapi; throw 'Invalid storage was accepted' } catch { if ($_.Exception.Message -eq 'Invalid storage was accepted') { throw } }
+    Remove-Item Env:CLIPROXYAPI_STORAGE
+    $script:Calls = @()
+    $script:Events = @()
 
     New-Item -ItemType Directory -Path $env:CLIPROXYAPI_DIR | Out-Null
     Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'docker-compose.yml') -Value 'services: {}'
@@ -119,4 +149,5 @@ try {
 } finally {
     Remove-Item -LiteralPath $TestDir -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:CLIPROXYAPI_DIR -ErrorAction SilentlyContinue
+    Remove-Item Env:CLIPROXYAPI_STORAGE -ErrorAction SilentlyContinue
 }

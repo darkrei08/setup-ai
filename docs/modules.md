@@ -220,10 +220,24 @@ The cockpit-tools desktop GUI app (CC BY-NC-SA).
 
 ## cliproxyapi *(opt-in)*
 
-Validates and starts the existing dotenv `cliproxyapi/docker-compose.yml` stack,
-which runs CLIProxyAPI and CPA Usage Keeper together. It requires configured
-`config.yaml` and `keeper.env`; setup-ai never creates or overwrites either file
-or their credentials. Once configured, it runs `docker compose config -q`,
+Sets up a Docker Compose stack that runs CLIProxyAPI and CPA Usage Keeper together,
+in `~/.config/setup-ai/cliproxyapi` (override with `CLIPROXYAPI_DIR`). On the first
+run it copies generic example templates from `templates/cliproxyapi/` for the
+missing files only and stops, so you can replace every `REPLACE_WITH` value.
+Setup-ai never generates credentials and never overwrites an existing file; copied
+files are mode 600. Two layouts are offered through `CLIPROXYAPI_STORAGE`:
+
+- `local` (default): `config.yaml` and `keeper.env` plus an `auths/` directory next to
+  the compose file. Works immediately, no GitHub account needed.
+- `gitstore`: a single `.env` pointing at your own empty private Git repo, where
+  CLIProxyAPI keeps `config.yaml` and linked OAuth accounts (it needs a fine-grained
+  token with Contents read/write on that repo only). A directory that already has only
+  a `.env` is treated as `gitstore`.
+
+Link provider accounts afterwards in the management panel at
+`http://127.0.0.1:8317/management.html`, or with
+`docker compose exec cli-proxy-api ./CLIProxyAPI -codex-login -no-browser`.
+Once the files have no example values, it runs `docker compose config -q`,
 `docker compose up -d`, and verifies both services are running with
 `docker compose ps --status running --services`. Missing Docker/Compose or
 configuration is logged with setup guidance. `--dry-run` does

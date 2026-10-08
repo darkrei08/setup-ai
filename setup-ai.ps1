@@ -2719,32 +2719,67 @@ function Mod-Extras {
 
 function Mod-Cliproxyapi {
     $phase = 'cliproxyapi'
-    Write-Log INFO $phase 'start' 'CLIProxyAPI plus CPA Usage Keeper'
-    $composeDir = if ($env:CLIPROXYAPI_DIR) { $env:CLIPROXYAPI_DIR } else { Join-Path $DotenvDir 'cliproxyapi' }
+    Write-Log INFO $phase 'start' 'CLIProxyAPI + CPA Usage Keeper'
+    # Never read another person's stack by default: templates are seeded into a user-owned directory.
+    $composeDir = if ($env:CLIPROXYAPI_DIR) { $env:CLIPROXYAPI_DIR } else { Join-Path $HOME '.config\setup-ai\cliproxyapi' }
     $composeFile = Join-Path $composeDir 'docker-compose.yml'
-    $cpaConfig = Join-Path $composeDir 'config.yaml'
-    $keeperEnv = Join-Path $composeDir 'keeper.env'
+    # local = config.yaml + keeper.env files; gitstore = .env pointing at the user's private Git repo.
+    # An existing directory that only has .env (for example a cliproxy-stack checkout) is gitstore.
+    $storage = $env:CLIPROXYAPI_STORAGE
+    if (-not $storage) {
+        $storage = if ((Test-Path -LiteralPath (Join-Path $composeDir '.env') -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $composeDir 'config.yaml') -PathType Leaf)) { 'gitstore' } else { 'local' }
+    }
+    switch ($storage) {
+        'local' { $templates = @('docker-compose.yml', 'config.example.yaml', 'keeper.env.example'); $targets = @('docker-compose.yml', 'config.yaml', 'keeper.env') }
+        'gitstore' { $templates = @('docker-compose.yml', '.env.example'); $targets = @('docker-compose.yml', '.env') }
+        default {
+            Write-Log ERROR $phase 'storage_invalid' 'CLIPROXYAPI_STORAGE must be local or gitstore' 1 "value=$storage"
+            throw 'CLIPROXYAPI_STORAGE must be local or gitstore'
+        }
+    }
+    $configFiles = @($targets | Where-Object { $_ -ne 'docker-compose.yml' } | ForEach-Object { Join-Path $composeDir $_ })
 
-    if (-not (Test-Path -LiteralPath $composeFile -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $cpaConfig -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $keeperEnv -PathType Leaf)) {
-        Write-Log WARN $phase 'configuration_missing' 'The dotenv CLIProxyAPI stack is not configured; setup-ai does not create credentials' 0 "directory=$composeDir"
-        $script:PostInstallActions += "cliproxyapi: copy config.example.yaml and keeper.env.example into $composeDir, set private keys, then rerun setup-ai -Only cliproxyapi"
+    # Seed only what is missing; existing files are never overwritten. Seeded files keep example
+    # placeholders, so nothing starts until the user replaces them.
+    $seeded = $false
+    for ($i = 0; $i -lt $targets.Count; $i++) {
+        $target = Join-Path $composeDir $targets[$i]
+        if (-not (Test-Path -LiteralPath $target)) {
+            $source = Join-Path $ScriptDir "templates\cliproxyapi\$storage\$($templates[$i])"
+            $isCredentialFile = $targets[$i] -ne 'docker-compose.yml'
+            Invoke-Step -Phase $phase -Action {
+                New-Item -ItemType Directory -Path $composeDir -Force | Out-Null
+                Copy-Item -LiteralPath $source -Destination $target
+            }
+            # Mirrors Bash chmod 600: drop inherited ACLs so only the current user can read credential files.
+            if ($isCredentialFile) {
+                if (Test-Cmd icacls) {
+                    Invoke-Step -Phase $phase -Action { icacls $target /inheritance:r /grant:r "${env:USERNAME}:(R,W)" }
+                } else {
+                    Write-Log WARN $phase 'permissions_unrestricted' 'icacls is unavailable; the credential file keeps inherited permissions' 0 "path=$target"
+                }
+            }
+            $seeded = $true
+        }
+    }
+    if ($seeded) {
+        Write-Log WARN $phase 'configuration_seeded' "Example $storage templates were copied; setup-ai does not create credentials" 0 "directory=$composeDir"
+        $script:PostInstallActions += "cliproxyapi: replace every REPLACE_WITH value in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi (default layout is local files; set CLIPROXYAPI_STORAGE=gitstore to keep settings and accounts in your own private Git repo instead)"
         return
     }
     if (-not (Test-Cmd docker)) {
-        Write-Log WARN $phase 'docker_missing' 'Docker is required for CLIProxyAPI plus CPA Usage Keeper; nothing was installed'
-        $script:PostInstallActions += "cliproxyapi: install Docker Desktop, configure $composeDir\config.yaml and keeper.env, then rerun setup-ai -Only cliproxyapi"
+        Write-Log WARN $phase 'docker_missing' 'Docker is required for CLIProxyAPI + CPA Usage Keeper; nothing was started'
+        $script:PostInstallActions += "cliproxyapi: install Docker Desktop/Engine, configure $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
         return
     }
     if (-not (Invoke-Step -Phase $phase -Optional -Verify -Action { docker compose version })) {
-        Write-Log WARN $phase 'compose_missing' 'Docker Compose v2 is required for CLIProxyAPI plus CPA Usage Keeper; nothing was started'
-        $script:PostInstallActions += "cliproxyapi: install Docker Compose v2, configure $composeDir\config.yaml and keeper.env, then rerun setup-ai -Only cliproxyapi"
+        Write-Log WARN $phase 'compose_missing' 'Docker Compose v2 is required for CLIProxyAPI + CPA Usage Keeper; nothing was started'
+        $script:PostInstallActions += "cliproxyapi: install Docker Compose v2, configure $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
         return
     }
-    if (Select-String -LiteralPath @($cpaConfig, $keeperEnv) -Pattern 'REPLACE_WITH|replace-with|^LOGIN_PASSWORD\s*=\s*$' -Quiet) {
+    if (Select-String -LiteralPath $configFiles -Pattern 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)\s*=\s*$' -CaseSensitive -Quiet) {
         Write-Log WARN $phase 'configuration_placeholder' 'CLIProxyAPI and Keeper still contain example credentials; nothing was started' 0 "directory=$composeDir"
-        $script:PostInstallActions += "cliproxyapi: replace example values in $cpaConfig and $keeperEnv, then rerun setup-ai -Only cliproxyapi"
+        $script:PostInstallActions += "cliproxyapi: replace example values in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
         return
     }
     Invoke-Step -Phase $phase -Action { docker compose --project-directory $composeDir -f $composeFile config -q }

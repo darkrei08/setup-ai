@@ -12,7 +12,7 @@ eval "${function_source}"
 eval "${capture_source}"
 
 DRY_RUN=0
-DOTENV_DIR="${TEST_DIR}/dotenv"
+SCRIPT_DIR="${ROOT}"
 CLIPROXYAPI_DIR="${TEST_DIR}/stack"
 POST_INSTALL_ACTIONS=()
 HUMAN_LOG="${TEST_DIR}/human.log"
@@ -56,10 +56,37 @@ run_cmd() {
     "${@}"
 }
 
-# Missing config must be a warning, not a Docker invocation or setup failure.
+# An empty directory is seeded with local example templates: placeholders, private modes,
+# no Docker invocation, and a second run never overwrites what the user edited.
 mod_cliproxyapi
 [[ ! -s "${DOCKER_CALLS}" ]] || { echo 'FAIL: Docker ran without a configured stack' >&2; exit 1; }
-grep -q 'configuration_missing' "${HUMAN_LOG}" || { echo 'FAIL: missing stack was not logged' >&2; exit 1; }
+grep -q 'configuration_seeded' "${HUMAN_LOG}" || { echo 'FAIL: seeding was not logged' >&2; exit 1; }
+for f in docker-compose.yml config.yaml keeper.env; do
+    [[ -f "${CLIPROXYAPI_DIR}/${f}" ]] || { echo "FAIL: ${f} was not seeded" >&2; exit 1; }
+done
+command grep -q 'REPLACE_WITH' "${CLIPROXYAPI_DIR}/config.yaml" "${CLIPROXYAPI_DIR}/keeper.env" || { echo 'FAIL: seeded files lost their placeholders' >&2; exit 1; }
+[[ "$(stat -c %a "${CLIPROXYAPI_DIR}/config.yaml" 2>/dev/null || stat -f %Lp "${CLIPROXYAPI_DIR}/config.yaml")" == 600 ]] || { echo 'FAIL: seeded config is not private' >&2; exit 1; }
+printf 'edited\n' > "${CLIPROXYAPI_DIR}/config.yaml"
+: > "${HUMAN_LOG}"
+mod_cliproxyapi
+[[ "$(cat "${CLIPROXYAPI_DIR}/config.yaml")" == edited ]] || { echo 'FAIL: seeding overwrote a user file' >&2; exit 1; }
+if grep -q 'configuration_seeded' "${HUMAN_LOG}"; then echo 'FAIL: nothing was missing but seeding ran' >&2; exit 1; fi
+rm -f "${CLIPROXYAPI_DIR}"/*
+: > "${DOCKER_CALLS}"
+
+# The Git-backed layout is selectable and seeds a single .env with placeholders.
+CLIPROXYAPI_STORAGE=gitstore mod_cliproxyapi
+command grep -q 'YOUR_USER' "${CLIPROXYAPI_DIR}/.env" || { echo 'FAIL: gitstore .env was not seeded' >&2; exit 1; }
+[[ ! -e "${CLIPROXYAPI_DIR}/config.yaml" ]] || { echo 'FAIL: gitstore seeded local files' >&2; exit 1; }
+[[ ! -s "${DOCKER_CALLS}" ]] || { echo 'FAIL: Docker ran for a seeded gitstore layout' >&2; exit 1; }
+# A directory that only has .env is detected as gitstore without any variable.
+: > "${HUMAN_LOG}"
+mod_cliproxyapi
+[[ ! -e "${CLIPROXYAPI_DIR}/config.yaml" ]] || { echo 'FAIL: .env-only directory was treated as local' >&2; exit 1; }
+rm -f "${CLIPROXYAPI_DIR}/.env" "${CLIPROXYAPI_DIR}/docker-compose.yml"
+if CLIPROXYAPI_STORAGE=bogus mod_cliproxyapi; then echo 'FAIL: invalid storage was accepted' >&2; exit 1; fi
+grep -q 'storage_invalid' "${HUMAN_LOG}" || { echo 'FAIL: invalid storage was not logged' >&2; exit 1; }
+: > "${DOCKER_CALLS}"
 
 # Dry-run must not invoke Docker, even when configuration files are present.
 cat > "${CLIPROXYAPI_DIR}/docker-compose.yml" <<'EOF'

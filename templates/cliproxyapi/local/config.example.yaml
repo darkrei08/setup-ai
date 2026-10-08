@@ -1,0 +1,19 @@
+# Example CLIProxyAPI settings. setup-ai copies this to config.yaml and never edits it again.
+# Replace every REPLACE_WITH value with a long random string, for example: openssl rand -hex 32
+host: "0.0.0.0"
+port: 8317
+auth-dir: "/root/.cli-proxy-api"
+
+# Keys your tools (Pi, opencode, Codex...) send to this proxy.
+api-keys:
+  - "REPLACE_WITH_A_LONG_RANDOM_CLIENT_KEY"
+
+debug: false
+
+# Password of the management panel at http://127.0.0.1:8317/management.html
+remote-management:
+  allow-remote: true
+  secret-key: "REPLACE_WITH_A_LONG_RANDOM_MANAGEMENT_KEY"
+
+usage-statistics-enabled: true
+ws-auth: true
