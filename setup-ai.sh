@@ -4230,7 +4230,7 @@ uninstall_print_not_covered() {
         "${PI_AGENT_DIR}" "${DOTENV_DIR}"
     printf '  - cockpit .deb/.rpm installs and macOS brew --cask installs belong to their package manager; only the AppImage is catalogued.\n'
     printf '  - legacy rotator cleanup removes only the receipted Pi registration and exact setup-ai-generated systemd unit; unreceipted npm installs and ~/.tuxevil-rotator user data are preserved.\n'
-    printf '  - CLIProxyAPI / CPA Usage Keeper containers and data are left in place; cliproxyapi only starts the existing dotenv Compose stack.\n'
+    printf '  - CLIProxyAPI / CPA Usage Keeper containers and data are left in place; cliproxyapi only seeds templates in ~/.config/setup-ai/cliproxyapi and starts the Compose stack.\n'
     printf '  - the opencode vendor installer shell-rc line belongs to the vendor, not this catalog.\n'
     printf "  - Claude Code's vendor installer owns its native launcher and user configuration under %s; setup-ai never removes that auth/config state.\\n" "${HOME}/.claude"
     printf '  - extras: the shared skills, Impeccable files, and HyperFrames skill updates are left in place; global packages and %s/cli-anything are removed only with an exact setup-ai ownership marker.\n' \
