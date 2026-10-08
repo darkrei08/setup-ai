@@ -3282,43 +3282,73 @@ mod_cockpit() {
 # --- CLIProxyAPI + CPA Usage Keeper (opt-in) -------------------------------
 mod_cliproxyapi() {
     section "CLIProxyAPI + CPA Usage Keeper"
-    local compose_dir="${CLIPROXYAPI_DIR:-${DOTENV_DIR}/cliproxyapi}"
+    # Never read another person's stack by default: templates are seeded into a user-owned directory.
+    local compose_dir="${CLIPROXYAPI_DIR:-${HOME}/.config/setup-ai/cliproxyapi}"
     local compose_file="${compose_dir}/docker-compose.yml"
-    local cpa_config="${compose_dir}/config.yaml"
-    local keeper_env="${compose_dir}/keeper.env"
+    # local = config.yaml + keeper.env files; gitstore = .env pointing at the user's private Git repo.
+    # An existing directory that only has .env (for example a cliproxy-stack checkout) is gitstore.
+    local storage="${CLIPROXYAPI_STORAGE:-}"
+    if [[ -z "${storage}" ]]; then
+        if [[ -f "${compose_dir}/.env" && ! -f "${compose_dir}/config.yaml" ]]; then storage="gitstore"; else storage="local"; fi
+    fi
+    local -a templates targets
+    case "${storage}" in
+        local) templates=(docker-compose.yml config.example.yaml keeper.env.example); targets=(docker-compose.yml config.yaml keeper.env) ;;
+        gitstore) templates=(docker-compose.yml .env.example); targets=(docker-compose.yml .env) ;;
+        *)
+            log_event "ERROR" "cliproxyapi" "storage_invalid" \
+                "CLIPROXYAPI_STORAGE must be local or gitstore" 1 "value=${storage}"
+            return 1
+            ;;
+    esac
+    local -a config_files=()
+    local i seeded=0
+    for i in "${!targets[@]}"; do
+        if [[ "${targets[i]}" != "docker-compose.yml" ]]; then config_files+=("${compose_dir}/${targets[i]}"); fi
+    done
 
     if (( DRY_RUN == 1 )); then
-        dry_run_note "cliproxyapi" "validate and start ${compose_file} with Docker Compose"
+        dry_run_note "cliproxyapi" "seed missing ${storage} templates, then validate and start ${compose_file} with Docker Compose"
         return 0
     fi
-    if [[ ! -f "${compose_file}" || ! -f "${cpa_config}" || ! -f "${keeper_env}" ]]; then
-        log_event "WARN" "cliproxyapi" "configuration_missing" \
-            "The dotenv CLIProxyAPI stack is not configured; setup-ai does not create credentials" 0 \
+    # Seed only what is missing; existing files are never overwritten. Seeded files keep example
+    # placeholders, so nothing starts until the user replaces them.
+    for i in "${!targets[@]}"; do
+        if [[ ! -e "${compose_dir}/${targets[i]}" ]]; then
+            run_cmd "cliproxyapi" mkdir -p "${compose_dir}"
+            run_cmd "cliproxyapi" cp "${SCRIPT_DIR}/templates/cliproxyapi/${storage}/${templates[i]}" "${compose_dir}/${targets[i]}"
+            if [[ "${targets[i]}" != "docker-compose.yml" ]]; then run_cmd "cliproxyapi" chmod 600 "${compose_dir}/${targets[i]}"; fi
+            seeded=1
+        fi
+    done
+    if (( seeded == 1 )); then
+        log_event "WARN" "cliproxyapi" "configuration_seeded" \
+            "Example ${storage} templates were copied; setup-ai does not create credentials" 0 \
             "directory=${compose_dir}"
-        POST_INSTALL_ACTIONS+=("cliproxyapi: copy config.example.yaml and keeper.env.example into ${compose_dir}, set private keys, then rerun setup-ai --only cliproxyapi")
+        POST_INSTALL_ACTIONS+=("cliproxyapi: replace every REPLACE_WITH value in ${config_files[*]}, then rerun setup-ai --only cliproxyapi (default layout is local files; set CLIPROXYAPI_STORAGE=gitstore to keep settings and accounts in your own private Git repo instead)")
         return 0
     fi
     if ! command -v docker >/dev/null 2>&1; then
         log_event "WARN" "cliproxyapi" "docker_missing" \
             "Docker is required for CLIProxyAPI + CPA Usage Keeper; nothing was started" 0
-        POST_INSTALL_ACTIONS+=("cliproxyapi: install Docker Desktop/Engine and rerun setup-ai --only cliproxyapi")
+        POST_INSTALL_ACTIONS+=("cliproxyapi: install Docker Desktop/Engine, configure ${config_files[*]}, then rerun setup-ai --only cliproxyapi")
         return 0
     fi
     if ! docker compose version >/dev/null 2>&1; then
         log_event "WARN" "cliproxyapi" "compose_missing" \
             "Docker Compose v2 is required for CLIProxyAPI + CPA Usage Keeper; nothing was started" 0
-        POST_INSTALL_ACTIONS+=("cliproxyapi: install Docker Compose v2 and rerun setup-ai --only cliproxyapi")
+        POST_INSTALL_ACTIONS+=("cliproxyapi: install Docker Compose v2, configure ${config_files[*]}, then rerun setup-ai --only cliproxyapi")
         return 0
     fi
     local placeholder_check_rc=0
-    grep -Eq 'REPLACE_WITH|replace-with|^LOGIN_PASSWORD[[:space:]]*=[[:space:]]*$' \
-        "${cpa_config}" "${keeper_env}" || placeholder_check_rc=$?
+    grep -Eq 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)[[:space:]]*=[[:space:]]*$' \
+        "${config_files[@]}" || placeholder_check_rc=$?
     case "${placeholder_check_rc}" in
         0)
             log_event "WARN" "cliproxyapi" "configuration_placeholder" \
                 "CLIProxyAPI and Keeper still contain example credentials; nothing was started" 0 \
                 "directory=${compose_dir}"
-            POST_INSTALL_ACTIONS+=("cliproxyapi: replace example values in ${cpa_config} and ${keeper_env}, then rerun setup-ai --only cliproxyapi")
+            POST_INSTALL_ACTIONS+=("cliproxyapi: replace example values in ${config_files[*]}, then rerun setup-ai --only cliproxyapi")
             return 0
             ;;
         1) ;;

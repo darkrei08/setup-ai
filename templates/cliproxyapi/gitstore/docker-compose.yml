@@ -1,0 +1,40 @@
+# CLIProxyAPI + CPA Usage Keeper with settings and accounts stored in YOUR private Git repo
+# through CLIProxyAPI's built-in Git store. Nothing secret lives in this directory except .env.
+# Everything is bound to localhost; use an SSH tunnel or reverse proxy for remote access.
+services:
+  cli-proxy-api:
+    image: eceasy/cli-proxy-api:latest
+    restart: unless-stopped
+    environment:
+      GITSTORE_GIT_URL: ${GITSTORE_GIT_URL}
+      GITSTORE_GIT_USERNAME: ${GITSTORE_GIT_USERNAME}
+      GITSTORE_GIT_TOKEN: ${GITSTORE_GIT_TOKEN}
+      GITSTORE_GIT_BRANCH: ${GITSTORE_GIT_BRANCH:-main}
+      GITSTORE_LOCAL_PATH: /data/cliproxy
+      MANAGEMENT_PASSWORD: ${CPA_MANAGEMENT_KEY}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "127.0.0.1:8317:8317"
+      # OAuth callback ports, only needed when linking a new account
+      - "127.0.0.1:8085:8085"
+      - "127.0.0.1:1455:1455"
+      - "127.0.0.1:54545:54545"
+      - "127.0.0.1:51121:51121"
+      - "127.0.0.1:11451:11451"
+    volumes:
+      - ./data/cliproxy:/data/cliproxy
+
+  cpa-usage-keeper:
+    image: ghcr.io/willxup/cpa-usage-keeper:latest
+    restart: unless-stopped
+    depends_on:
+      - cli-proxy-api
+    environment:
+      CPA_BASE_URL: http://cli-proxy-api:8317
+      CPA_MANAGEMENT_KEY: ${CPA_MANAGEMENT_KEY}
+      LOGIN_PASSWORD: ${KEEPER_LOGIN_PASSWORD}
+      TZ: ${TZ:-UTC}
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data/keeper:/data
