@@ -29,11 +29,17 @@ cat > "${TEST_DIR}/bin/docker" <<'SH'
 printf '%s\n' "$*" >> "${DOCKER_CALLS}"
 if [[ "$*" == *"ps --status running --services" ]]; then
     printf '%s\n' "${RUNNING_SERVICES}"
+elif [[ "$*" == *"ps -a -q" ]]; then
+    printf '%s' "${PROJECT_IDS}"
+elif [[ "$1" == inspect ]]; then
+    printf '%s\n' "${WORKING_DIRS}"
 fi
 SH
 chmod +x "${TEST_DIR}/bin/docker"
 PATH="${TEST_DIR}/bin:${PATH}"
-export PATH DOCKER_CALLS RUNNING_SERVICES
+PROJECT_IDS=""
+WORKING_DIRS=""
+export PATH DOCKER_CALLS RUNNING_SERVICES PROJECT_IDS WORKING_DIRS
 
 section() { :; }
 grep() {
@@ -71,7 +77,8 @@ DRY_RUN=0
 RUNNING_SERVICES=$'cli-proxy-api\ncpa-usage-keeper'
 mod_cliproxyapi
 expected="${TEST_DIR}/expected.calls"
-printf 'compose version\ncompose --project-directory %s -f %s config -q\ncompose --project-directory %s -f %s up -d\ncompose --project-directory %s -f %s ps --status running --services\n' \
+printf 'compose version\ncompose --project-directory %s -f %s config -q\ncompose --project-directory %s -f %s ps -a -q\ncompose --project-directory %s -f %s up -d\ncompose --project-directory %s -f %s ps --status running --services\n' \
+    "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" > "${expected}"
@@ -80,6 +87,28 @@ printf 'cliproxyapi|run|docker compose --project-directory %s -f %s config -q\nc
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" > "${TEST_DIR}/expected.steps"
 diff -u "${TEST_DIR}/expected.steps" "${RUN_STEPS}" || { echo 'FAIL: setup-ai run steps differ' >&2; exit 1; }
+
+# Containers of the same project name started from another directory are not ours.
+PROJECT_IDS="abc123"
+WORKING_DIRS="/elsewhere/cliproxyapi"
+: > "${DOCKER_CALLS}"
+: > "${HUMAN_LOG}"
+if mod_cliproxyapi; then
+    echo 'FAIL: foreign Compose project was not refused' >&2
+    exit 1
+fi
+grep -q 'project_conflict' "${HUMAN_LOG}" || { echo 'FAIL: project conflict was not logged' >&2; exit 1; }
+if grep -q 'up -d' "${DOCKER_CALLS}"; then
+    echo 'FAIL: Compose up ran against a foreign project' >&2
+    exit 1
+fi
+# Our own containers (same working dir) are updated normally.
+WORKING_DIRS="${CLIPROXYAPI_DIR}"
+RUNNING_SERVICES=$'cli-proxy-api\ncpa-usage-keeper'
+: > "${HUMAN_LOG}"
+mod_cliproxyapi || { echo 'FAIL: own Compose project was refused' >&2; exit 1; }
+PROJECT_IDS=""
+WORKING_DIRS=""
 
 # Compose can exit successfully when one service is stopped.
 : > "${HUMAN_LOG}"

@@ -3326,6 +3326,29 @@ mod_cliproxyapi() {
 
     run_cmd "cliproxyapi" docker compose --project-directory "${compose_dir}" \
         -f "${compose_file}" config -q
+    # Compose names the project after the directory, so an upstream CLIProxyAPI checkout
+    # shares it. Never let `up -d` recreate containers started from another directory.
+    local project_ids project_dirs compose_abs line foreign_dirs=""
+    local -a id_list=()
+    compose_abs="$(cd -- "${compose_dir}" && pwd)"
+    capture_cmd project_ids "cliproxyapi" docker compose --project-directory "${compose_dir}" \
+        -f "${compose_file}" ps -a -q
+    if [[ -n "${project_ids}" ]]; then
+        while IFS= read -r line; do
+            if [[ -n "${line}" ]]; then id_list+=("${line}"); fi
+        done <<<"${project_ids}"
+        capture_cmd project_dirs "cliproxyapi" docker inspect \
+            --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' "${id_list[@]}"
+        while IFS= read -r line; do
+            if [[ -n "${line}" && "${line}" != "${compose_abs}" ]]; then foreign_dirs+="${line},"; fi
+        done <<<"${project_dirs}"
+        if [[ -n "${foreign_dirs}" ]]; then
+            log_event "ERROR" "cliproxyapi" "project_conflict" \
+                "A Compose project with this name was started from another directory; refusing to recreate its containers" 1 \
+                "expected=${compose_abs};found=${foreign_dirs%,}"
+            return 1
+        fi
+    fi
     local running_services
     run_cmd "cliproxyapi" docker compose --project-directory "${compose_dir}" \
         -f "${compose_file}" up -d

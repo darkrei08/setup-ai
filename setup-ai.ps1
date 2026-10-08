@@ -2748,9 +2748,22 @@ function Mod-Cliproxyapi {
         return
     }
     Invoke-Step -Phase $phase -Action { docker compose --project-directory $composeDir -f $composeFile config -q }
-    Invoke-Step -Phase $phase -Action { docker compose --project-directory $composeDir -f $composeFile up -d }
     $runningServicesFile = [IO.Path]::GetTempFileName()
     try {
+        # Compose names the project after the directory, so an upstream CLIProxyAPI checkout
+        # shares it. Never let `up -d` recreate containers started from another directory.
+        $composeAbs = (Resolve-Path -LiteralPath $composeDir).Path
+        Invoke-Step -Phase $phase -Verify -Action { docker compose --project-directory $composeDir -f $composeFile ps -a -q } -CaptureOutput $runningServicesFile
+        $projectIds = @(Get-Content -LiteralPath $runningServicesFile | Where-Object { $_ })
+        if ($projectIds.Count -gt 0) {
+            Invoke-Step -Phase $phase -Verify -Action { docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' @projectIds } -CaptureOutput $runningServicesFile
+            $foreignDirs = @(Get-Content -LiteralPath $runningServicesFile | Where-Object { $_ -and $_ -ne $composeAbs })
+            if ($foreignDirs.Count -gt 0) {
+                Write-Log ERROR $phase 'project_conflict' 'A Compose project with this name was started from another directory; refusing to recreate its containers' 1 "expected=$composeAbs;found=$($foreignDirs -join ',')"
+                throw 'Compose project name is used by containers started from another directory'
+            }
+        }
+        Invoke-Step -Phase $phase -Action { docker compose --project-directory $composeDir -f $composeFile up -d }
         Invoke-Step -Phase $phase -Verify -Action { docker compose --project-directory $composeDir -f $composeFile ps --status running --services } -CaptureOutput $runningServicesFile
         $runningServices = @(Get-Content -LiteralPath $runningServicesFile | Where-Object { $_ })
         if ($runningServices -notcontains 'cli-proxy-api' -or $runningServices -notcontains 'cpa-usage-keeper') {
