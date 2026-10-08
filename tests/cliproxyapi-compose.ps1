@@ -14,12 +14,16 @@ $script:FakeComposeAvailable = $true
 $script:Calls = @()
 $script:Events = @()
 $script:RunningServices = @()
+$script:ProjectIds = @()
+$script:WorkingDirs = @()
 function Test-Cmd { param([string]$Name) return ($Name -ne 'docker' -or $script:FakeDockerAvailable) }
 function docker {
     $call = $args -join ' '
     $script:Calls += ,$call
     if ($call -eq 'compose version' -and -not $script:FakeComposeAvailable) { throw 'Compose unavailable' }
     if ($call -like '*ps --status running --services') { return $script:RunningServices }
+    if ($call -like '*ps -a -q') { return $script:ProjectIds }
+    if ($call -like 'inspect *') { return $script:WorkingDirs }
 }
 function Write-Log { param($Level,$Phase,$Event,$Message,$Code=0,$Meta=''); $script:Events += "$Event|$Message" }
 function Invoke-Step {
@@ -73,11 +77,32 @@ try {
     $expected = @(
         'compose version',
         "compose --project-directory $dir -f $compose config -q",
+        "compose --project-directory $dir -f $compose ps -a -q",
         "compose --project-directory $dir -f $compose up -d",
         "compose --project-directory $dir -f $compose ps --status running --services"
     )
     if (($script:Calls -join "`n") -ne ($expected -join "`n")) { throw "Unexpected Docker Compose calls: $($script:Calls -join '; ')" }
     if (-not ($script:Events -match '^stack_started\|')) { throw 'Configured stack success was not logged' }
+
+    # Containers of the same project name started from another directory are not ours.
+    $script:ProjectIds = @('abc123')
+    $script:WorkingDirs = @('/elsewhere/cliproxyapi')
+    $script:Calls = @()
+    $script:Events = @()
+    try {
+        Mod-Cliproxyapi
+        throw 'Foreign Compose project was not refused'
+    } catch {
+        if ($_.Exception.Message -eq 'Foreign Compose project was not refused') { throw }
+    }
+    if (-not ($script:Events -match '^project_conflict\|')) { throw 'Project conflict was not logged' }
+    if ($script:Calls -like '*up -d') { throw 'Compose up ran against a foreign project' }
+    # Our own containers (same working dir) are updated normally.
+    $script:WorkingDirs = @((Resolve-Path -LiteralPath $env:CLIPROXYAPI_DIR).Path)
+    $script:RunningServices = @('cli-proxy-api', 'cpa-usage-keeper')
+    Mod-Cliproxyapi
+    $script:ProjectIds = @()
+    $script:WorkingDirs = @()
 
     # Compose can exit successfully when one service is stopped.
     $script:Events = @()
