@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Replaced the optional `tuxevil-rotator` module with `cliproxyapi`, which safely validates and starts the existing dotenv CLIProxyAPI + CPA Usage Keeper Compose stack without creating credentials.
+
 - Skill installs now come from one declarative registry in Bash and PowerShell, and extras skills can be chosen one by one with `--extras` / `-Extras` and the launcher menu.
 - The Node launcher menu is now progressive (preset, optional category drill-down, summary) and redraws in place instead of reprinting the banner on every keypress ([#44](https://github.com/darkrei08/setup-ai/issues/44)).
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).

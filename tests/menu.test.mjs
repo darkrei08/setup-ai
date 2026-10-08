@@ -8,7 +8,7 @@ const modules = [
   { name: "node", category: "System", core: true, desc: "d" },
   { name: "pi", category: "Agents", core: true, desc: "d" },
   { name: "codex", category: "Agents", core: false, desc: "x".repeat(300) },
-  { name: "rotator", category: "Gateway", core: false, desc: "d" },
+  { name: "cliproxyapi", category: "Gateway", core: false, desc: "d" },
 ];
 const ENTER = "\r", DOWN = "j", SPACE = " ", ESC = "\x1b";
 

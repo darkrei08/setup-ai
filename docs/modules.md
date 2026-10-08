@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv ai-memory lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [rotator] [extras]
+base node bun pi dotenv ai-memory lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
 ```
 
 ## base
@@ -47,7 +47,7 @@ git clone https://github.com/darkrei08/dotenv.git ~/git/personale/dotenv
 directory, not a symlink, and it never deletes runtime state (`auth.json`,
 `sessions/`, pi-managed installs), so re-runs are idempotent.
 
-For provider setup, use dotenv's canonical guides for [Tuxevil](https://github.com/darkrei08/dotenv/blob/main/pi/agent/README.md) and [CLIProxyAPI](https://github.com/darkrei08/dotenv/blob/main/cliproxyapi/README.md). setup-ai's optional `rotator` module covers Tuxevil; CLIProxyAPI remains a manual dotenv setup and is not configured by setup-ai.
+For provider setup, use dotenv's canonical guides for [Tuxevil](https://github.com/darkrei08/dotenv/blob/main/pi/agent/README.md) and [CLIProxyAPI](https://github.com/darkrei08/dotenv/blob/main/cliproxyapi/README.md).
 
 Any other distro exits 1 with an explicit message, and on Windows the module logs
 `skipped_non_linux`.
@@ -218,31 +218,22 @@ the run and verifies it.
 
 The cockpit-tools desktop GUI app (CC BY-NC-SA).
 
-## rotator *(opt-in)*
+## cliproxyapi *(opt-in)*
 
-Installs the multi-account `tuxevil-rotator` Gemini/Antigravity gateway,
-registers it to start at boot (a `systemd --user` unit on Linux, a logon
-scheduled task on Windows), starts it in the background when nothing answers on
-port 51200, and installs the `pi-cockpit-tools-sync` Pi extension (source
-`git:github.com/darkrei08/pi-cockpit-tools-sync`). Login is never run and no
-tokens are read: add an account once with `tuxevil-rotator login`. Where the
-machine offers neither unit nor task, the gateway is still started as a detached
-process and the module logs `INFO rotator service_skipped`. On the dotenv side the `rotator-autostart`
-Pi extension does the same at session start when the port is dead, so the
-`gemini-*` aliases keep working; concurrent sessions coordinate through one start
-claim (one start, not one per session) and the detached process log is
-`~/.tuxevil-rotator/gateway.log`. Reruns preserve an existing unit or task
-rather than replacing it; Linux uses the systemd unit only while its exact
-setup-ai-generated content matches the current executable, otherwise it leaves the
-unit untouched and uses the detached fallback. Windows uses the scheduled task only
-while its setup-ai receipt still matches. Both registrations also bring back a
-gateway that dies, by different means: the Linux unit leaves it to systemd
-(`Restart=on-failure`, `RestartSec=5`), while the Windows task repeats every five
-minutes with `-MultipleInstances IgnoreNew`, so a tick is skipped while the
-gateway it started still runs, and each tick checks the port first so a gateway
-started by a session or by the detached fallback is never doubled.
+Validates and starts the existing dotenv `cliproxyapi/docker-compose.yml` stack,
+which runs CLIProxyAPI and CPA Usage Keeper together. It requires configured
+`config.yaml` and `keeper.env`; setup-ai never creates or overwrites either file
+or their credentials. Once configured, it runs `docker compose config -q`,
+`docker compose up -d`, and verifies both services are running with
+`docker compose ps --status running --services`. Missing Docker/Compose or
+configuration is logged with setup guidance. `--dry-run` does
+not invoke Docker. This module manages the existing Compose stack; it does not
+install CLIProxyAPI binaries.
 
 ## Uninstall
+
+Legacy rotator cleanup is uninstall-only and requires setup-ai ownership evidence.
+Unreceipted global npm installs and `~/.tuxevil-rotator` account data are preserved.
 
 Use `--uninstall` to print the owned-item inventory; removal requires `--yes`.
 Use `--only` to restrict modules, and `--purge` to remove destructive items such as

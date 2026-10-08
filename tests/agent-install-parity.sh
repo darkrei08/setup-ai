@@ -19,6 +19,16 @@ if (JSON.stringify(bashModules) !== JSON.stringify(powershellModules) ||
 }
 for (const modules of [bashModules, powershellModules, nodeModules]) {
   if (modules.at(-1) !== 'extras') throw new Error('extras must be the final optional module');
+  if (!modules.includes('cliproxyapi') || modules.includes('rotator')) {
+    throw new Error('CLIProxyAPI must replace rotator in install registries');
+  }
+}
+if (/^\s*rotator\s*\)/m.test(sh) || /'rotator'\s*=/.test(ps) ||
+    /\{ name: "rotator"/.test(mjs) || !mjs.includes('category: "Gateway"')) {
+  throw new Error('rotator must not be installable and CLIProxyAPI must remain in the Gateway category');
+}
+if (!sh.includes('legacy-rotator') || !ps.includes('Remove-LegacyRotatorTask')) {
+  throw new Error('Legacy rotator uninstall must retain evidence-checked cleanup');
 }
 const bashSkillAgents = sh.match(/SKILL_AGENT_NAMES=\(([^)]+)\)/)?.[1].trim().split(/\s+/) ?? [];
 const powershellSkillAgents = ps.match(/\$SkillAgentNames = @\(([^)]+)\)/)?.[1]
