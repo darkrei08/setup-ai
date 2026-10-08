@@ -15,7 +15,7 @@ result.
 | Go | `go` | `brew install go` | distro pkg | `winget install -e --id GoLang.Go` |
 | opencode | `opencode` | `brew install anomalyco/tap/opencode` | `curl -fsSL https://opencode.ai/install \| bash` | `npm i -g opencode-ai` |
 | cockpit-tools *(opt-in GUI)* | app | `brew install --cask cockpit-tools` | `.deb`/`.rpm`/`.AppImage` | `.msi` |
-| tuxevil-rotator *(opt-in)* | `tuxevil-rotator` | `npm i -g tuxevil-rotator` | same | same |
+| CLIProxyAPI + CPA Usage Keeper *(opt-in)* | existing dotenv Compose stack | Docker Compose v2 | same | same |
 | LazyVim | Neovim config | clone `https://github.com/LazyVim/starter`, then `nvim --headless "+Lazy! sync" +qa` | x86_64 tarball + same headless sync; distro Neovim on other architectures | package Neovim + same headless sync |
 | Engineering Excellence | skill | `npx skills@latest add darkrei08/Engineering-Excellence --agent <agent>` | same | same |
 

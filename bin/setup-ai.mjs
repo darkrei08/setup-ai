@@ -52,7 +52,7 @@ const MODULES = [
   { name: "opencode",     core: true,  category: "Agents", desc: "opencode agent CLI (opencode-ai)" },
   { name: "gentle-ai",    core: true,  category: "Memory & review", desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
   { name: "cockpit",      core: false, category: "Extras", desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
-  { name: "rotator",      core: false, category: "Gateway", desc: "tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)" },
+  { name: "cliproxyapi",  core: false, category: "Gateway", desc: "CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)" },
   { name: "extras",       core: false, category: "Extras", desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
 ];
 
@@ -134,7 +134,7 @@ function toScriptArgs(mode, csv, unattended = false, extras = getVal("--extras")
   if (extras) args.push(isWin ? "-Extras" : "--extras", extras);
   if (unattended) args.push(isWin ? "-Yes" : "--yes");
   if (has("--verbose") || has("-v")) args.push(isWin ? "-Verbose" : "--verbose");
-  if (has("--dry-run")) args.push(isWin ? "-DryRun" : "--dry-run");
+  if (has("--dry-run") && !isWin) args.push("--dry-run");
   return args;
 }
 
@@ -218,6 +218,17 @@ async function main() {
     return;
   }
 
+  if (isWin && has("--dry-run")) {
+    console.error("--dry-run is not implemented on Windows; setup-ai.ps1 refuses to plan a run.");
+    process.exitCode = 2;
+    return;
+  }
+  if (isWin && has("--purge")) {
+    console.error("--purge is not implemented on Windows; the uninstall lifecycle is unavailable.");
+    process.exitCode = 2;
+    return;
+  }
+
   if (has("--purge") && !has("--uninstall")) {
     console.error("--purge is only valid with --uninstall.");
     process.exitCode = 2;
@@ -249,7 +260,7 @@ async function main() {
     if (only) uninstallArgs.push(isWin ? "-Only" : "--only", only);
     if (has("--yes") || has("-y")) uninstallArgs.push(isWin ? "-Yes" : "--yes");
     if (has("--purge") && !isWin) uninstallArgs.push("--purge");
-    if (has("--dry-run")) uninstallArgs.push(isWin ? "-DryRun" : "--dry-run");
+    if (has("--dry-run") && !isWin) uninstallArgs.push("--dry-run");
     if (has("--verbose") || has("-v")) uninstallArgs.push(isWin ? "-Verbose" : "--verbose");
     return runScript(uninstallArgs);
   }
