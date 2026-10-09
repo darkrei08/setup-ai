@@ -90,6 +90,25 @@ try {
     $script:Calls = @()
     $script:Events = @()
 
+    # A directory where a required regular file belongs blocks start before Compose runs.
+    foreach ($case in @(@('local', 'config.yaml'), @('local', 'docker-compose.yml'), @('gitstore', '.env'))) {
+        New-Item -ItemType Directory -Path $env:CLIPROXYAPI_DIR -Force | Out-Null
+        foreach ($f in 'docker-compose.yml', 'config.yaml', 'keeper.env', '.env') { Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR $f) -Value 'private=1' }
+        Remove-Item -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR $case[1]) -Force
+        New-Item -ItemType Directory -Path (Join-Path $env:CLIPROXYAPI_DIR $case[1]) | Out-Null
+        $script:Calls = @(); $script:Events = @()
+        $env:CLIPROXYAPI_STORAGE = $case[0]
+        $rejected = $false
+        try { Mod-Cliproxyapi } catch { $rejected = $true }
+        Remove-Item Env:CLIPROXYAPI_STORAGE
+        if (-not $rejected) { throw "Directory at $($case[1]) was accepted" }
+        if ($script:Calls -like '*up -d') { throw "Compose up ran with a directory at $($case[1])" }
+        if (-not ($script:Events -match '^config_not_file\|')) { throw 'Non-file config was not logged' }
+        Remove-Item -LiteralPath $env:CLIPROXYAPI_DIR -Recurse -Force
+    }
+    $script:Calls = @()
+    $script:Events = @()
+
     New-Item -ItemType Directory -Path $env:CLIPROXYAPI_DIR | Out-Null
     Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'docker-compose.yml') -Value 'services: {}'
     Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml') -Value 'api-keys: [private]'
