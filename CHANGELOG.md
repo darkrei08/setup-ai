@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The Node launcher menu is now progressive (preset, optional category drill-down, summary) and redraws in place instead of reprinting the banner on every keypress ([#44](https://github.com/darkrei08/setup-ai/issues/44)).
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).
 
 ## [4.0.0]
