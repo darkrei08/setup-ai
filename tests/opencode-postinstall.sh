@@ -13,7 +13,10 @@ awk '$0 ~ /^mod_opencode\(\) \{/ { c = 1 } c { l = $0; d += gsub(/\{/, "", l) - 
 source "${TEST_DIR}/module.sh"
 
 mkdir -p "${TEST_DIR}/bin"
-printf '#!/bin/sh\necho "npm $*" >> "%s/calls"\n' "${TEST_DIR}" > "${TEST_DIR}/bin/npm"
+# Fake npm: `install-scripts` exists (npm >= 12) only while the "supported" flag file exists.
+printf '#!/bin/sh\necho "npm $*" >> "%s/calls"\n[ "$1" = install-scripts ] && [ ! -e "%s/supported" ] && exit 1\nexit 0\n' \
+    "${TEST_DIR}" "${TEST_DIR}" > "${TEST_DIR}/bin/npm"
+touch "${TEST_DIR}/supported"
 printf '#!/bin/sh\nexit 1\n' > "${TEST_DIR}/bin/opencode"   # the stub launcher
 chmod +x "${TEST_DIR}/bin/"*
 PATH="${TEST_DIR}/bin:${PATH}"
@@ -45,5 +48,11 @@ rc=0
 ( mod_opencode ) >/dev/null 2>&1 || rc=$?
 real_launcher_passes() { (( rc == 0 )); }
 check real_launcher_passes
+
+rm "${TEST_DIR}/supported"
+: > "${TEST_DIR}/calls"
+( mod_opencode ) >/dev/null 2>&1
+rebuild_ungated() { grep -q 'npm rebuild -g opencode-ai' "${TEST_DIR}/calls" && ! grep -q -- '--allow-scripts' "${TEST_DIR}/calls"; }
+check rebuild_ungated
 
 exit $(( failures > 0 ))
