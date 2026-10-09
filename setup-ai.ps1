@@ -2762,6 +2762,14 @@ function Mod-Cliproxyapi {
             $seeded = $true
         }
     }
+    # Seeding skips anything that exists, so a directory here would otherwise reach Compose.
+    foreach ($name in $targets) {
+        $path = Join-Path $composeDir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Write-Log ERROR $phase 'config_not_file' "$name must be a regular file; nothing was started" 1 "path=$path"
+            throw "$name must be a regular file"
+        }
+    }
     if ($seeded) {
         Write-Log WARN $phase 'configuration_seeded' "Example $storage templates were copied; setup-ai does not create credentials" 0 "directory=$composeDir"
         $script:PostInstallActions += "cliproxyapi: replace every REPLACE_WITH value in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi (default layout is local files; set CLIPROXYAPI_STORAGE=gitstore to keep settings and accounts in your own private Git repo instead)"

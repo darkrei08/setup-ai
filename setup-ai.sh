@@ -3315,6 +3315,14 @@ mod_cliproxyapi() {
             seeded=1
         fi
     done
+    # Seeding skips anything that exists, so a directory here would otherwise reach Compose.
+    for i in "${!targets[@]}"; do
+        if [[ ! -f "${compose_dir}/${targets[i]}" ]]; then
+            log_event "ERROR" "cliproxyapi" "config_not_file" \
+                "${targets[i]} must be a regular file; nothing was started" 1 "path=${compose_dir}/${targets[i]}"
+            return 1
+        fi
+    done
     if (( seeded == 1 )); then
         log_event "WARN" "cliproxyapi" "configuration_seeded" \
             "Example ${storage} templates were copied; setup-ai does not create credentials" 0 \

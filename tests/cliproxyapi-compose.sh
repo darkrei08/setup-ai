@@ -95,6 +95,19 @@ if CLIPROXYAPI_STORAGE=bogus mod_cliproxyapi; then echo 'FAIL: invalid storage w
 grep -q 'storage_invalid' "${HUMAN_LOG}" || { echo 'FAIL: invalid storage was not logged' >&2; exit 1; }
 : > "${DOCKER_CALLS}"
 
+# A directory where a required regular file belongs blocks start before Compose runs.
+for layout_case in local:config.yaml local:docker-compose.yml gitstore:.env; do
+    rm -rf "${CLIPROXYAPI_DIR}"; mkdir -p "${CLIPROXYAPI_DIR}"
+    for f in docker-compose.yml config.yaml keeper.env .env; do printf 'private=1\n' > "${CLIPROXYAPI_DIR}/${f}"; done
+    rm -f "${CLIPROXYAPI_DIR}/${layout_case#*:}"; mkdir "${CLIPROXYAPI_DIR}/${layout_case#*:}"
+    : > "${DOCKER_CALLS}"; : > "${HUMAN_LOG}"
+    if CLIPROXYAPI_STORAGE="${layout_case%%:*}" mod_cliproxyapi; then echo "FAIL: directory at ${layout_case#*:} was accepted" >&2; exit 1; fi
+    if grep -q 'up -d' "${DOCKER_CALLS}"; then echo "FAIL: Compose up ran with a directory at ${layout_case#*:}" >&2; exit 1; fi
+    grep -q 'config_not_file' "${HUMAN_LOG}" || { echo 'FAIL: non-file config was not logged' >&2; exit 1; }
+done
+rm -rf "${CLIPROXYAPI_DIR}"; mkdir -p "${CLIPROXYAPI_DIR}"
+: > "${DOCKER_CALLS}"
+
 # Dry-run must not invoke Docker, even when configuration files are present.
 cat > "${CLIPROXYAPI_DIR}/docker-compose.yml" <<'EOF'
 services: {}
