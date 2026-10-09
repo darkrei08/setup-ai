@@ -142,6 +142,8 @@ try {
             Event = $Event
             Message = $Message
             ReturnCode = $ReturnCode
+            Optional = $Optional
+            Behavior = $Behavior
         }
     }
     function Write-StepResult {
@@ -200,6 +202,9 @@ try {
     if ($installExpected.Count -ne 1 -or $installExpected[0].Message -notmatch '-1978335189') {
         throw 'UPDATE_NOT_APPLICABLE was not logged as an expected winget result.'
     }
+    if ($installExpected[0].ReturnCode -ne -1978335189) {
+        throw 'step_expected did not log the observed native exit code in the structured rc field.'
+    }
     $alreadyPresent = @($script:WingetLogEvents | Where-Object { $_.Event -eq 'already_present' })
     if ($alreadyPresent.Count -ne 1 -or $alreadyPresent[0].Message -notmatch 'UPDATE_NOT_APPLICABLE') {
         throw 'UPDATE_NOT_APPLICABLE did not produce truthful already-present logging.'
@@ -220,4 +225,22 @@ try {
     Remove-Item -LiteralPath $wingetTestRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+
+# Same-event parity with bash (#84): every ERROR record must carry a ReturnCode so it
+# emits the `err` object. Write-Log defaults the code to 0, which silently drops `err`.
+$errorCalls = @($ast.FindAll({ param($node)
+    $node -is [System.Management.Automation.Language.CommandAst] -and
+    $node.GetCommandName() -eq 'Write-Log' -and
+    $node.CommandElements.Count -gt 1 -and $node.CommandElements[1].Extent.Text -eq 'ERROR'
+}, $true))
+if ($errorCalls.Count -eq 0) { throw 'No Write-Log ERROR call sites found.' }
+foreach ($call in $errorCalls) {
+    $positional = 0
+    foreach ($element in $call.CommandElements) {
+        if ($element -is [System.Management.Automation.Language.CommandParameterAst]) { break }
+        $positional++
+    }
+    # Write-Log, Level, Phase, Event, Message, ReturnCode
+    if ($positional -lt 6) { throw "Write-Log ERROR without ReturnCode at line $($call.Extent.StartLineNumber)." }
+}
 Write-Host 'PowerShell lifecycle regression checks passed.'
