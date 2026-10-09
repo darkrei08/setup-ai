@@ -77,6 +77,19 @@ try {
     $script:Calls = @()
     $script:Events = @()
 
+    # Placeholders in the other layout's files still block start: the compose file may mount them.
+    New-Item -ItemType Directory -Path $env:CLIPROXYAPI_DIR | Out-Null
+    Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'docker-compose.yml') -Value 'services: {}'
+    Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR '.env') -Value 'GITSTORE_GIT_URL=private'
+    Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml') -Value 'api-keys: [REPLACE_WITH_A_LONG_RANDOM_CLIENT_KEY]'
+    $env:CLIPROXYAPI_STORAGE = 'gitstore'
+    Mod-Cliproxyapi
+    Remove-Item Env:CLIPROXYAPI_STORAGE
+    if ($script:Calls -like '*up -d') { throw 'Stack started with placeholders in the other layout' }
+    Remove-Item -LiteralPath $env:CLIPROXYAPI_DIR -Recurse -Force
+    $script:Calls = @()
+    $script:Events = @()
+
     New-Item -ItemType Directory -Path $env:CLIPROXYAPI_DIR | Out-Null
     Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'docker-compose.yml') -Value 'services: {}'
     Set-Content -LiteralPath (Join-Path $env:CLIPROXYAPI_DIR 'config.yaml') -Value 'api-keys: [private]'
