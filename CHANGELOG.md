@@ -10,9 +10,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - PowerShell JSONL records now match bash for the same event. `step_expected` logs the observed native exit code in `rc` and `err` instead of a hardcoded `0`, and every `Write-Log ERROR` site passes a non-zero return code so it carries the `err` object that the bash record already had (`install_missing`, `version_mismatch`, `pi_enable_failed`, and the rest). Windows runtime verification is pending ([#84](https://github.com/darkrei08/setup-ai/issues/84)).
+- `setup-ai.sh` opencode module now approves and rebuilds opencode-ai's blocked npm 12 postinstall and fails unless `opencode --version` exits 0, matching `setup-ai.ps1` ([#57](https://github.com/darkrei08/setup-ai/issues/57)).
 
 ### Changed
 
+- The Node launcher menu is now progressive (preset, optional category drill-down, summary) and redraws in place instead of reprinting the banner on every keypress ([#44](https://github.com/darkrei08/setup-ai/issues/44)).
 - JSONL records now use compact keys and structured failure metadata. This is a breaking change for consumers of the old field names ([#81](https://github.com/darkrei08/setup-ai/issues/81)).
 
 ## [4.0.0]

@@ -8,6 +8,7 @@
   },
   "files": [
     "bin/setup-ai.mjs",
+    "bin/menu.mjs",
     "bin/check-workflow-retry-marker.mjs",
     "setup-ai.sh",
     "setup-ai.ps1",

@@ -6,8 +6,8 @@
 //   win32            -> setup-ai.ps1  (via PowerShell 7.3+)
 //   darwin / linux   -> setup-ai.sh   (via bash)
 //
-// With no selection flag on an interactive terminal it shows an arrow-key
-// multi-select menu, then passes the chosen modules to the platform script as
+// With no selection flag on an interactive terminal it shows an progressive
+// preset/category menu, then passes the chosen modules to the platform script as
 // --only. Zero runtime dependencies.
 //
 // Usage:
@@ -25,6 +25,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import process from "node:process";
+import { chosenNames, createRenderer, initState, reduce, view } from "./menu.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = join(__dirname, "..");
@@ -32,27 +33,27 @@ const PKG_ROOT = join(__dirname, "..");
 // Canonical module list (mirrors the registries in setup-ai.sh / setup-ai.ps1).
 // core:false => optional (unchecked by default in the menu).
 const MODULES = [
-  { name: "base",         core: true,  desc: "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)" },
-  { name: "node",         core: true,  desc: "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" },
-  { name: "bun",          core: true,  desc: "Bun runtime" },
-  { name: "pi",           core: true,  desc: "pi.dev coding agent CLI" },
-  { name: "dotenv",       core: true,  desc: "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" },
-  { name: "ai-memory",    core: true,  desc: "ai-memory-kit aimem CLI and templates" },
-  { name: "lazyvim",      core: true,  desc: "Neovim x86_64 tarball and LazyVim starter (headless sync)" },
-  { name: "pi-packages",  core: true,  desc: "Extra Pi packages from a declarative manifest (pi-packages.txt)" },
-  { name: "go",           core: true,  desc: "Go toolchain" },
-  { name: "ee",           core: true,  desc: "Engineering Excellence skill (npx skills add, all detected agents)" },
-  { name: "skills",       core: true,  desc: "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" },
-  { name: "pi-workflows", core: true,  desc: "pi-extensible-workflows (published release + npm 12 remote sources for pi installs)" },
-  { name: "herdr",        core: true,  desc: "herdr terminal multiplexer" },
-  { name: "claude-code",  core: true,  desc: "Anthropic Claude Code CLI" },
-  { name: "codex",        core: true,  desc: "OpenAI Codex CLI" },
-  { name: "antigravity",  core: true,  desc: "Google Antigravity CLI (agy)" },
-  { name: "opencode",     core: true,  desc: "opencode agent CLI (opencode-ai)" },
-  { name: "gentle-ai",    core: true,  desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
-  { name: "cockpit",      core: false, desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
-  { name: "rotator",      core: false, desc: "tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)" },
-  { name: "extras",       core: false, desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
+  { name: "base",         core: true,  category: "System", desc: "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)" },
+  { name: "node",         core: true,  category: "System", desc: "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" },
+  { name: "bun",          core: true,  category: "System", desc: "Bun runtime" },
+  { name: "pi",           core: true,  category: "Agents", desc: "pi.dev coding agent CLI" },
+  { name: "dotenv",       core: true,  category: "System", desc: "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" },
+  { name: "ai-memory",    core: true,  category: "Memory & review", desc: "ai-memory-kit aimem CLI and templates" },
+  { name: "lazyvim",      core: true,  category: "Editors", desc: "Neovim x86_64 tarball and LazyVim starter (headless sync)" },
+  { name: "pi-packages",  core: true,  category: "Skills & workflows", desc: "Extra Pi packages from a declarative manifest (pi-packages.txt)" },
+  { name: "go",           core: true,  category: "System", desc: "Go toolchain" },
+  { name: "ee",           core: true,  category: "Skills & workflows", desc: "Engineering Excellence skill (npx skills add, all detected agents)" },
+  { name: "skills",       core: true,  category: "Skills & workflows", desc: "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" },
+  { name: "pi-workflows", core: true,  category: "Skills & workflows", desc: "pi-extensible-workflows (published release + npm 12 remote sources for pi installs)" },
+  { name: "herdr",        core: true,  category: "System", desc: "herdr terminal multiplexer" },
+  { name: "claude-code",  core: true,  category: "Agents", desc: "Anthropic Claude Code CLI" },
+  { name: "codex",        core: true,  category: "Agents", desc: "OpenAI Codex CLI" },
+  { name: "antigravity",  core: true,  category: "Agents", desc: "Google Antigravity CLI (agy)" },
+  { name: "opencode",     core: true,  category: "Agents", desc: "opencode agent CLI (opencode-ai)" },
+  { name: "gentle-ai",    core: true,  category: "Memory & review", desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
+  { name: "cockpit",      core: false, category: "Extras", desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
+  { name: "rotator",      core: false, category: "Gateway", desc: "tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)" },
+  { name: "extras",       core: false, category: "Extras", desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
 ];
 
 // dotenv is Linux-only; drop it from the Windows menu.
@@ -128,31 +129,9 @@ function toScriptArgs(mode, csv, unattended = false) {
   return args;
 }
 
-// ---- interactive multi-select ---------------------------------------------
+// ---- interactive progressive menu -----------------------------------------
 function interactiveMenu() {
   return new Promise((resolve, reject) => {
-    const items = menuModules.map((m) => ({ ...m, checked: m.core }));
-    let cursor = 0;
-    const out = process.stdout;
-
-    const render = () => {
-      const selected = items.filter((it) => it.checked).length;
-      out.write("\x1b[2J\x1b[H");
-      out.write("\x1b[1;36m+----------------------------------------------------------------------+\x1b[0m\n");
-      out.write("\x1b[1;36m|\x1b[0m                    \x1b[1mAI Dev Suite setup\x1b[0m                         \x1b[1;36m|\x1b[0m\n");
-      out.write("\x1b[1;36m+----------------------------------------------------------------------+\x1b[0m\n");
-      out.write(`  Select modules to install: \x1b[1m${selected}/${items.length}\x1b[0m selected\n`);
-      out.write("  Arrow keys/j-k move   Space toggle   a all   Enter confirm   q quit\n\n");
-      items.forEach((it, i) => {
-        const pointer = i === cursor ? "\x1b[36m>\x1b[0m" : " ";
-        const box = it.checked ? "\x1b[32m[x]\x1b[0m" : "[ ]";
-        const tag = it.core ? "" : " \x1b[33m(optional)\x1b[0m";
-        out.write(`${pointer} ${box} ${String(i + 1).padStart(2, " ")} ${it.name.padEnd(16)}${tag}\n`);
-        out.write(`       ${it.desc}\n\n`);
-      });
-      out.write("  Selected modules run in dependency order.\n");
-    };
-
     const stdin = process.stdin;
     if (typeof stdin.setRawMode !== "function") {
       return reject(new Error("stdin is not a raw-capable TTY"));
@@ -164,20 +143,20 @@ function interactiveMenu() {
     }
     stdin.resume();
     stdin.setEncoding("utf8");
-    render();
+
+    const draw = createRenderer(process.stdout);
+    let state = initState(menuModules);
+    draw(view(state, menuModules));
 
     const cleanup = () => {
-      let cleanupError = null;
       try {
         stdin.setRawMode(false);
       } catch (err) {
-        cleanupError = err instanceof Error ? err : new Error(String(err));
-        console.error(`Could not restore terminal mode: ${cleanupError.message}`);
+        console.error(`Could not restore terminal mode: ${err instanceof Error ? err.message : err}`);
       }
       stdin.pause();
       stdin.removeListener("data", onData);
       stdin.removeListener("end", onEnd);
-      return cleanupError;
     };
 
     // If stdin closes before a choice (e.g. npx consumed it), fall back instead
@@ -185,22 +164,16 @@ function interactiveMenu() {
     const onEnd = () => { cleanup(); reject(new Error("stdin closed before a choice was made")); };
 
     const onData = (key) => {
-      if (key === "\x03" || key === "q") { // ctrl-c / q
+      state = reduce(state, key, menuModules);
+      if (state.done === "quit") {
         cleanup();
-        out.write("\nAborted.\n");
+        process.stdout.write("\nAborted.\n");
         process.exit(130);
-      } else if (key === "\x1b[A" || key === "k") {
-        cursor = (cursor - 1 + items.length) % items.length; render();
-      } else if (key === "\x1b[B" || key === "j") {
-        cursor = (cursor + 1) % items.length; render();
-      } else if (key === " ") {
-        items[cursor].checked = !items[cursor].checked; render();
-      } else if (key === "a") {
-        const allOn = items.every((i) => i.checked);
-        items.forEach((i) => (i.checked = !allOn)); render();
-      } else if (key === "\r" || key === "\n") {
+      } else if (state.done === "confirm") {
         cleanup();
-        resolve(items.filter((i) => i.checked).map((i) => i.name));
+        resolve(chosenNames(state, menuModules));
+      } else {
+        draw(view(state, menuModules));
       }
     };
     stdin.on("data", onData);
