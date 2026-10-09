@@ -2785,7 +2785,8 @@ function Mod-Cliproxyapi {
         $script:PostInstallActions += "cliproxyapi: install Docker Compose v2, configure $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
         return
     }
-    if (Select-String -LiteralPath $configFiles -Pattern 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)\s*=\s*$' -CaseSensitive -Quiet) {
+    $gateFiles = @('config.yaml', 'keeper.env', '.env' | ForEach-Object { Join-Path $composeDir $_ } | Where-Object { Test-Path -LiteralPath $_ })
+    if (Select-String -LiteralPath $gateFiles -Pattern 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)\s*=\s*$' -CaseSensitive -Quiet) {
         Write-Log WARN $phase 'configuration_placeholder' 'CLIProxyAPI and Keeper still contain example credentials; nothing was started' 0 "directory=$composeDir"
         $script:PostInstallActions += "cliproxyapi: replace example values in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
         return

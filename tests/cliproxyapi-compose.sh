@@ -83,6 +83,13 @@ command grep -q 'YOUR_USER' "${CLIPROXYAPI_DIR}/.env" || { echo 'FAIL: gitstore 
 : > "${HUMAN_LOG}"
 mod_cliproxyapi
 [[ ! -e "${CLIPROXYAPI_DIR}/config.yaml" ]] || { echo 'FAIL: .env-only directory was treated as local' >&2; exit 1; }
+# Placeholders in the other layout's files still block start: the compose file may mount them.
+printf 'GITSTORE_GIT_URL=private\n' > "${CLIPROXYAPI_DIR}/.env"
+printf 'api-keys: [REPLACE_WITH_A_LONG_RANDOM_CLIENT_KEY]\n' > "${CLIPROXYAPI_DIR}/config.yaml"
+: > "${DOCKER_CALLS}"
+CLIPROXYAPI_STORAGE=gitstore mod_cliproxyapi
+if grep -q 'up -d' "${DOCKER_CALLS}"; then echo 'FAIL: stack started with placeholders in the other layout' >&2; exit 1; fi
+rm -f "${CLIPROXYAPI_DIR}/config.yaml"
 rm -f "${CLIPROXYAPI_DIR}/.env" "${CLIPROXYAPI_DIR}/docker-compose.yml"
 if CLIPROXYAPI_STORAGE=bogus mod_cliproxyapi; then echo 'FAIL: invalid storage was accepted' >&2; exit 1; fi
 grep -q 'storage_invalid' "${HUMAN_LOG}" || { echo 'FAIL: invalid storage was not logged' >&2; exit 1; }
