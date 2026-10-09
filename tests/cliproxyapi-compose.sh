@@ -129,11 +129,11 @@ printf 'compose version\ncompose --project-directory %s -f %s config -q\ncompose
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" > "${expected}"
-diff -u "${expected}" "${DOCKER_CALLS}" || { echo 'FAIL: Docker Compose call sequence differs' >&2; exit 1; }
+[[ "$(<"${expected}")" == "$(<"${DOCKER_CALLS}")" ]] || { echo 'FAIL: Docker Compose call sequence differs' >&2; exit 1; }
 printf 'cliproxyapi|run|docker compose --project-directory %s -f %s config -q\ncliproxyapi|run|docker compose --project-directory %s -f %s up -d\n' \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" \
     "${CLIPROXYAPI_DIR}" "${CLIPROXYAPI_DIR}/docker-compose.yml" > "${TEST_DIR}/expected.steps"
-diff -u "${TEST_DIR}/expected.steps" "${RUN_STEPS}" || { echo 'FAIL: setup-ai run steps differ' >&2; exit 1; }
+[[ "$(<"${TEST_DIR}/expected.steps")" == "$(<"${RUN_STEPS}")" ]] || { echo 'FAIL: setup-ai run steps differ' >&2; exit 1; }
 
 # Containers of the same project name started from another directory are not ours.
 PROJECT_IDS="abc123"

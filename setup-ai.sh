@@ -4075,7 +4075,8 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 UNIT
-    if ! cmp -s -- "${expected}" "${unit}"; then
+    # Byte-exact compare without cmp, which minimal Arch/Fedora/openSUSE images lack. The trailing x keeps final newlines.
+    if [[ "$(cat -- "${expected}"; printf x)" != "$(cat -- "${unit}"; printf x)" ]]; then
         printf 'skipped (not verified as setup-ai-owned): %s\n' "${target}"
         return 0
     fi

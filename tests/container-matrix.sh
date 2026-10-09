@@ -28,7 +28,7 @@ run() { # image, label, in-container command
 
 # shellcheck disable=SC2016 # deferred command run later via ${BASH_GATES}; vars/subshells must expand then, not here
 AI_MEMORY_DRY_RUN='aimem_prefix="$(mktemp -d)" && trap '\''rm -rf -- "${aimem_prefix}"'\'' EXIT && AIMEM_PREFIX="${aimem_prefix}" bash setup-ai.sh --dry-run --only ai-memory >/dev/null'
-BASH_GATES="bash -n setup-ai.sh && bash tests/gentle-ai-cli-resolution.sh >/dev/null && bash tests/opencode-postinstall.sh >/dev/null && bash tests/configurator-retry-check.sh >/dev/null && ${AI_MEMORY_DRY_RUN}"
+BASH_GATES="bash -n setup-ai.sh && bash tests/gentle-ai-cli-resolution.sh >/dev/null && bash tests/opencode-postinstall.sh >/dev/null && bash tests/configurator-retry-check.sh >/dev/null && bash tests/cliproxyapi-compose.sh >/dev/null && bash tests/legacy-rotator-uninstall.sh >/dev/null && ${AI_MEMORY_DRY_RUN}"
 NODE_GATES="${BASH_GATES} && bash tests/skills-registry.sh >/dev/null && node bin/setup-ai.mjs --list >/dev/null && bash tests/jsonl-schema.sh >/dev/null && bash tests/pi-startup-check.sh >/dev/null"
 
 run node:22-bookworm      "bash gates + node launcher + jsonl" "$NODE_GATES"
@@ -37,7 +37,7 @@ run ubuntu:24.04          "bash gates"                        "$BASH_GATES"
 run archlinux:latest      "bash gates"                        "$BASH_GATES"
 run fedora:latest         "bash gates (util-linux-script for script)" 'dnf install -y -q util-linux-script >/dev/null 2>&1; '"$BASH_GATES"
 run opensuse/leap:latest  "bash gates"                        "$BASH_GATES"
-run mcr.microsoft.com/powershell:lts-ubuntu-22.04 "pwsh parse check" 'pwsh -NoProfile -Command "$null=[ScriptBlock]::Create((Get-Content -Raw /work/setup-ai.ps1)); \"parse ok\""'
+run mcr.microsoft.com/powershell:lts-ubuntu-22.04 "pwsh parse + cliproxyapi test" 'pwsh -NoProfile -Command "$null=[ScriptBlock]::Create((Get-Content -Raw /work/setup-ai.ps1)); \"parse ok\"" && pwsh -NoProfile -File tests/cliproxyapi-compose.ps1 >/dev/null'
 
 echo
 echo "Not containerizable here: Windows (no Windows container on a Linux host) and macOS (no container image)."
