@@ -28,6 +28,7 @@
 [CmdletBinding()]
 param(
     [string]$Only = "",
+    [string]$Extras = "",
     [switch]$All,
     [switch]$List,
     [switch]$Yes,
@@ -37,6 +38,9 @@ param(
 )
 
 $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
+$ExtrasSpecified = $PSBoundParameters.ContainsKey('Extras')
+# Registry ids chosen with -Extras; empty means the whole extras module.
+$ExtrasOnly = @()
 if ($DryRun) {
     Write-Host ""
     Write-Host "-DryRun is not implemented on Windows." -ForegroundColor Red
@@ -115,16 +119,23 @@ $script:LazyVimCloned = $false
 # .npmrc policy and the post-install approve/rebuild pass cannot drift apart.
 $Npm12InstallScriptPackages = @('gentle-pi','node-pty','pi-tool-display')
 
-# Upstream agent-skill stack mirrored from darkrei08/dotenv setup_env.sh so the
-# same skills land on every OS (dotenv itself is Linux-only). Installed via
-# `npx skills add`.
-$UpstreamSkillSources = @(
-    @{ Source = 'herdrdev/herdr';                       Skills = @('herdr') }
-    @{ Source = 'mattpocock/skills';                    Skills = @('triage','grill-me','grilling','wayfinder','domain-modeling','prototype','research') }
-    @{ Source = 'https://github.com/pedronauck/skills';  Skills = @('typescript-advanced') }
-    @{ Source = 'humanlayer/skills';                    Skills = @('show-me') }
+# Declarative `npx skills add` registry, mirrored in setup-ai.sh (SKILL_REGISTRY).
+# Entry: Id, Module, Source, Skills[], Agents[]. Module 'skills' is the upstream stack
+# mirrored from darkrei08/dotenv setup_env.sh; its agent '*' means every detected agent.
+# Module 'extras' entries are selectable one by one (-Extras id[,id...]); their agents
+# must be universal (shared ~/.agents/skills root) because they are staged before the
+# canonical copy. Every install runs:
+#   npx skills@latest add <source> --skill <skill> --global --agent <agent> --copy --yes
+$SkillRegistry = @(
+    @{ Id = 'herdr';      Module = 'skills'; Source = 'herdrdev/herdr';                      Skills = @('herdr');                                                                                      Agents = @('*') }
+    @{ Id = 'mattpocock'; Module = 'skills'; Source = 'mattpocock/skills';                   Skills = @('triage','grill-me','grilling','wayfinder','domain-modeling','prototype','research');          Agents = @('*') }
+    @{ Id = 'pedronauck'; Module = 'skills'; Source = 'https://github.com/pedronauck/skills'; Skills = @('typescript-advanced');                                                                         Agents = @('*') }
+    @{ Id = 'humanlayer'; Module = 'skills'; Source = 'humanlayer/skills';                   Skills = @('show-me');                                                                                    Agents = @('*') }
+    @{ Id = 'taste';      Module = 'extras'; Source = 'Leonxlnx/taste-skill';                Skills = @('design-taste-frontend');                                                                      Agents = @('pi') }
+    @{ Id = 'humanizer';  Module = 'extras'; Source = 'blader/humanizer';                    Skills = @('humanizer');                                                                                  Agents = @('pi') }
+    @{ Id = 'heroui';     Module = 'extras'; Source = 'heroui-inc/heroui';                   Skills = @('heroui-react');                                                                               Agents = @('pi') }
 )
-$UpstreamSkillNames = @('herdr','triage','grill-me','grilling','wayfinder','domain-modeling','prototype','research','typescript-advanced','show-me')
+$UpstreamSkillNames = @($SkillRegistry | Where-Object { $_.Module -eq 'skills' } | ForEach-Object { $_.Skills })
 # These are `skills` CLI harness names. The installer module remains `antigravity`,
 # while the skills package distinguishes the CLI harness as `antigravity-cli`.
 $SkillAgentNames = @('pi','claude-code','gemini-cli','cursor','antigravity-cli','codex','opencode')
@@ -1447,10 +1458,12 @@ function Mod-Skills {
     Write-Log INFO "skills" "start" "Agent skills (upstream stack)"
     if (-not (Test-Cmd npx)) { throw "npx not found; skills cannot be installed (install the node module first)" }
     $agents = Get-TargetSkillAgents
-    foreach ($entry in $UpstreamSkillSources) {
+    foreach ($entry in ($SkillRegistry | Where-Object { $_.Module -eq 'skills' })) {
         $src = $entry.Source
         $skills = $entry.Skills
-        foreach ($a in $agents) {
+        # '*' means every detected agent; anything else is the entry's own list.
+        $entryAgents = if ($entry.Agents -contains '*') { $agents } else { $entry.Agents }
+        foreach ($a in $entryAgents) {
             Invoke-Step -Phase "skills" -Action {
                 npx --yes skills@latest add $src --skill $skills --global --agent $a --copy --yes
             }
@@ -2717,7 +2730,7 @@ function Test-DirectoryContentEqual {
 }
 
 function Install-ExtrasSkill {
-    param([string]$Source, [string]$Skill)
+    param([string]$Source, [string]$Skill, [string]$Agent)
     $stageHome = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-extras-" + [guid]::NewGuid().ToString('N'))
     $staged = Join-Path $stageHome ".agents\\skills\\$Skill"
     $canonical = Join-Path $HOME '.agents\\skills'
@@ -2728,7 +2741,7 @@ function Install-ExtrasSkill {
         $env:HOME = $stageHome; $env:USERPROFILE = $stageHome
         try {
             Push-Location -LiteralPath $stageHome
-            try { Invoke-Step -Phase 'extras' -Action { npx --yes skills@latest add $Source --skill $Skill --agent codex --copy --yes } }
+            try { Invoke-Step -Phase 'extras' -Action { npx --yes skills@latest add $Source --skill $Skill --global --agent $Agent --copy --yes } }
             finally { Pop-Location }
         } finally { $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile }
         if (-not (Test-Path -LiteralPath (Join-Path $staged 'SKILL.md') -PathType Leaf)) { throw "Staged $Skill has no SKILL.md ($staged)" }
@@ -2743,7 +2756,7 @@ function Install-ExtrasSkill {
             return
         }
         Invoke-Step -Phase 'extras' -Action { Copy-Item -LiteralPath $staged -Destination $target -Recurse }
-        if (-not (Test-DirectoryContentEqual $staged $target)) { throw "Copied skill differs from staged source ($target)" }
+        if (-not (Test-Path -LiteralPath (Join-Path $target 'SKILL.md') -PathType Leaf) -or -not (Test-DirectoryContentEqual $staged $target)) { throw "Copied skill differs from staged source ($target)" }
     } finally {
         $env:HOME = $oldHome; $env:USERPROFILE = $oldProfile
         if (Test-Path -LiteralPath $stageHome) { Remove-Item -LiteralPath $stageHome -Recurse -Force -ErrorAction Stop }
@@ -2858,17 +2871,18 @@ function Install-CliAnything {
 
 function Mod-Extras {
     Write-Log INFO 'extras' 'start' 'Optional shared skills and tools'
-    foreach ($tool in @('npx', 'npm', 'git')) {
+    $tools = if ($ExtrasOnly) { @('npx') } else { @('npx', 'npm', 'git') }
+    foreach ($tool in $tools) {
         if (-not (Test-Cmd $tool)) { throw "$tool not found; extras cannot be installed" }
     }
-    foreach ($entry in @(
-        @{ Source = 'Leonxlnx/taste-skill'; Skill = 'design-taste-frontend' }
-        @{ Source = 'blader/humanizer'; Skill = 'humanizer' }
-        @{ Source = 'heroui-inc/heroui'; Skill = 'heroui-react' }
-    )) {
-        Install-ExtrasSkill -Source $entry.Source -Skill $entry.Skill
-        Link-ExtrasSkill -Skill $entry.Skill
+    foreach ($entry in ($SkillRegistry | Where-Object { $_.Module -eq 'extras' -and (-not $ExtrasOnly -or $ExtrasOnly -ccontains $_.Id) })) {
+        foreach ($skill in $entry.Skills) {
+            foreach ($agent in $entry.Agents) { Install-ExtrasSkill -Source $entry.Source -Skill $skill -Agent $agent }
+            Link-ExtrasSkill -Skill $skill
+        }
     }
+    # -Extras narrows the module to the chosen registry entries.
+    if ($ExtrasOnly) { return }
     Invoke-Step -Phase 'extras' -Action { npx --yes impeccable install -y --providers=claude,codex,opencode,gemini,antigravity,pi --scope=global --no-hooks }
     # Redirected stdin, like </dev/null in Bash: the update never waits on a prompt.
     Invoke-Step -Phase 'extras' -Action { '' | npx --yes hyperframes skills update }
@@ -3031,7 +3045,7 @@ function Show-List {
         $tag = if ($ModuleOptional.ContainsKey($m)) { "optional" } else { "core    " }
         "{0,-10} {1,-14} {2}" -f "[$tag]", $m, $ModuleDesc[$m] | Write-Host
     }
-    Write-Host "`nUse: -Only csv | -All | -Verbose | (default = core)"
+    Write-Host "`nUse: -Only csv | -Extras ids | -All | -Verbose | (default = core)"
 }
 
 function Show-Help {
@@ -3048,6 +3062,17 @@ function Show-Help {
 
 function Resolve-Selection {
     $requested = @()
+    if ($ExtrasSpecified) {
+        if ($All) { Write-Log ERROR "selection" "invalid_extras" "-Extras cannot be combined with -All." 2; exit 2 }
+        $ids = @($Extras -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+        foreach ($id in $ids) {
+            if (-not ($SkillRegistry | Where-Object { $_.Module -eq 'extras' -and $_.Id -ceq $id })) {
+                Write-Log ERROR "selection" "invalid_extras" "Unknown extras entry: $id" 2; exit 2
+            }
+        }
+        if ($ids.Count -eq 0) { Write-Log ERROR "selection" "invalid_extras" "-Extras requires a non-empty comma-separated entry list." 2; exit 2 }
+        $script:ExtrasOnly = $ids
+    }
     if ($All) {
         $requested = $ModuleOrder
     } elseif ($OnlySpecified) {
@@ -3065,6 +3090,9 @@ function Resolve-Selection {
             Write-Log ERROR "selection" "invalid_only" "-Only requires a non-empty comma-separated module list." 2
             exit 2
         }
+        if ($script:ExtrasOnly.Count -gt 0) { $requested += 'extras' }
+    } elseif ($script:ExtrasOnly.Count -gt 0) {
+        $requested = @('extras')
     } else {
         $requested = $ModuleOrder | Where-Object { -not $ModuleOptional.ContainsKey($_) }
     }
@@ -3211,6 +3239,7 @@ function Invoke-WindowsEnvironmentUninstall {
 # Main
 # ==============================================================================
 
+if ($Uninstall -and $ExtrasSpecified) { Write-Log ERROR "selection" "invalid_extras" "-Extras cannot be combined with -Uninstall." 2; exit 2 }
 if ($Uninstall) { exit (Invoke-WindowsEnvironmentUninstall) }
 
 New-Item -ItemType File -Force -Path $HumanLog | Out-Null
