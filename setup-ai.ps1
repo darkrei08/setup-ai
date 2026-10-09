@@ -2064,7 +2064,7 @@ function Mod-GentleAi {
     # gentle-ai CLI is missing even if an old gga is on PATH.
     Resolve-GentleAiCli
     if (-not (Test-Cmd gentle-ai)) {
-        # Vendor's official Windows method (installs to %LOCALAPPDATA%\gentle-ai\bin).
+        # Vendor's official Windows method installs to GOBIN or GOPATH\bin.
         Invoke-RemoteScript -Url "https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.ps1" -Phase "gentle-ai"
         Update-SessionPath
     }
