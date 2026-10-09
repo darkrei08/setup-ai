@@ -3334,9 +3334,16 @@ mod_cliproxyapi() {
         POST_INSTALL_ACTIONS+=("cliproxyapi: install Docker Compose v2, configure ${config_files[*]}, then rerun setup-ai --only cliproxyapi")
         return 0
     fi
+    # Check every config file present, not just the selected layout: the compose file already
+    # in the directory may belong to the other layout and mount files this run did not seed.
+    local -a gate_files=()
+    local gate_name
+    for gate_name in config.yaml keeper.env .env; do
+        if [[ -f "${compose_dir}/${gate_name}" ]]; then gate_files+=("${compose_dir}/${gate_name}"); fi
+    done
     local placeholder_check_rc=0
     grep -Eq 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)[[:space:]]*=[[:space:]]*$' \
-        "${config_files[@]}" || placeholder_check_rc=$?
+        "${gate_files[@]}" || placeholder_check_rc=$?
     case "${placeholder_check_rc}" in
         0)
             log_event "WARN" "cliproxyapi" "configuration_placeholder" \
