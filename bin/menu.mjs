@@ -136,15 +136,25 @@ export function fit(line, max) {
   return out;
 }
 
+// True when the terminal honours relative cursor-up. Legacy Windows consoles
+// ignore it, so win32 needs a sign of a VT-capable host; TERM=dumb never does.
+export function supportsCursorUp(env = process.env, platform = process.platform) {
+  if (env.TERM === "dumb") return false;
+  if (platform !== "win32") return true;
+  return Boolean(env.WT_SESSION || env.ANSICON || env.ConEmuANSI === "ON" || env.TERM_PROGRAM || env.TERM);
+}
+
 // Redraws in place: moves up over the previous frame, clears to the end of the
 // screen and prints once. Lines are truncated so none wraps and the line count
-// stays exact.
-export function createRenderer(out) {
+// stays exact. Without cursor-up support it clears the screen and homes the
+// cursor instead, so only one frame is ever visible.
+export function createRenderer(out, relative = supportsCursorUp()) {
   let prev = 0;
   return (lines) => {
     const cols = out.columns || 80;
     const fitted = lines.map((l) => fit(l, cols - 1));
-    out.write((prev ? `\x1b[${prev}A\r` : "") + "\x1b[J" + fitted.join("\n") + "\n");
+    const head = relative ? (prev ? `\x1b[${prev}A\r` : "") + "\x1b[J" : "\x1b[2J\x1b[H";
+    out.write(head + fitted.join("\n") + "\n");
     prev = fitted.length;
   };
 }

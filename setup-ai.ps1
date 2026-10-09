@@ -414,11 +414,19 @@ function Test-Cmd { param([string]$Name) [bool](Get-Command $Name -ErrorAction S
 
 function Resolve-GentleAiCli {
     if (Test-Cmd gentle-ai) { return }
-    $directory = Join-Path $env:LOCALAPPDATA "gentle-ai\bin"
-    $binary = Join-Path $directory "gentle-ai.exe"
-    if (Test-Path -LiteralPath $binary -PathType Leaf) {
-        $env:Path = "$directory;$env:Path"
-        Write-Log INFO "gentle-ai" "cli_resolved" "Resolved gentle-ai CLI outside PATH" 0 "directory=$directory"
+    # The vendor install.ps1 uses `go install` (GOBIN, else GOPATH\bin, else the default
+    # %USERPROFILE%\go\bin); the legacy %LOCALAPPDATA% layout is kept for older installs.
+    $candidates = @($env:GOBIN)
+    $candidates += @($env:GOPATH -split [IO.Path]::PathSeparator | Where-Object { $_ } | ForEach-Object { Join-Path $_ "bin" })
+    if ($env:USERPROFILE) { $candidates += Join-Path $env:USERPROFILE "go\bin" }
+    if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA "gentle-ai\bin" }
+    foreach ($directory in ($candidates | Where-Object { $_ })) {
+        $binary = Join-Path $directory "gentle-ai.exe"
+        if (Test-Path -LiteralPath $binary -PathType Leaf) {
+            $env:Path = "$directory;$env:Path"
+            Write-Log INFO "gentle-ai" "cli_resolved" "Resolved gentle-ai CLI outside PATH" 0 "directory=$directory"
+            return
+        }
     }
 }
 
@@ -461,7 +469,7 @@ function Invoke-Step {
         $nativeExitCode = $global:LASTEXITCODE
         if ($nativeExitCode -ne 0) {
             if ($ExpectedExitCodes -contains $nativeExitCode) {
-                Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" 0
+                Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode -Optional:$Optional -Behavior continue
                 Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
                 return $null
             }
@@ -473,7 +481,7 @@ function Invoke-Step {
     } catch {
         $nativeExitCode = $global:LASTEXITCODE
         if ($ExpectedExitCodes -contains $nativeExitCode) {
-            Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" 0
+            Write-Log INFO $Phase "step_expected" "Step returned expected exit code $nativeExitCode" $nativeExitCode -Optional:$Optional -Behavior continue
             Write-StepResult -Phase $Phase -Status $kind -ReturnCode 0 -Step $step
             return $null
         }
@@ -1274,7 +1282,7 @@ function Mod-Bun {
         Invoke-Step -Phase "bun" -Verify -Action { bun --version }
         Write-Log INFO "bun" "installed" "bun available after remote installer"
     } else {
-        Write-Log ERROR "bun" "install_missing" "bun not found on PATH after remote installer"
+        Write-Log ERROR "bun" "install_missing" "bun not found on PATH after remote installer" 1
         throw "bun not found on PATH after remote installer"
     }
 }
@@ -1295,7 +1303,7 @@ function Mod-Pi {
     if (Test-Cmd pi) {
         Write-Log INFO "pi" "installed" "pi available after remote installer"
     } else {
-        Write-Log ERROR "pi" "install_missing" "pi not found on PATH after remote installer"
+        Write-Log ERROR "pi" "install_missing" "pi not found on PATH after remote installer" 1
         throw "pi not found on PATH after remote installer"
     }
 }
@@ -1513,12 +1521,12 @@ function Mod-PiWorkflows {
     # can resolve a shadowing ancestor copy (false version_mismatch).
     $localPkg = Join-Path $PiExtDir "node_modules/pi-extensible-workflows/package.json"
     if (-not (Test-Path $localPkg)) {
-        Write-Log ERROR "pi-workflows-node" "install_missing" "pi-extensible-workflows not installed in extensions dir ($localPkg)"
+        Write-Log ERROR "pi-workflows-node" "install_missing" "pi-extensible-workflows not installed in extensions dir ($localPkg)" 1
         throw "pi-extensible-workflows not installed in extensions dir ($localPkg)"
     } else {
         $installed = (Get-Content -Raw $localPkg | ConvertFrom-Json).version
         if ($installed -ne $ver) {
-            Write-Log ERROR "pi-workflows-node" "version_mismatch" "Installed version mismatch (expected=$ver actual=$installed)"
+            Write-Log ERROR "pi-workflows-node" "version_mismatch" "Installed version mismatch (expected=$ver actual=$installed)" 1
             throw "Installed pi-extensible-workflows version mismatch (expected=$ver actual=$installed)"
         } else {
             Write-Log INFO "pi-workflows-node" "module_resolved" "Installed $installed in $localPkg"
@@ -1596,7 +1604,7 @@ function Mod-Herdr {
     if (Test-Cmd herdr) {
         Write-Log INFO "herdr" "installed" "herdr available after remote installer"
     } else {
-        Write-Log ERROR "herdr" "install_missing" "herdr not found on PATH after remote installer"
+        Write-Log ERROR "herdr" "install_missing" "herdr not found on PATH after remote installer" 1
         throw "herdr not found on PATH after remote installer"
     }
 }
@@ -1612,7 +1620,7 @@ function Mod-ClaudeCode {
         Invoke-Step -Phase "claude-code" -Action { npm install -g @anthropic-ai/claude-code @allowScripts }
         Update-SessionPath
         if (-not (Test-Cmd claude)) {
-            Write-Log ERROR "claude-code" "install_missing" "claude not found on PATH after npm install"
+            Write-Log ERROR "claude-code" "install_missing" "claude not found on PATH after npm install" 1
             throw "claude not found on PATH after npm install"
         }
     } else {
@@ -2069,14 +2077,14 @@ function Mod-GentleAi {
     # gentle-ai CLI is missing even if an old gga is on PATH.
     Resolve-GentleAiCli
     if (-not (Test-Cmd gentle-ai)) {
-        # Vendor's official Windows method (installs to %LOCALAPPDATA%\gentle-ai\bin).
+        # Vendor's official Windows method installs to GOBIN or GOPATH\bin.
         Invoke-RemoteScript -Url "https://raw.githubusercontent.com/Gentleman-Programming/gentle-ai/main/scripts/install.ps1" -Phase "gentle-ai"
         Update-SessionPath
     }
 
     Resolve-GentleAiCli
     if (-not (Test-Cmd gentle-ai)) {
-        Write-Log ERROR "gentle-ai" "install_missing" "gentle-ai CLI not found on PATH after remote installer"
+        Write-Log ERROR "gentle-ai" "install_missing" "gentle-ai CLI not found on PATH after remote installer" 1
         throw "gentle-ai CLI not found on PATH after remote installer"
     }
     Invoke-Step -Phase "gentle-ai" -Verify -Action { & gentle-ai --version }
@@ -2238,7 +2246,7 @@ function Mod-GentleAi {
             Assert-PiPackageRegistered -Phase "gentle-ai" -Spec "npm:pi-mcp-adapter"
             Write-Log INFO "gentle-ai" "pi_enabled" "gentle-pi + pi-mcp-adapter registered in pi (verify: /mcp, /gentle-ai:status)"
         } catch {
-            Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)"
+            Write-Log ERROR "gentle-ai" "pi_enable_failed" "gentle-pi and/or pi-mcp-adapter not present in pi settings after install ($piSettings)" 1
             throw "gentle-pi and/or pi-mcp-adapter not present in pi settings after install"
         }
     }
@@ -2270,7 +2278,7 @@ function Mod-Codex {
     if (Test-Cmd codex) {
         Write-Log INFO "codex" "installed" "codex available after remote installer"
     } else {
-        Write-Log ERROR "codex" "install_missing" "codex not found on PATH after remote installer"
+        Write-Log ERROR "codex" "install_missing" "codex not found on PATH after remote installer" 1
         throw "codex not found on PATH after remote installer"
     }
 }
@@ -2282,7 +2290,7 @@ function Mod-Antigravity {
     if (Test-Cmd agy) {
         Write-Log INFO "antigravity" "installed" "agy available after remote installer"
     } else {
-        Write-Log ERROR "antigravity" "install_missing" "agy not found on PATH after remote installer"
+        Write-Log ERROR "antigravity" "install_missing" "agy not found on PATH after remote installer" 1
         throw "agy not found on PATH after remote installer"
     }
 }
@@ -2396,7 +2404,7 @@ function Mod-Opencode {
         # verification below sees it without a new shell (parity with setup-ai.sh).
         Update-SessionPath
         if (-not (Test-Cmd opencode)) {
-            Write-Log ERROR "opencode" "install_missing" "opencode not found on PATH after npm install"
+            Write-Log ERROR "opencode" "install_missing" "opencode not found on PATH after npm install" 1
             throw "opencode not found on PATH after npm install"
         }
     }
@@ -2937,7 +2945,7 @@ function Mod-Rotator {
         if (-not (Test-Cmd npm)) { throw "npm not found; tuxevil-rotator cannot be installed" }
         Invoke-Step -Phase "rotator" -Action { npm install -g tuxevil-rotator }
         if (-not (Test-Cmd tuxevil-rotator)) {
-            Write-Log ERROR "rotator" "install_missing" "tuxevil-rotator not found on PATH after npm install"
+            Write-Log ERROR "rotator" "install_missing" "tuxevil-rotator not found on PATH after npm install" 1
             throw "tuxevil-rotator not found on PATH after npm install"
         }
     }

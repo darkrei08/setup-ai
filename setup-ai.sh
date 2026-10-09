@@ -3076,6 +3076,12 @@ refresh_opencode_path() {
 
 mod_opencode() {
     section "opencode"
+    # npm 12 blocks opencode-ai's postinstall, which replaces the stub launcher with the
+    # real one; --allow-scripts is the form npm documents for global installs.
+    local -a allow_scripts=()
+    if command -v npm >/dev/null 2>&1 && npm install-scripts --help >/dev/null 2>&1; then
+        allow_scripts=(--allow-scripts=opencode-ai)
+    fi
     if command -v opencode >/dev/null 2>&1; then
         log_event "INFO" "opencode" "already_present" "opencode already installed" 0
     else
@@ -3149,14 +3155,7 @@ mod_opencode() {
                 if (( vendor_installed == 0 )); then
                     log_event "INFO" "opencode" "npm_fallback" "Installing opencode from the npm registry" 0
                     require_command npm
-                    local npm_version npm_major
-                    capture_cmd npm_version "opencode" npm --version
-                    npm_major="${npm_version%%.*}"
-                    if [[ "${npm_major}" =~ ^[0-9]+$ ]] && (( npm_major >= 12 )); then
-                        run_cmd "opencode" npm install -g opencode-ai --allow-scripts=opencode-ai
-                    else
-                        run_cmd "opencode" npm install -g opencode-ai
-                    fi
+                    run_cmd "opencode" npm install -g opencode-ai "${allow_scripts[@]}"
                     log_event "INFO" "opencode" "npm_install_succeeded" \
                         "Installed opencode from the npm registry" 0
                 fi
@@ -3168,6 +3167,13 @@ mod_opencode() {
         fi
         require_command opencode
     fi
+    # Repair a stub left by a blocked postinstall (reinstalling does not re-run it). Optional:
+    # an opencode from the vendor installer has nothing to rebuild.
+    if command -v npm >/dev/null 2>&1; then
+        run_optional "opencode" npm rebuild -g opencode-ai "${allow_scripts[@]}" --foreground-scripts
+    fi
+    # The stub exits 1, so the CLI's exit code, not the shim's existence, proves the install.
+    run_cmd "opencode" --verify opencode --version
     verify_opencode_spawn
 
     log_event "INFO" "opencode" "zen_hint" "OpenCode Go / Zen provider hint" 0

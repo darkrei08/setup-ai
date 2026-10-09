@@ -28,7 +28,7 @@ run() { # image, label, in-container command
 
 # shellcheck disable=SC2016 # deferred command run later via ${BASH_GATES}; vars/subshells must expand then, not here
 AI_MEMORY_DRY_RUN='aimem_prefix="$(mktemp -d)" && trap '\''rm -rf -- "${aimem_prefix}"'\'' EXIT && AIMEM_PREFIX="${aimem_prefix}" bash setup-ai.sh --dry-run --only ai-memory >/dev/null'
-BASH_GATES="bash -n setup-ai.sh && bash tests/gentle-ai-cli-resolution.sh >/dev/null && bash tests/configurator-retry-check.sh >/dev/null && ${AI_MEMORY_DRY_RUN}"
+BASH_GATES="bash -n setup-ai.sh && bash tests/gentle-ai-cli-resolution.sh >/dev/null && bash tests/opencode-postinstall.sh >/dev/null && bash tests/configurator-retry-check.sh >/dev/null && ${AI_MEMORY_DRY_RUN}"
 NODE_GATES="${BASH_GATES} && bash tests/skills-registry.sh >/dev/null && node bin/setup-ai.mjs --list >/dev/null && bash tests/jsonl-schema.sh >/dev/null && bash tests/pi-startup-check.sh >/dev/null"
 
 run node:22-bookworm      "bash gates + node launcher + jsonl" "$NODE_GATES"
