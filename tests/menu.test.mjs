@@ -1,7 +1,7 @@
 // Drives the progressive menu with scripted keys and a tiny terminal emulator.
 // Run: node tests/menu.test.mjs
 import assert from "node:assert/strict";
-import { chosenNames, createRenderer, initState, reduce, view } from "../bin/menu.mjs";
+import { chosenNames, createRenderer, initState, reduce, supportsCursorUp, view } from "../bin/menu.mjs";
 
 const modules = [
   { name: "base", category: "System", core: true, desc: "d" },
@@ -19,14 +19,15 @@ function run(keys) {
   return { s, frames };
 }
 
-// Terminal emulator: handles ESC[nA, \r, ESC[J and newlines.
-function screenAfter(frames, cols = 80) {
+// Terminal emulator: handles ESC[nA, ESC[2J, ESC[H, \r, ESC[J and newlines.
+function screenAfter(frames, cols = 80, relative = true) {
   const rows = [];
   let y = 0;
   const out = { columns: cols, write(data) {
-    for (const m of data.replace(/\x1b\[[0-9;]*m/g, "").matchAll(/\x1b\[(\d*)([AJ])|\r|\n|([^\x1b\r\n]+)/g)) {
+    for (const m of data.replace(/\x1b\[[0-9;]*m/g, "").matchAll(/\x1b\[(\d*)([AJH])|\r|\n|([^\x1b\r\n]+)/g)) {
       if (m[2] === "A") y -= Number(m[1] || 1);
-      else if (m[2] === "J") rows.length = y;
+      else if (m[2] === "H") y = 0;
+      else if (m[2] === "J") rows.length = m[1] === "2" ? (y = 0) : y;
       else if (m[0] === "\n") y++;
       else if (m[3] !== undefined) {
         const plain = m[3].replace(/\x1b\[[0-9;]*m/g, "");
@@ -35,7 +36,7 @@ function screenAfter(frames, cols = 80) {
       }
     }
   } };
-  const draw = createRenderer(out);
+  const draw = createRenderer(out, relative);
   frames.forEach(draw);
   return rows.filter((r) => r !== undefined);
 }
@@ -64,4 +65,20 @@ for (const cols of [80, 40]) {
   const rows = screenAfter(long, cols);
   assert.equal(rows.filter((x) => x.includes("AI Dev Suite")).length, 1);
 }
+// Legacy consoles ignore cursor-up: the absolute fallback must not emit it and
+// must still leave exactly one banner.
+const frames = [];
+const probe = createRenderer({ columns: 80, write: (d) => frames.push(d) }, false);
+long.forEach(probe);
+assert.ok(frames.every((f) => f.startsWith("\x1b[2J\x1b[H") && !/\x1b\[\d*A/.test(f)));
+assert.equal(screenAfter(long, 80, false).filter((x) => x.includes("AI Dev Suite")).length, 1);
+// Capability detection
+assert.equal(supportsCursorUp({}, "linux"), true);
+assert.equal(supportsCursorUp({ TERM: "dumb" }, "linux"), false);
+assert.equal(supportsCursorUp({}, "win32"), false);
+assert.equal(supportsCursorUp({ WT_SESSION: "x" }, "win32"), true);
+assert.equal(supportsCursorUp({ ConEmuANSI: "ON" }, "win32"), true);
+assert.equal(supportsCursorUp({ ConEmuANSI: "OFF" }, "win32"), false);
+assert.equal(supportsCursorUp({ TERM_PROGRAM: "vscode" }, "win32"), true);
+assert.equal(supportsCursorUp({ TERM: "xterm-256color" }, "win32"), true);
 console.log("menu tests passed");
