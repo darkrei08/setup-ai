@@ -2094,6 +2094,42 @@ mod_skills() {
 # Concept split for this module:
 #   1. npm behavior of both pi roots (npm 12 EALLOWREMOTE on remote sources)
 #   2. published pi-extensible-workflows, verified down to the loaded artifact
+link_dotenv_workflow_extensions() {
+    local source_dir="${1:?}"
+    local target_dir="${2:?}"
+    local source_barrel="${3:?}"
+    local target_barrel="${4:?}"
+
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "dotenv-workflows" "link ${source_dir} -> ${target_dir}"
+        return 0
+    fi
+
+    run_cmd "dotenv-workflows" mkdir -p "$(dirname -- "${target_dir}")"
+    if [[ ! -e "${target_dir}" ]]; then
+        run_cmd "dotenv-workflows" ln -s "${source_dir}" "${target_dir}"
+    elif [[ -L "${target_dir}" ]]; then
+        run_cmd "dotenv-workflows" ln -sfn "${source_dir}" "${target_dir}"
+    fi
+
+    if [[ ! -f "${target_dir}/develop-issues.ts" ]]; then
+        log_event "ERROR" "dotenv-workflows" "symlink_verification_failed" \
+            "Failed to verify pi-ext-workflows target" 1 "target=${target_dir}"
+        return 1
+    fi
+
+    if [[ -f "${source_barrel}" ]]; then
+        if [[ ! -e "${target_barrel}" ]] || [[ -L "${target_barrel}" ]]; then
+            run_cmd "dotenv-workflows" ln -sf "${source_barrel}" "${target_barrel}"
+        fi
+        if [[ ! -f "${target_barrel}" ]]; then
+            log_event "ERROR" "dotenv-workflows" "barrel_verification_failed" \
+                "Failed to verify piextworkflows.ts target" 1 "target=${target_barrel}"
+            return 1
+        fi
+    fi
+}
+
 mod_pi_workflows() {
     section "pi-extensible-workflows"
     require_command pi
@@ -2193,6 +2229,13 @@ mod_pi_workflows() {
         fi
         log_event "INFO" "dotenv-workflows" "module_verified" \
             "Verified installed dotenv workflow package" 0 "path=${dotenv_workflow_pkg}"
+
+        # Link workflow extensions and barrel into live PI_EXTENSIONS_DIR so pi loads developIssues
+        link_dotenv_workflow_extensions \
+            "${DOTENV_EXT_DIR}" \
+            "${PI_EXTENSIONS_DIR}/pi-ext-workflows" \
+            "${DOTENV_DIR}/pi/agent/extensions/piextworkflows.ts" \
+            "${PI_EXTENSIONS_DIR}/piextworkflows.ts"
     fi
 
     # 2. Prove the artifact pi will load carries the transient-rename retry the published
