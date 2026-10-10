@@ -241,6 +241,18 @@ limits for `tokens`, `costUsd`, `durationMs`, and `agentLaunches`), and `parentR
 scopes, but does not retry or resume). `scriptPath` is resolved from the launch project,
 read once, and saved as the run's immutable source.
 
+### Funzioni di workflow del repository / Repository workflow functions
+
+**Italiano**
+
+I repository di configurazione (come `dotenv`) possono definire funzioni di workflow aggiuntive (`developIssues`, `developUntilApproved`, `devIssuesInBatches`, `fetchIssueDetails`, `tddDev`).
+Il modulo `pi-workflows` di `setup-ai` possiede e garantisce il collegamento dei moduli da `${DOTENV_DIR}/pi/agent/extensions/pi-ext-workflows` verso `~/.pi/agent/extensions/pi-ext-workflows`, rendendo `developIssues` e le altre funzioni disponibili in `workflow_catalog`.
+
+**English**
+
+Configuration repositories (such as `dotenv`) can provide custom workflow functions (`developIssues`, `developUntilApproved`, `devIssuesInBatches`, `fetchIssueDetails`, `tddDev`).
+The `setup-ai` `pi-workflows` module owns and maintains the link from `${DOTENV_DIR}/pi/agent/extensions/pi-ext-workflows` to `~/.pi/agent/extensions/pi-ext-workflows`, exposing `developIssues` and related functions in `workflow_catalog`.
+
 ---
 
 ## 6. Foreground vs background / Foreground vs background

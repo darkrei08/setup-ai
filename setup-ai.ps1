@@ -1475,6 +1475,39 @@ function Mod-Skills {
     }
 }
 
+function Link-DotenvWorkflowExtensions {
+    param(
+        [Parameter(Mandatory=$true)][string]$SourceDir,
+        [Parameter(Mandatory=$true)][string]$TargetDir,
+        [Parameter(Mandatory=$true)][string]$SourceBarrel,
+        [Parameter(Mandatory=$true)][string]$TargetBarrel
+    )
+    if ($DryRun) {
+        Write-Log INFO "dotenv-workflows" "dry_run" "link $SourceDir -> $TargetDir"
+        return
+    }
+    $parent = Split-Path -Parent $TargetDir
+    if (-not (Test-Path -LiteralPath $parent)) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $TargetDir)) {
+        New-Item -ItemType SymbolicLink -Path $TargetDir -Target $SourceDir -Force | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $TargetDir "develop-issues.ts"))) {
+        Write-Log ERROR "dotenv-workflows" "symlink_verification_failed" "Failed to verify pi-ext-workflows target: $TargetDir" 1
+        throw "Failed to verify pi-ext-workflows target: $TargetDir"
+    }
+    if (Test-Path -LiteralPath $SourceBarrel) {
+        if (-not (Test-Path -LiteralPath $TargetBarrel)) {
+            New-Item -ItemType SymbolicLink -Path $TargetBarrel -Target $SourceBarrel -Force | Out-Null
+        }
+        if (-not (Test-Path -LiteralPath $TargetBarrel)) {
+            Write-Log ERROR "dotenv-workflows" "barrel_verification_failed" "Failed to verify piextworkflows.ts target: $TargetBarrel" 1
+            throw "Failed to verify piextworkflows.ts target: $TargetBarrel"
+        }
+    }
+}
+
 function Mod-PiWorkflows {
     Write-Log INFO "pi-workflows" "start" "pi-extensible-workflows"
     if (-not (Test-Cmd pi)) { throw "pi not found; pi-workflows cannot be installed" }
@@ -1541,6 +1574,17 @@ function Mod-PiWorkflows {
         if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
         $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
         $null = Assert-TransientRenameRetry -IoJs $rootIo -Phase "pi-workflows" -Context "root=$root"
+    }
+
+    # Cross-OS parity with setup-ai.sh: link dotenv workflow extensions if present
+    $dotenvExtDir = Join-Path $DotenvDir "pi\agent\extensions\pi-ext-workflows"
+    $dotenvBarrel = Join-Path $DotenvDir "pi\agent\extensions\piextworkflows.ts"
+    if (Test-Path -LiteralPath $dotenvExtDir -PathType Container) {
+        Link-DotenvWorkflowExtensions `
+            -SourceDir $dotenvExtDir `
+            -TargetDir (Join-Path $PiExtDir "pi-ext-workflows") `
+            -SourceBarrel $dotenvBarrel `
+            -TargetBarrel (Join-Path $PiExtDir "piextworkflows.ts")
     }
 }
 
