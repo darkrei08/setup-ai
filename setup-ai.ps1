@@ -84,6 +84,7 @@ $RunStartTime = Get-Date
 
 $EE_Slug  = "darkrei08/Engineering-Excellence"
 $EE_Skill = "engineering-excellence"
+$DotenvDir  = if ($env:DOTENV_DIR) { $env:DOTENV_DIR } else { Join-Path $HOME "git\personale\dotenv" }
 $PiAgentDir = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $HOME ".pi\agent" }
 $PiExtDir   = Join-Path $PiAgentDir "extensions"
 $PiNpmDir   = Join-Path $PiAgentDir "npm"
@@ -1168,7 +1169,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','rotator','extras')
+$ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
@@ -1190,10 +1191,10 @@ $ModuleDesc = [ordered]@{
     'antigravity'  = 'Google Antigravity CLI (agy)'
     'opencode'     = 'opencode agent CLI (opencode-ai)'
     'cockpit'      = 'cockpit-tools desktop GUI app (optional, CC BY-NC-SA)'
-    'rotator'      = 'tuxevil-rotator multi-account Gemini/Antigravity gateway (installed and started in the background; optional, opt-in)'
+    'cliproxyapi'  = 'CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)'
     'extras'       = 'Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)'
 }
-$ModuleOptional = @{ 'cockpit' = $true; 'rotator' = $true; 'extras' = $true }
+$ModuleOptional = @{ 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -2445,30 +2446,9 @@ function Mod-Cockpit {
     }
 }
 
-# Resolve the executable a scheduled task must run. npm installs three shims on Windows
-# and PowerShell resolves the .ps1 one, which a task cannot execute directly; the .cmd
-# shim is what the task runs.
-function Get-RotatorExecutable {
-    $command = Get-Command tuxevil-rotator -ErrorAction SilentlyContinue
-    $binPath = if ($command) { $command.Source } else { "tuxevil-rotator" }
-    if ($binPath -like "*.ps1") {
-        $cmdShim = [System.IO.Path]::ChangeExtension($binPath, ".cmd")
-        if (Test-Path -LiteralPath $cmdShim -PathType Leaf) { return $cmdShim }
-    }
-    return $binPath
-}
-
-# Prefix identifying every scheduled task this installer creates. Each registration attempt
-# appends a fresh, unique suffix (see Register-RotatorTask), so two consecutive install runs
-# never carry the same ownership token and a stale token can never be mistaken for the one
-# the current attempt is about to create or roll back.
+# Legacy task cleanup is uninstall-only; retain its receipt checks, never its installer.
 $RotatorTaskMarkerPrefix = "setup-ai-rotator-task-v1"
 
-# Fingerprint the stable configuration a scheduled task readback carries: every action, every
-# trigger's type/enabled/user/boundaries/repetition, the principal, and the settings this
-# registration owns (enabled, instance policy, execution limits, battery/idle/wake/hidden/
-# priority). Volatile state and the task's own Description -- where the receipt itself lives
-# -- are excluded, so comparing this against the embedded receipt detects an edited task.
 function Get-RotatorTaskFingerprint {
     param($Task)
     $normalize = {
@@ -2529,6 +2509,7 @@ function Get-RotatorTaskFingerprint {
 # Only "no such task" (the CIM query's not-found error id, as Windows reports it, or HRESULT
 # 0x80070002) means absent; any other query failure is rethrown, so ownership decisions never
 # run on an unreadable scheduler.
+
 function Get-RotatorTask {
     try { Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction Stop }
     catch {
@@ -2539,6 +2520,7 @@ function Get-RotatorTask {
 # Read back the marker and fingerprint embedded in a scheduled task's description. Returns
 # $null when the receipt is missing or malformed; callers treat that the same as "not ours"
 # and leave the task untouched rather than guess at ownership.
+
 function Get-RotatorTaskReceipt {
     param($Task)
     if (-not $Task -or -not $Task.PSObject.Properties['Description'] -or -not $Task.Description) { return $null }
@@ -2547,6 +2529,7 @@ function Get-RotatorTaskReceipt {
 }
 
 # Installer-owned means: this installer's marker family, and a receipt that still matches the task.
+
 function Test-RotatorTaskOwned {
     param($Task)
     $receipt = Get-RotatorTaskReceipt -Task $Task
@@ -2555,161 +2538,12 @@ function Test-RotatorTaskOwned {
 
 # Roll back a task this run registered moments ago. Fails closed: the current task is
 # re-queried and its receipt must still carry both this attempt's marker and expected fingerprint.
-function Remove-RotatorTaskRollback {
-    param([string]$ExpectedMarker, [string]$ExpectedFingerprint)
-    try { $current = Get-RotatorTask } catch { Write-Log WARN "rotator" "task_rollback_query_failed" "Could not read the scheduled task before rollback; leaving it in place" 0 "error=$($_.Exception.Message)"; return }
-    if (-not $current) { return }
-    $receipt = Get-RotatorTaskReceipt -Task $current
-    #NOTE: a fresh marker plus its expected fingerprint proves this attempt's receipt; a foreign
-    # task, earlier task, or changed receipt is left in place rather than guessing at ownership.
-    if (-not $receipt -or $receipt.Marker -ne $ExpectedMarker -or $receipt.Fingerprint -ne $ExpectedFingerprint) {
-        Write-Log WARN "rotator" "task_rollback_skipped" "A 'tuxevil-rotator' task exists but does not carry this run's ownership marker and fingerprint; leaving it in place rather than guessing at ownership" 0 "task=tuxevil-rotator"
-        return
-    }
-    try {
-        Unregister-ScheduledTask -TaskName "tuxevil-rotator" -Confirm:$false -ErrorAction Stop
-        Write-Log WARN "rotator" "task_rolled_back" "Removed the scheduled task this run just created after it failed verification" 0 "task=tuxevil-rotator"
-    } catch {
-        Write-Log WARN "rotator" "task_rollback_failed" "Could not remove the scheduled task this run just created after it failed verification; it may be left in a partial, unowned state" 0 "error=$($_.Exception.Message)"
-    }
-}
 
-# Register the gateway with the machine's own autostart so it survives a reboot: a logon
-# scheduled task, which runs hidden and needs no console. Registering only, not starting:
-# the process is started by its own step and only when nothing answers its port, so an
-# already-running gateway is never doubled.
-#
-# Windows has no counterpart to the Linux unit's Restart=on-failure, so the task also carries a
-# repeating trigger as a watchdog: every tick starts the gateway only when nothing listens on
-# 51200 yet. IgnoreNew skips the tick while the gateway it started is still running, and
-# the tick's own probe skips it while a gateway started elsewhere holds the port.
-function Register-RotatorTask {
-    # Replacing even a valid setup-ai task would require a verified snapshot and restore path.
-    # Preserve every existing task instead; a fresh install is the only safe write.
-    try { $existingTask = Get-RotatorTask }
-    catch { Write-Log WARN "rotator" "task_query_failed" "Could not read the scheduled task before registration; leaving it unchanged" 0 "error=$($_.Exception.Message)"; return $false }
-    if ($existingTask) {
-        Write-Log INFO "rotator" "task_preexisting" "A 'tuxevil-rotator' scheduled task already exists; this run will not overwrite it or claim it" 0 "task=tuxevil-rotator"
-        return $false
-    }
-    $binPath = Get-RotatorExecutable
-    $watchdogMinutes = 5
-    $attemptMarker = $null
-    $fingerprint = $null
-    try {
-        # The tick probes before it starts anything, because a manual or installer-detached
-        # gateway owns the port without owning this task instance, and IgnoreNew alone cannot
-        # keep that one single. A connect to the address the module's own probe uses is the
-        # cheapest test that answers "is a gateway already answering?": it is milliseconds,
-        # while Get-NetTCPConnection costs seconds and loads the NetTCPIP module.
-        #NOTE: a gateway bound to a non-loopback address only would read as free here; the
-        # gateway itself binds 0.0.0.0 (tuxevil-rotator's default) and 127.0.0.1 is what the
-        # module and the Pi extension probe, so this asks the same question they do.
-        # The path lands in a single-quoted string inside the task's command line, so a quote
-        # in it would end that string early; doubling it is PowerShell's own escaping.
-        $shim = $binPath.Replace("'", "''")
-        $tick = "try { (New-Object Net.Sockets.TcpClient('127.0.0.1', 51200)).Close() } catch { & '$shim' start }"
-        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument ('-NoProfile -WindowStyle Hidden -Command "' + $tick + '"')
-        # Logon starts the gateway; the once-trigger's repetition is the watchdog. A
-        # repetition attached to the logon trigger itself never fires: measured on Windows 11,
-        # such a task reports no NextRunTime and only ever runs at logon.
-        $atLogon = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
-        $watchdog = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes $watchdogMinutes)
-        # A zero execution time limit is what keeps a long-running gateway from being killed
-        # at the scheduler's default three days. The principal is set explicitly, rather than
-        # left to the scheduler's default, so the fingerprint has a known value to agree on.
-        $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
-            -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
-        $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive
-        # A fresh, unique token per attempt, so rollback can never mistake one attempt's task
-        # for another's even when both register the very same configuration.
-        $attemptMarker = "$($RotatorTaskMarkerPrefix)-$([guid]::NewGuid().ToString('N').Substring(0, 12))"
-        $taskShape = [pscustomobject]@{ TaskName = "tuxevil-rotator"; TaskPath = "\"; Actions = @($action); Triggers = @($atLogon, $watchdog); Principal = $principal; Settings = $taskSettings }
-        $fingerprint = Get-RotatorTaskFingerprint -Task $taskShape
-        # The fingerprint and marker are the receipt: embedding them in the task's own
-        # Description is what lets a later run (or the npm removal work unit) tell this
-        # installer's task apart from one a user created or edited under the same name,
-        # without a side file that could drift from the task it describes.
-        $description = "tuxevil-rotator multi-account Gemini/Antigravity gateway on http://localhost:51200 [$($attemptMarker):fp=$fingerprint]"
-        Register-ScheduledTask -TaskName "tuxevil-rotator" -Action $action -Trigger @($atLogon, $watchdog) -Settings $taskSettings -Principal $principal `
-            -Description $description | Out-Null
-        # A registration can half-apply, and the promise is about the next logon rather than about
-        # this run, so the task is read back and checked: what it runs, that it still starts at
-        # logon for this user, the settings the supervision rests on, and the receipt this run
-        # just embedded. This also covers the trap above, where a repetition attached to the
-        # wrong trigger reads back as no watchdog.
-        $registered = Get-ScheduledTask -TaskName "tuxevil-rotator" -ErrorAction Stop
-        $actions = @($registered.Actions)
-        $actionOk = $actions.Count -eq 1 -and $actions[0].Execute -eq $action.Execute -and $actions[0].Arguments -eq $action.Arguments
-        $logonOk = @($registered.Triggers | Where-Object {
-            $_.CimClass.CimClassName -eq "MSFT_TaskLogonTrigger" -and $_.Enabled -and ($_.UserId -split '\\')[-1] -eq $env:USERNAME
-        }).Count -gt 0
-        # Scheduled-task APIs return durations as either TimeSpan values or ISO/XSD strings;
-        # normalize both forms before comparing the trigger we built with its readback.
-        $toDuration = {
-            param($value)
-            if ($value -is [TimeSpan]) { return [TimeSpan]$value }
-            $text = ([string]$value).Trim()
-            if ($text -like "P*") { return [System.Xml.XmlConvert]::ToTimeSpan($text) }
-            return [TimeSpan]::Parse($text, [Globalization.CultureInfo]::InvariantCulture)
-        }
-        $interval = & $toDuration $watchdog.Repetition.Interval
-        $watchdogOk = @($registered.Triggers | Where-Object {
-            $_.Enabled -and $_.Repetition -and $_.Repetition.Interval -and (& $toDuration $_.Repetition.Interval) -eq $interval
-        }).Count -gt 0
-        # A disabled task or trigger is registered and inert, so both are part of the check.
-        $enabledOk = [bool]$registered.Settings.Enabled
-        $instancesOk = $registered.Settings.MultipleInstances -eq "IgnoreNew"
-        $limitOk = [System.Xml.XmlConvert]::ToTimeSpan($registered.Settings.ExecutionTimeLimit) -eq [TimeSpan]::Zero
-        # Recomputed from the readback, so a half-apply that corrupts anything the fingerprint
-        # covers -- not just the action -- is caught the same way a changed command line is.
-        $actualFingerprint = Get-RotatorTaskFingerprint -Task $registered
-        $receipt = Get-RotatorTaskReceipt -Task $registered
-        $receiptOk = $receipt -and $receipt.Marker -eq $attemptMarker -and $receipt.Fingerprint -eq $fingerprint -and $actualFingerprint -eq $fingerprint
-        if (-not ($actionOk -and $logonOk -and $watchdogOk -and $enabledOk -and $instancesOk -and $limitOk -and $receiptOk)) {
-            $flags = "task=tuxevil-rotator;action=$actionOk;logon=$logonOk;watchdog=$watchdogOk;enabled=$enabledOk;ignoreNew=$instancesOk;noTimeLimit=$limitOk;receipt=$receiptOk"
-            Write-Log WARN "rotator" "task_unverified" "Scheduled task registered without the action, logon trigger, watchdog, or receipt this module relies on; rolling it back so an unowned, half-verified task is not left behind" 0 $flags
-            Remove-RotatorTaskRollback -ExpectedMarker $attemptMarker -ExpectedFingerprint $fingerprint
-            return $false
-        }
-        Write-Log INFO "rotator" "task_registered" "tuxevil-rotator starts at logon and is watched every $watchdogMinutes minutes by a scheduled task" 0 "task=tuxevil-rotator;exe=$binPath;watchdog=${watchdogMinutes}m;fp=$fingerprint"
-        return $true
-    } catch {
-        # Register-ScheduledTask can create the task and still report failure. The marker and
-        # fingerprint are unique to this attempt, so only that fresh receipt can be rolled back.
-        if ($attemptMarker -and $fingerprint) { Remove-RotatorTaskRollback -ExpectedMarker $attemptMarker -ExpectedFingerprint $fingerprint }
-        Write-Log WARN "rotator" "task_failed" "Scheduled task registration or verification failed; the gateway is started as a detached process only" 0 "error=$($_.Exception.Message)"
-        return $false
-    }
-}
-
-# Start the gateway in the background and leave the proof of that start to the caller's
-# probe. The scheduled task is preferred because it also covers the next session;
-# anywhere it cannot run, the process is detached from this installer instead.
-function Start-RotatorGateway {
-    param([string]$LogFile)
-    $task = try { Get-RotatorTask } catch { Write-Log WARN "rotator" "task_query_failed" "Could not read the scheduled task; falling back to a detached process" 0 "error=$($_.Exception.Message)"; $null }
-    $owned = $false
-    try { $owned = [bool]($task -and (Test-RotatorTaskOwned -Task $task)) } catch { Write-Log WARN "rotator" "task_validation_failed" "Could not validate the scheduled task; falling back to a detached process" 0 "error=$($_.Exception.Message)" }
-    if ($owned) {
-        try {
-            Start-ScheduledTask -TaskName "tuxevil-rotator"
-            Write-Log INFO "rotator" "task_started" "tuxevil-rotator started through the logon scheduled task" 0 "task=tuxevil-rotator"
-            return $true
-        } catch {
-            Write-Log WARN "rotator" "task_start_failed" "Scheduled task did not start; falling back to a detached process" 0 "error=$($_.Exception.Message)"
-        }
-    }
-    $binPath = Get-RotatorExecutable
-    try {
-        Start-Process -FilePath $binPath -ArgumentList "start" -WindowStyle Hidden `
-            -RedirectStandardOutput $LogFile -RedirectStandardError ([System.IO.Path]::ChangeExtension($LogFile, ".err.log"))
-        Write-Log INFO "rotator" "gateway_spawned" "tuxevil-rotator started in the background" 0 "log=$LogFile"
-        return $true
-    } catch {
-        Write-Log WARN "rotator" "gateway_spawn_failed" "tuxevil-rotator could not be started in the background" 0 "error=$($_.Exception.Message)"
-        return $false
-    }
+function Remove-LegacyRotatorTask {
+    $task = Get-RotatorTask
+    if (-not $task -or -not (Test-RotatorTaskOwned -Task $task)) { return $false }
+    Unregister-ScheduledTask -TaskName "tuxevil-rotator" -Confirm:$false -ErrorAction Stop
+    return $true
 }
 
 function Test-DirectoryContentEqual {
@@ -2891,136 +2725,115 @@ function Mod-Extras {
     Install-CliAnything
 }
 
-function Mod-Rotator {
-    Write-Log INFO "rotator" "start" "tuxevil-rotator gateway"
-    # Detect a desktop cockpit-tools data dir by marker file only; never read tokens.
-    $candidates = @(
-        (Join-Path $HOME ".antigravity_cockpit")
-        (Join-Path $HOME ".local\share\cockpit-tools")
-        (Join-Path $HOME ".config\cockpit-tools")
-        (Join-Path $HOME ".wizard-ai\cockpit-tools")
-        (Join-Path $HOME "Library\Application Support\cockpit-tools")
-    )
-    if ($env:APPDATA) { $candidates += Join-Path $env:APPDATA "cockpit-tools" }
-    if ($env:LOCALAPPDATA) { $candidates += Join-Path $env:LOCALAPPDATA "cockpit-tools" }
-
-    $cockpitDir = ""
-    foreach ($dir in $candidates) {
-        if ((Test-Path -LiteralPath (Join-Path $dir "accounts.json") -PathType Leaf) -or
-            (Test-Path -LiteralPath (Join-Path $dir "account-token.key") -PathType Leaf)) {
-            $cockpitDir = $dir
-            break
+function Mod-Cliproxyapi {
+    $phase = 'cliproxyapi'
+    Write-Log INFO $phase 'start' 'CLIProxyAPI + CPA Usage Keeper'
+    # Never read another person's stack by default: templates are seeded into a user-owned directory.
+    $composeDir = if ($env:CLIPROXYAPI_DIR) { $env:CLIPROXYAPI_DIR } else { Join-Path $HOME '.config\setup-ai\cliproxyapi' }
+    $composeFile = Join-Path $composeDir 'docker-compose.yml'
+    # local = config.yaml + keeper.env files; gitstore = .env pointing at the user's private Git repo.
+    # An existing directory that only has .env (for example a cliproxy-stack checkout) is gitstore.
+    $storage = $env:CLIPROXYAPI_STORAGE
+    if (-not $storage) {
+        $storage = if ((Test-Path -LiteralPath (Join-Path $composeDir '.env') -PathType Leaf) -and -not (Test-Path -LiteralPath (Join-Path $composeDir 'config.yaml') -PathType Leaf)) { 'gitstore' } else { 'local' }
+    }
+    switch ($storage) {
+        'local' { $templates = @('docker-compose.yml', 'config.example.yaml', 'keeper.env.example'); $targets = @('docker-compose.yml', 'config.yaml', 'keeper.env') }
+        'gitstore' { $templates = @('docker-compose.yml', '.env.example'); $targets = @('docker-compose.yml', '.env') }
+        default {
+            Write-Log ERROR $phase 'storage_invalid' 'CLIPROXYAPI_STORAGE must be local or gitstore' 1 "value=$storage"
+            throw 'CLIPROXYAPI_STORAGE must be local or gitstore'
         }
     }
-    if ($cockpitDir) {
-        Write-Log INFO "rotator" "cockpit_detected" "cockpit-tools data directory detected" 0 "dir=$cockpitDir"
-    } else {
-        Write-Log INFO "rotator" "cockpit_absent" "No cockpit-tools data directory detected; the rotator can still use its own accounts" 0
-    }
+    $configFiles = @($targets | Where-Object { $_ -ne 'docker-compose.yml' } | ForEach-Object { Join-Path $composeDir $_ })
 
-    # Non-fatal health probe. $gatewayUp drives the background start further below.
-    $gw = "http://localhost:51200/v1/models"
-    $gatewayUp = $false
-    try {
-        $response = Invoke-WebRequest -Uri $gw -Headers @{ Authorization = "Bearer tuxevil" } -TimeoutSec 5
-        $body = $response.Content
-        $count = if ($body) { ([regex]::Matches($body, '"id"')).Count } else { 0 }
-        $gatewayUp = $true
-        Write-Log INFO "rotator" "gateway_up" "tuxevil-rotator gateway is reachable" 0 "url=$gw;models=$count"
-    } catch {
-        Write-Log INFO "rotator" "gateway_down" "tuxevil-rotator gateway not reachable; starting it in the background" 0 "url=$gw"
+    # Seed only what is missing; existing files are never overwritten. Seeded files keep example
+    # placeholders, so nothing starts until the user replaces them.
+    $seeded = $false
+    for ($i = 0; $i -lt $targets.Count; $i++) {
+        $target = Join-Path $composeDir $targets[$i]
+        if (-not (Test-Path -LiteralPath $target)) {
+            $source = Join-Path $ScriptDir "templates\cliproxyapi\$storage\$($templates[$i])"
+            $isCredentialFile = $targets[$i] -ne 'docker-compose.yml'
+            Invoke-Step -Phase $phase -Action {
+                New-Item -ItemType Directory -Path $composeDir -Force | Out-Null
+                Copy-Item -LiteralPath $source -Destination $target
+            }
+            # Mirrors Bash chmod 600: drop inherited ACLs so only the current user can read credential files.
+            if ($isCredentialFile) {
+                if (Test-Cmd icacls) {
+                    Invoke-Step -Phase $phase -Action { icacls $target /inheritance:r /grant:r "${env:USERNAME}:(R,W)" }
+                } else {
+                    Write-Log WARN $phase 'permissions_unrestricted' 'icacls is unavailable; the credential file keeps inherited permissions' 0 "path=$target"
+                }
+            }
+            $seeded = $true
+        }
     }
-
-    if (-not (Test-NodeMinimum -MinimumMajor 20 -MinimumMinor 0)) {
-        $nodeProbe = if ($script:SetupAiNodeVersionProbe) { $script:SetupAiNodeVersionProbe } else { 'none' }
-        Write-Log WARN "rotator" "node_too_old" "tuxevil-rotator not installed: it needs Node.js >= 20 and crashes on older runtimes; install Node.js 20+ (the node module ships 22) and re-run the rotator module" 0 "node=$nodeProbe;minimum=20"
+    # Seeding skips anything that exists, so a directory here would otherwise reach Compose.
+    foreach ($name in $targets) {
+        $path = Join-Path $composeDir $name
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+            Write-Log ERROR $phase 'config_not_file' "$name must be a regular file; nothing was started" 1 "path=$path"
+            throw "$name must be a regular file"
+        }
+    }
+    if ($seeded) {
+        Write-Log WARN $phase 'configuration_seeded' "Example $storage templates were copied; setup-ai does not create credentials" 0 "directory=$composeDir"
+        $script:PostInstallActions += "cliproxyapi: replace every REPLACE_WITH value in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi (default layout is local files; set CLIPROXYAPI_STORAGE=gitstore to keep settings and accounts in your own private Git repo instead)"
         return
     }
-
-    # Install the CLI idempotently. Never runs login and never writes secrets; the
-    # start below is best-effort and never fails the module.
-    if (Test-Cmd tuxevil-rotator) {
-        Write-Log INFO "rotator" "already_present" "tuxevil-rotator already installed"
-    } else {
-        if (-not (Test-Cmd npm)) { throw "npm not found; tuxevil-rotator cannot be installed" }
-        Invoke-Step -Phase "rotator" -Action { npm install -g tuxevil-rotator }
-        if (-not (Test-Cmd tuxevil-rotator)) {
-            Write-Log ERROR "rotator" "install_missing" "tuxevil-rotator not found on PATH after npm install" 1
-            throw "tuxevil-rotator not found on PATH after npm install"
-        }
+    if (-not (Test-Cmd docker)) {
+        Write-Log WARN $phase 'docker_missing' 'Docker is required for CLIProxyAPI + CPA Usage Keeper; nothing was started'
+        $script:PostInstallActions += "cliproxyapi: install Docker Desktop/Engine, configure $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
+        return
     }
-
-    # Register boot persistence first: registering the task never starts a second
-    # process, so this is safe whether or not the gateway is already up.
-    [void](Register-RotatorTask)
-
-    # Start the gateway only when nothing answers its port: the dotenv Gemini aliases are
-    # unusable without it, so a gateway that only ever gets started by hand is the failure
-    # this module exists to prevent. The start is proven by the probe below, because a
-    # process that dies immediately must be reported, not assumed.
-    if (-not $gatewayUp) {
-        $gatewayLog = Join-Path $LogDir "rotator-gateway.log"
-        [void](Start-RotatorGateway -LogFile $gatewayLog)
-        for ($attempt = 1; $attempt -le 20; $attempt++) {
-            try {
-                $probe = Invoke-WebRequest -Uri $gw -Headers @{ Authorization = "Bearer tuxevil" } -TimeoutSec 2
-                $body = $probe.Content
-                $count = if ($body) { ([regex]::Matches($body, '"id"')).Count } else { 0 }
-                $gatewayUp = $true
-                Write-Log INFO "rotator" "gateway_started" "tuxevil-rotator answered after the background start" 0 "url=$gw;models=$count"
-                break
-            } catch {
-                Start-Sleep -Milliseconds 500
+    if (-not (Invoke-Step -Phase $phase -Optional -Verify -Action { docker compose version })) {
+        Write-Log WARN $phase 'compose_missing' 'Docker Compose v2 is required for CLIProxyAPI + CPA Usage Keeper; nothing was started'
+        $script:PostInstallActions += "cliproxyapi: install Docker Compose v2, configure $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
+        return
+    }
+    $gateFiles = @('config.yaml', 'keeper.env', '.env' | ForEach-Object { Join-Path $composeDir $_ } | Where-Object { Test-Path -LiteralPath $_ })
+    if (Select-String -LiteralPath $gateFiles -Pattern 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)\s*=\s*$' -CaseSensitive -Quiet) {
+        Write-Log WARN $phase 'configuration_placeholder' 'CLIProxyAPI and Keeper still contain example credentials; nothing was started' 0 "directory=$composeDir"
+        $script:PostInstallActions += "cliproxyapi: replace example values in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
+        return
+    }
+    Invoke-Step -Phase $phase -Action { docker compose --project-directory $composeDir -f $composeFile config -q }
+    $runningServicesFile = [IO.Path]::GetTempFileName()
+    try {
+        # Compose names the project after the directory, so an upstream CLIProxyAPI checkout
+        # shares it. Never let `up -d` recreate containers started from another directory.
+        $composeAbs = (Resolve-Path -LiteralPath $composeDir).Path
+        Invoke-Step -Phase $phase -Verify -Action { docker compose --project-directory $composeDir -f $composeFile ps -a -q } -CaptureOutput $runningServicesFile
+        $projectIds = @(Get-Content -LiteralPath $runningServicesFile | Where-Object { $_ })
+        if ($projectIds.Count -gt 0) {
+            Invoke-Step -Phase $phase -Verify -Action { docker inspect --format '{{index .Config.Labels "com.docker.compose.project.working_dir"}}' @projectIds } -CaptureOutput $runningServicesFile
+            $foreignDirs = @(Get-Content -LiteralPath $runningServicesFile | Where-Object { $_ -and $_ -ne $composeAbs })
+            if ($foreignDirs.Count -gt 0) {
+                Write-Log ERROR $phase 'project_conflict' 'A Compose project with this name was started from another directory; refusing to recreate its containers' 1 "expected=$composeAbs;found=$($foreignDirs -join ',')"
+                throw 'Compose project name is used by containers started from another directory'
             }
         }
-        if (-not $gatewayUp) {
-            # A gateway with no account exits immediately, so the port never opens and the
-            # only place that says so is the CLI's own log (the same file the Pi extension
-            # points at); the run-side log only holds the start attempt. Without this the
-            # run reports the rotator as installed while the gemini-* aliases stay broken.
-            $cliLog = Join-Path $HOME ".tuxevil-rotator\gateway.log"
-            $noAccounts = @($cliLog, $gatewayLog) |
-                Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-                Where-Object { Select-String -LiteralPath $_ -SimpleMatch 'No accounts configured' -Quiet } |
-                Select-Object -First 1
-            $noAccounts = [bool]$noAccounts
-            if ($noAccounts) {
-                Write-Log WARN "rotator" "accounts_missing" "tuxevil-rotator has no account configured, so the gateway cannot start; run 'tuxevil-rotator login' in an interactive terminal, then 'tuxevil-rotator start'" 0 "url=$gw;log=$gatewayLog"
-                $script:PostInstallActions += "rotator: run 'tuxevil-rotator login' in an interactive terminal (it prints a Google OAuth URL and waits for the browser callback on localhost:51121), then 'tuxevil-rotator status' and 'tuxevil-rotator start'"
-            } else {
-                Write-Log WARN "rotator" "gateway_start_failed" "tuxevil-rotator did not answer within 10s; check '$gatewayLog' or the 'tuxevil-rotator' scheduled task" 0 "url=$gw"
-            }
+        Invoke-Step -Phase $phase -Action { docker compose --project-directory $composeDir -f $composeFile up -d }
+        Invoke-Step -Phase $phase -Verify -Action { docker compose --project-directory $composeDir -f $composeFile ps --status running --services } -CaptureOutput $runningServicesFile
+        $runningServices = @(Get-Content -LiteralPath $runningServicesFile | Where-Object { $_ })
+        if ($runningServices -notcontains 'cli-proxy-api' -or $runningServices -notcontains 'cpa-usage-keeper') {
+            Write-Log ERROR $phase 'stack_not_running' 'CLIProxyAPI and CPA Usage Keeper are not both running' 1
+            throw 'CLIProxyAPI and CPA Usage Keeper are not both running'
         }
-    }
-    if (Test-Cmd pi) {
-        # `pi install` accepts only protocol URLs without the `git:` prefix, so the bare
-        # `github:owner/repo` this module used to pass resolved as a local path and failed.
-        # A leftover legacy entry from such a run is tolerated by pi (`pi list` skips it)
-        # and cannot be removed with `pi remove`, which only matches installed packages.
-        $extensionSource = "git:github.com/darkrei08/pi-cockpit-tools-sync"
-        $piSettings = Join-Path $PiAgentDir "settings.json"
+    } finally {
         try {
-            Install-PiPackageOwned -Phase "rotator" -Spec $extensionSource
+            Remove-Item -LiteralPath $runningServicesFile -Force -ErrorAction Stop
         } catch {
-            Write-Log ERROR "rotator" "pi_extension_missing" "Pi did not register cockpit sync extension" 1 "expected=$piSettings"
-            throw "Pi did not register cockpit sync extension"
+            Write-Log WARN $phase 'cleanup_failed' "Could not remove the temporary Compose status file: $($_.Exception.Message)" 0 "path=$runningServicesFile"
         }
-        Write-Log INFO "rotator" "pi_extension_verified" "Cockpit sync extension registered in Pi" 0 "path=$piSettings"
-    } else {
-        Write-Log INFO "rotator" "pi_extension_skipped" "pi not found; cockpit sync extension was not installed"
     }
+    Write-Log INFO $phase 'stack_started' 'CLIProxyAPI and CPA Usage Keeper are running' 0 'api=http://127.0.0.1:8317;keeper=http://127.0.0.1:8080'
     @"
-      tuxevil-rotator installed. To use the multi-account Gemini/Antigravity gateway:
-        tuxevil-rotator login     # add a Google Antigravity account (repeat to add more)
-        tuxevil-rotator import    # or bulk-import accounts from a cockpit-tools JSON
-        tuxevil-rotator status    # accounts, quotas, and routing state
-      setup-ai starts the gateway on http://localhost:51200 in the background, but only
-      when nothing is already listening: a systemd user unit on Linux, a logon scheduled
-      task on Windows, a detached process otherwise. The Pi extension does the same when
-      a session opens and the port is dead.
-      Pi reaches it through the 'tuxevil-rotator' provider configured in your dotenv.
-      The cockpit sync extension provides /cockpit-sync, /cockpit-provision, and /cockpit-proxy.
-      Login is never run by setup-ai and no tokens are read or stored.
+  CLIProxyAPI management: http://127.0.0.1:8317/management.html
+  CPA Usage Keeper dashboard: http://127.0.0.1:8080
+  Add provider accounts in CLIProxyAPI, then refresh Pi's dynamic cliproxyapi catalog.
 "@ | Tee-Object -FilePath $HumanLog -Append | Out-Host
 }
 
@@ -3031,7 +2844,7 @@ $ModuleFn = @{
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
     'gentle-ai' = ${function:Mod-GentleAi}
     'codex' = ${function:Mod-Codex}; 'antigravity' = ${function:Mod-Antigravity}
-    'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}; 'rotator' = ${function:Mod-Rotator}
+    'opencode' = ${function:Mod-Opencode}; 'cockpit' = ${function:Mod-Cockpit}; 'cliproxyapi' = ${function:Mod-Cliproxyapi}
     'extras' = ${function:Mod-Extras}
 }
 
@@ -3176,7 +2989,7 @@ function Invoke-QualityGates {
 }
 
 function Invoke-WindowsEnvironmentUninstall {
-    $supported = @('opencode', 'gentle-ai')
+    $supported = @('opencode', 'gentle-ai', 'rotator')
     $requested = $supported
     if ($All) {
         Write-Host '-Uninstall supports only Windows environment state; use -Only opencode or -Only gentle-ai.' -ForegroundColor Red
@@ -3191,7 +3004,7 @@ function Invoke-WindowsEnvironmentUninstall {
         foreach ($name in ($Only -split ',')) {
             $name = $name.Trim()
             if (-not $name) { continue }
-            if (-not $ModuleDesc.Contains($name)) {
+            if (-not $ModuleDesc.Contains($name) -and $name -cne 'rotator') {
                 Write-Host "ERROR: Unknown module: $name" -ForegroundColor Red
                 return 2
             }
@@ -3224,6 +3037,19 @@ function Invoke-WindowsEnvironmentUninstall {
                 Write-Host "  module 'gentle-ai': legacy User/process GENTLE_PI_QUIET_TOOLS state is protected because Windows has no ownership receipt for it."
                 $status = Get-SetupAiEnvironmentInventoryStatus -Name 'GENTLE_PI_QUIET_TOOLS'
                 Write-Host "  User GENTLE_PI_QUIET_TOOLS: $($status.Message)"
+            }
+            'rotator' {
+                Write-Host "  module 'rotator' (legacy cleanup only): remove the scheduled task only when its setup-ai receipt and fingerprint still match."
+                try {
+                    $task = Get-RotatorTask
+                    if (-not $task) { Write-Host '  tuxevil-rotator task: not present' }
+                    elseif (-not (Test-RotatorTaskOwned -Task $task)) { Write-Host '  tuxevil-rotator task: not verified as setup-ai-owned; preserved' }
+                    elseif ($Yes -and (Remove-LegacyRotatorTask)) { Write-Host '  removed: receipt-verified tuxevil-rotator scheduled task' }
+                    else { Write-Host '  tuxevil-rotator task: setup-ai-owned; pass -Yes to remove' }
+                } catch {
+                    Write-Host "  ERROR: legacy task ownership could not be verified; preserved ($($_.Exception.Message))" -ForegroundColor Red
+                    $failed = $true
+                }
             }
             default { Write-Host "  module '$module': no Windows environment state is owned by setup-ai." }
         }

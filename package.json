@@ -13,6 +13,7 @@
     "setup-ai.sh",
     "setup-ai.ps1",
     "pi-packages.example.txt",
+    "templates",
     "README.md",
     "docs"
   ],

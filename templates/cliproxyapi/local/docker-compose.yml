@@ -1,0 +1,28 @@
+# CLIProxyAPI + CPA Usage Keeper with settings and accounts stored in local files.
+# Everything is bound to localhost; use an SSH tunnel or reverse proxy for remote access.
+services:
+  cli-proxy-api:
+    image: eceasy/cli-proxy-api:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8317:8317"
+      # OAuth callback port, only needed when linking a Codex/ChatGPT account
+      - "127.0.0.1:1455:1455"
+    volumes:
+      # Writable so the management panel can save settings.
+      - ./config.yaml:/CLIProxyAPI/config.yaml
+      - ./auths:/root/.cli-proxy-api
+
+  cpa-usage-keeper:
+    image: ghcr.io/willxup/cpa-usage-keeper:latest
+    restart: unless-stopped
+    depends_on:
+      - cli-proxy-api
+    ports:
+      - "127.0.0.1:8080:8080"
+    env_file:
+      - ./keeper.env
+    environment:
+      CPA_BASE_URL: http://cli-proxy-api:8317
+    volumes:
+      - ./keeper:/data
