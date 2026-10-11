@@ -11,3 +11,8 @@ node_modules/
 .codegraph/
 # Local field reports and issue drafts (never published)
 buugg/
+
+# Pi Herdr Orchestration runtime state
+.worktrees/
+.serena/
+docs/research/

@@ -37,7 +37,7 @@ run ubuntu:24.04          "bash gates"                        "$BASH_GATES"
 run archlinux:latest      "bash gates"                        "$BASH_GATES"
 run fedora:latest         "bash gates (util-linux-script for script)" 'dnf install -y -q util-linux-script >/dev/null 2>&1; '"$BASH_GATES"
 run opensuse/leap:latest  "bash gates"                        "$BASH_GATES"
-run mcr.microsoft.com/powershell:lts-ubuntu-22.04 "pwsh parse + cliproxyapi test" 'pwsh -NoProfile -Command "$null=[ScriptBlock]::Create((Get-Content -Raw /work/setup-ai.ps1)); \"parse ok\"" && pwsh -NoProfile -File tests/cliproxyapi-compose.ps1 >/dev/null'
+run mcr.microsoft.com/powershell:lts-ubuntu-22.04 "pwsh parse + lifecycle tests" 'pwsh -NoProfile -Command "$null=[ScriptBlock]::Create((Get-Content -Raw /work/setup-ai.ps1)); \"parse ok\"" && pwsh -NoProfile -File tests/cliproxyapi-compose.ps1 >/dev/null && pwsh -NoProfile -File tests/powershell-uninstall-inventory.ps1 >/dev/null'
 
 echo
 echo "Not containerizable here: Windows (no Windows container on a Linux host) and macOS (no container image)."
