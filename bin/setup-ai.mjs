@@ -51,17 +51,17 @@ const MODULES = [
   { name: "antigravity",  core: true,  category: "Agents", desc: "Google Antigravity CLI (agy)" },
   { name: "opencode",     core: true,  category: "Agents", desc: "opencode agent CLI (opencode-ai)" },
   { name: "gentle-ai",    core: true,  category: "Memory & review", desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
-  { name: "cockpit",      core: false, category: "Extras", desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
+  { name: "cockpit",      core: false, kind: "software", category: "Extras", desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
   { name: "cliproxyapi",  core: false, category: "Gateway", desc: "CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)" },
-  { name: "extras",       core: false, category: "Extras", desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
+  { name: "extras",       core: false, kind: "software", category: "Extras", desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
 ];
 
 // Registry entries of the Extras module (ids mirror SKILL_REGISTRY in setup-ai.sh and
 // $SkillRegistry in setup-ai.ps1). Menu-only: picked one by one, passed as --extras.
 const EXTRA_ITEMS = [
-  { extra: true, name: "taste", core: false, category: "Extras", desc: "Taste skill (design-taste-frontend)" },
-  { extra: true, name: "humanizer", core: false, category: "Extras", desc: "Humanizer skill" },
-  { extra: true, name: "heroui", core: false, category: "Extras", desc: "HeroUI skill (heroui-react)" },
+  { extra: true, name: "taste", kind: "skill", core: false, category: "Extras", desc: "Taste skill (design-taste-frontend)" },
+  { extra: true, name: "humanizer", kind: "skill", core: false, category: "Extras", desc: "Humanizer skill" },
+  { extra: true, name: "heroui", kind: "skill", core: false, category: "Extras", desc: "HeroUI skill (heroui-react)" },
 ];
 
 // dotenv is Linux-only; drop it from the Windows menu.

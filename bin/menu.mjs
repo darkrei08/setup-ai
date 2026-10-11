@@ -33,7 +33,9 @@ export function normalizeKey(raw) {
 const rowCount = (s, modules) =>
   s.screen === "preset" ? PRESETS.length
     : s.screen === "categories" ? categoriesOf(modules).length + 1
-      : s.screen === "modules" ? inCategory(modules, s.category).length : 0;
+      : s.screen === "modules" ? inCategory(modules, s.category).length
+        : s.screen === "extras" ? inCategory(modules, "Extras").length + 2
+          : 0;
 
 // Returns a new state; state.done becomes "confirm" or "quit" when finished.
 export function reduce(state, rawKey, modules) {
@@ -64,7 +66,48 @@ export function reduce(state, rawKey, modules) {
     if (key !== "enter") return s;
     if (s.cursor === cats.length) return go("summary");
     s.category = cats[s.cursor];
+    if (s.category === "Extras") return go("extras");
     return go("modules");
+  }
+  if (s.screen === "extras") {
+    const extras = inCategory(modules, "Extras");
+    const returnIdx = extras.length;
+    const summaryIdx = extras.length + 1;
+    if (key === "back") {
+      go("categories");
+      s.cursor = categoriesOf(modules).indexOf("Extras");
+      return s;
+    }
+    if (key === "space") {
+      if (s.cursor < extras.length) {
+        const name = extras[s.cursor].name;
+        s.selected.has(name) ? s.selected.delete(name) : s.selected.add(name);
+      } else if (s.cursor === returnIdx) {
+        go("categories");
+        s.cursor = categoriesOf(modules).indexOf("Extras");
+      } else if (s.cursor === summaryIdx) {
+        go("summary");
+      }
+      return s;
+    }
+    if (key === "all") {
+      const allOn = extras.every((m) => s.selected.has(m.name));
+      extras.forEach((m) => (allOn ? s.selected.delete(m.name) : s.selected.add(m.name)));
+      return s;
+    }
+    if (key === "enter") {
+      if (s.cursor < extras.length) {
+        const name = extras[s.cursor].name;
+        s.selected.has(name) ? s.selected.delete(name) : s.selected.add(name);
+      } else if (s.cursor === returnIdx) {
+        go("categories");
+        s.cursor = categoriesOf(modules).indexOf("Extras");
+      } else if (s.cursor === summaryIdx) {
+        go("summary");
+      }
+      return s;
+    }
+    return s;
   }
   if (s.screen === "modules") {
     const mods = inCategory(modules, s.category);
@@ -103,9 +146,29 @@ export function view(state, modules) {
     categoriesOf(modules).forEach((c, i) => {
       const mods = inCategory(modules, c);
       const n = mods.filter((m) => state.selected.has(m.name)).length;
-      lines.push(`${pointer(i === state.cursor)} ${c.padEnd(20)} ${n}/${mods.length}`);
+      const subtitle = c === "Extras" ? " [submenu]" : "";
+      lines.push(`${pointer(i === state.cursor)} ${(c + subtitle).padEnd(25)} ${n}/${mods.length}`);
     });
     lines.push(`${pointer(state.cursor === categoriesOf(modules).length)} Continue to summary`);
+  } else if (state.screen === "extras") {
+    const extras = inCategory(modules, "Extras");
+    const countSelected = extras.filter((m) => state.selected.has(m.name)).length;
+    lines.push(
+      `  ${B("Extras: Optional Skills & Software")} (${B(`${countSelected}/${extras.length} selected`)})`,
+      "  Arrows/j-k move   Space toggle   a all/none   Enter choose   Esc back",
+      ""
+    );
+    extras.forEach((m, i) => {
+      const box = state.selected.has(m.name) ? "\x1b[32m[x]\x1b[0m" : "[ ]";
+      const isSkill = m.extra || m.kind === "skill";
+      const badge = isSkill ? "\x1b[35m[skill]   \x1b[0m" : "\x1b[34m[software]\x1b[0m";
+      lines.push(`${pointer(i === state.cursor)} ${box} ${m.name.padEnd(12)} ${badge} ${m.desc}`);
+    });
+    lines.push("");
+    lines.push(`${pointer(state.cursor === extras.length)} ${B("✔")} Return to category menu`);
+    lines.push(`${pointer(state.cursor === extras.length + 1)} ${B("➜")} Proceed directly to installation summary`);
+    lines.push("");
+    lines.push(`  \x1b[90m${countSelected} extras selected. Use Space to multi-select, then return or proceed.\x1b[0m`);
   } else if (state.screen === "modules") {
     lines.push(`  ${B(state.category)} (${B(count)})`, "  Arrows/j-k move   Space toggle   a all/none   Esc back   q quit", "");
     inCategory(modules, state.category).forEach((m, i) => {
