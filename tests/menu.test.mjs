@@ -148,4 +148,24 @@ assert.ok(extrasView.some((l) => l.includes("[software]")));
 assert.ok(extrasView.some((l) => l.includes("Return to category menu")));
 assert.ok(extrasView.some((l) => l.includes("Proceed directly to installation summary")));
 
+// 6. Verify category modules screen action rows & summary view formatting
+// In modules (System): base(0), node(1), Return(2), Summary(3)
+let modRun = run([
+  DOWN, DOWN, ENTER, // Custom
+  ENTER,             // Open System category
+  DOWN, DOWN, ENTER  // Select Return to category menu row (2)
+]);
+assert.equal(modRun.s.screen, "categories");
+
+modRun = run([
+  DOWN, DOWN, ENTER, // Custom
+  ENTER,             // Open System category
+  DOWN, DOWN, DOWN, ENTER // Select Proceed to summary row (3)
+]);
+assert.equal(modRun.s.screen, "summary");
+
+const summaryView = view({ screen: "summary", cursor: 0, custom: true, selected: new Set(["base", "pi"]) }, modules);
+assert.ok(summaryView.some((l) => l.includes("System") && l.includes("(1): base")));
+assert.ok(summaryView.some((l) => l.includes("Agents") && l.includes("(1): pi")));
+
 console.log("menu tests passed");
