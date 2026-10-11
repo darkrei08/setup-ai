@@ -41,7 +41,7 @@ $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
 $ExtrasSpecified = $PSBoundParameters.ContainsKey('Extras')
 # Registry ids chosen with -Extras; empty means the whole extras module.
 $ExtrasOnly = @()
-if ($DryRun) {
+if ($DryRun -and (-not $Uninstall)) {
     Write-Host ""
     Write-Host "-DryRun is not implemented on Windows." -ForegroundColor Red
     Write-Host "setup-ai.ps1 cannot plan a run yet, and it will not pretend to: run setup-ai.sh for this flag (see docs/modules.md)." -ForegroundColor Red
@@ -3032,28 +3032,249 @@ function Invoke-QualityGates {
     Write-Log INFO "quality" "gates_done" "Quality gates completed for selected modules"
 }
 
-function Invoke-WindowsEnvironmentUninstall {
-    $supported = @('opencode', 'gentle-ai', 'rotator')
-    $requested = $supported
-    if ($All) {
-        Write-Host '-Uninstall supports only Windows environment state; use -Only opencode or -Only gentle-ai.' -ForegroundColor Red
-        return 2
-    }
-    if ($OnlySpecified) {
-        if ([string]::IsNullOrWhiteSpace($Only)) {
-            Write-Host 'ERROR: -Only requires a non-empty comma-separated module list.' -ForegroundColor Red
-            return 2
+function Get-WindowsModuleInventory {
+    param([string]$ModuleName)
+    $items = @()
+    switch ($ModuleName) {
+        'opencode' {
+            $status = Get-OpenCodeEnvInventoryStatus
+            $items += [pscustomobject]@{
+                Module = 'opencode'
+                Resource = 'User OPENCODE_PI_BIN'
+                Classification = $status.State
+                Reason = $status.Message
+            }
+            $items += [pscustomobject]@{
+                Module = 'opencode'
+                Resource = 'OpenCode CLI binary and config'
+                Classification = 'protected'
+                Reason = 'vendor-managed CLI and user configurations are protected'
+            }
         }
-        $requested = @()
+        'gentle-ai' {
+            $status = Get-SetupAiEnvironmentInventoryStatus -Name 'GENTLE_PI_QUIET_TOOLS'
+            $items += [pscustomobject]@{
+                Module = 'gentle-ai'
+                Resource = 'User GENTLE_PI_QUIET_TOOLS'
+                Classification = $status.State
+                Reason = $status.Message
+            }
+            $items += [pscustomobject]@{
+                Module = 'gentle-ai'
+                Resource = 'Gentle AI CLI and skills'
+                Classification = 'protected'
+                Reason = 'vendor-managed CLI and skill tree are protected'
+            }
+        }
+        'rotator' {
+            try {
+                $task = Get-RotatorTask
+                if (-not $task) {
+                    $items += [pscustomobject]@{
+                        Module = 'rotator'
+                        Resource = 'tuxevil-rotator scheduled task'
+                        Classification = 'absent'
+                        Reason = 'scheduled task not present'
+                    }
+                } elseif (Test-RotatorTaskOwned -Task $task) {
+                    $items += [pscustomobject]@{
+                        Module = 'rotator'
+                        Resource = 'tuxevil-rotator scheduled task'
+                        Classification = 'receipt-backed'
+                        Reason = 'receipt-verified legacy task; removable with -Yes'
+                    }
+                } else {
+                    $items += [pscustomobject]@{
+                        Module = 'rotator'
+                        Resource = 'tuxevil-rotator scheduled task'
+                        Classification = 'protected'
+                        Reason = 'task present but not verified as setup-ai-owned; protected'
+                    }
+                }
+            } catch {
+                $items += [pscustomobject]@{
+                    Module = 'rotator'
+                    Resource = 'tuxevil-rotator scheduled task'
+                    Classification = 'protected'
+                    Reason = "legacy task ownership could not be verified; protected ($($_.Exception.Message))"
+                }
+            }
+        }
+        'pi' {
+            $items += [pscustomobject]@{
+                Module = 'pi'
+                Resource = 'Pi global root and configuration'
+                Classification = 'protected'
+                Reason = 'shared Pi runtime, models, auth, and session history are protected'
+            }
+        }
+        'pi-packages' {
+            $items += [pscustomobject]@{
+                Module = 'pi-packages'
+                Resource = 'Pi settings packages'
+                Classification = 'protected'
+                Reason = 'global settings.json package registrations are protected'
+            }
+        }
+        'base' {
+            $items += [pscustomobject]@{
+                Module = 'base'
+                Resource = 'WinGet base packages (git)'
+                Classification = 'protected'
+                Reason = 'WinGet packages are inventory-only and vendor-managed'
+            }
+        }
+        'node' {
+            $items += [pscustomobject]@{
+                Module = 'node'
+                Resource = 'Node.js runtime'
+                Classification = 'protected'
+                Reason = 'WinGet package is inventory-only and vendor-managed'
+            }
+        }
+        'bun' {
+            $items += [pscustomobject]@{
+                Module = 'bun'
+                Resource = 'Bun runtime'
+                Classification = 'protected'
+                Reason = 'vendor-managed runtime binary is protected'
+            }
+        }
+        'go' {
+            $items += [pscustomobject]@{
+                Module = 'go'
+                Resource = 'Go SDK'
+                Classification = 'protected'
+                Reason = 'WinGet package is inventory-only and vendor-managed'
+            }
+        }
+        'lazyvim' {
+            $items += [pscustomobject]@{
+                Module = 'lazyvim'
+                Resource = 'Neovim and LazyVim user config'
+                Classification = 'protected'
+                Reason = 'user editor configuration and plugins are protected'
+            }
+        }
+        'ee' {
+            $items += [pscustomobject]@{
+                Module = 'ee'
+                Resource = 'Engineering Excellence skills'
+                Classification = 'protected'
+                Reason = 'shared skill tree is protected'
+            }
+        }
+        'skills' {
+            $items += [pscustomobject]@{
+                Module = 'skills'
+                Resource = 'Shared agent skills'
+                Classification = 'protected'
+                Reason = 'shared skills registry is protected'
+            }
+        }
+        'pi-workflows' {
+            $items += [pscustomobject]@{
+                Module = 'pi-workflows'
+                Resource = 'Pi workflow extensions'
+                Classification = 'protected'
+                Reason = 'shared workflow packages and roles are protected'
+            }
+        }
+        'herdr' {
+            $items += [pscustomobject]@{
+                Module = 'herdr'
+                Resource = 'Herdr terminal manager'
+                Classification = 'protected'
+                Reason = 'vendor-managed terminal binary and configs are protected'
+            }
+        }
+        'claude-code' {
+            $items += [pscustomobject]@{
+                Module = 'claude-code'
+                Resource = 'Claude Code CLI'
+                Classification = 'protected'
+                Reason = 'vendor-managed CLI and auth tokens are protected'
+            }
+        }
+        'codex' {
+            $items += [pscustomobject]@{
+                Module = 'codex'
+                Resource = 'Codex CLI'
+                Classification = 'protected'
+                Reason = 'vendor-managed CLI is protected'
+            }
+        }
+        'antigravity' {
+            $items += [pscustomobject]@{
+                Module = 'antigravity'
+                Resource = 'Antigravity CLI'
+                Classification = 'protected'
+                Reason = 'vendor-managed CLI is protected'
+            }
+        }
+        'cockpit' {
+            $items += [pscustomobject]@{
+                Module = 'cockpit'
+                Resource = 'Cockpit MSI and service'
+                Classification = 'protected'
+                Reason = 'MSI package and service data are protected'
+            }
+        }
+        'cliproxyapi' {
+            $items += [pscustomobject]@{
+                Module = 'cliproxyapi'
+                Resource = 'CLIProxyAPI stack'
+                Classification = 'protected'
+                Reason = 'proxy binary, keys, and configurations are protected'
+            }
+        }
+        'ai-memory' {
+            $items += [pscustomobject]@{
+                Module = 'ai-memory'
+                Resource = 'AI memory kit repository'
+                Classification = 'protected'
+                Reason = 'persistent memory databases and vectors are protected'
+            }
+        }
+        'extras' {
+            $items += [pscustomobject]@{
+                Module = 'extras'
+                Resource = 'Developer tools and skills'
+                Classification = 'protected'
+                Reason = 'user tools and extensions are protected'
+            }
+        }
+        'dotenv' {
+            $items += [pscustomobject]@{
+                Module = 'dotenv'
+                Resource = 'Linux dotfiles'
+                Classification = 'absent'
+                Reason = 'not applicable on Windows'
+            }
+        }
+        default {
+            $items += [pscustomobject]@{
+                Module = $ModuleName
+                Resource = $ModuleName
+                Classification = 'unknown'
+                Reason = 'unrecognized module state'
+            }
+        }
+    }
+    return $items
+}
+
+function Invoke-WindowsEnvironmentUninstall {
+    $requested = @()
+    if ($All -or (-not $OnlySpecified)) {
+        $requested = @($ModuleOrder)
+        if ($requested -notcontains 'rotator') { $requested += 'rotator' }
+    } else {
         foreach ($name in ($Only -split ',')) {
             $name = $name.Trim()
             if (-not $name) { continue }
             if (-not $ModuleDesc.Contains($name) -and $name -cne 'rotator') {
                 Write-Host "ERROR: Unknown module: $name" -ForegroundColor Red
-                return 2
-            }
-            if ($name -notin $supported) {
-                Write-Host "ERROR: -Uninstall does not remove module '$name' on Windows; use setup-ai.sh for module removal." -ForegroundColor Red
                 return 2
             }
             $requested += $name
@@ -3064,44 +3285,48 @@ function Invoke-WindowsEnvironmentUninstall {
         }
     }
 
-    Write-Host 'Uninstall inventory (Windows environment state):'
+    Write-Host 'Uninstall inventory (Windows resources):'
     $failed = $false
     foreach ($module in $requested) {
-        switch ($module) {
-            'opencode' {
-                Write-Host "  module 'opencode': only receipt-backed User OPENCODE_PI_BIN state is removable; the CLI, credentials, and other environment values remain protected."
-                $status = Get-OpenCodeEnvInventoryStatus
-                if ($Yes) {
-                    if (Remove-OpenCodeUserEnvironment -Confirmed:$Yes) { Write-Host '  removed: User OPENCODE_PI_BIN environment value' }
-                    elseif ($script:SetupAiEnvironmentRemovalFailed) { Write-Host '  ERROR: User OPENCODE_PI_BIN removal failed; ownership receipt preserved.'; $failed = $true }
-                    else { Write-Host "  User OPENCODE_PI_BIN: $($status.Message)" }
-                } else { Write-Host "  User OPENCODE_PI_BIN: $($status.Message)" }
+        $inv = Get-WindowsModuleInventory -ModuleName $module
+        foreach ($item in $inv) {
+            $tag = switch ($item.Classification) {
+                'receipt-backed' { '[removable]' }
+                'protected'      { '[protected]' }
+                'absent'         { '[absent]' }
+                default          { '[unknown]' }
             }
-            'gentle-ai' {
-                Write-Host "  module 'gentle-ai': legacy User/process GENTLE_PI_QUIET_TOOLS state is protected because Windows has no ownership receipt for it."
-                $status = Get-SetupAiEnvironmentInventoryStatus -Name 'GENTLE_PI_QUIET_TOOLS'
-                Write-Host "  User GENTLE_PI_QUIET_TOOLS: $($status.Message)"
-            }
-            'rotator' {
-                Write-Host "  module 'rotator' (legacy cleanup only): remove the scheduled task only when its setup-ai receipt and fingerprint still match."
-                try {
-                    $task = Get-RotatorTask
-                    if (-not $task) { Write-Host '  tuxevil-rotator task: not present' }
-                    elseif (-not (Test-RotatorTaskOwned -Task $task)) { Write-Host '  tuxevil-rotator task: not verified as setup-ai-owned; preserved' }
-                    elseif ($Yes -and (Remove-LegacyRotatorTask)) { Write-Host '  removed: receipt-verified tuxevil-rotator scheduled task' }
-                    else { Write-Host '  tuxevil-rotator task: setup-ai-owned; pass -Yes to remove' }
-                } catch {
-                    Write-Host "  ERROR: legacy task ownership could not be verified; preserved ($($_.Exception.Message))" -ForegroundColor Red
-                    $failed = $true
+            Write-Host "  $tag $($item.Module) :: $($item.Resource) - $($item.Reason)"
+        }
+        if ($Yes -and (-not $DryRun)) {
+            switch ($module) {
+                'opencode' {
+                    if (Remove-OpenCodeUserEnvironment -Confirmed:$Yes) {
+                        Write-Host '  -> removed: User OPENCODE_PI_BIN environment value'
+                    } elseif ($script:SetupAiEnvironmentRemovalFailed) {
+                        Write-Host '  -> ERROR: User OPENCODE_PI_BIN removal failed; ownership receipt preserved.'
+                        $failed = $true
+                    }
+                }
+                'rotator' {
+                    try {
+                        if (Remove-LegacyRotatorTask) {
+                            Write-Host '  -> removed: receipt-verified tuxevil-rotator scheduled task'
+                        }
+                    } catch {
+                        Write-Host "  -> ERROR: legacy task removal failed: $($_.Exception.Message)" -ForegroundColor Red
+                        $failed = $true
+                    }
                 }
             }
-            default { Write-Host "  module '$module': no Windows environment state is owned by setup-ai." }
         }
     }
-    if ($Yes) {
+    if ($Yes -and (-not $DryRun)) {
         if ($failed) { Write-Host 'Removal requested (-Yes), but one or more receipt-backed values could not be removed.' }
-        else { Write-Host 'Removal requested (-Yes); only exact receipt-backed values were eligible.' }
-    } else { Write-Host 'Inventory only; pass -Yes to request removal.' }
+        else { Write-Host 'Removal requested (-Yes); only exact receipt-backed values were eligible and removed.' }
+    } else {
+        Write-Host 'Inventory only; pass -Yes without -DryRun to request removal of removable resources.'
+    }
     return $(if ($failed) { 1 } else { 0 })
 }
 
