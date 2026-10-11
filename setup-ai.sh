@@ -102,6 +102,8 @@ SKILL_REGISTRY=(
     "taste|extras|Leonxlnx/taste-skill|design-taste-frontend|pi"
     "humanizer|extras|blader/humanizer|humanizer|pi"
     "heroui|extras|heroui-inc/heroui|heroui-react|pi"
+    "emilkowalski|extras|emilkowalski/skills|emil-design-eng,animation-vocabulary,apple-design|pi"
+    "mjml-email|extras|https://github.com/framix-team/skill-email-html-mjml|email-html-mjml|pi"
 )
 # Set by --extras: restricts the extras module to these registry ids.
 EXTRAS_ONLY=""

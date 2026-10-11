@@ -135,6 +135,8 @@ $SkillRegistry = @(
     @{ Id = 'taste';      Module = 'extras'; Source = 'Leonxlnx/taste-skill';                Skills = @('design-taste-frontend');                                                                      Agents = @('pi') }
     @{ Id = 'humanizer';  Module = 'extras'; Source = 'blader/humanizer';                    Skills = @('humanizer');                                                                                  Agents = @('pi') }
     @{ Id = 'heroui';     Module = 'extras'; Source = 'heroui-inc/heroui';                   Skills = @('heroui-react');                                                                               Agents = @('pi') }
+    @{ Id = 'emilkowalski'; Module = 'extras'; Source = 'emilkowalski/skills';                Skills = @('emil-design-eng','animation-vocabulary','apple-design');                                      Agents = @('pi') }
+    @{ Id = 'mjml-email'; Module = 'extras'; Source = 'https://github.com/framix-team/skill-email-html-mjml'; Skills = @('email-html-mjml');                                                              Agents = @('pi') }
 )
 $UpstreamSkillNames = @($SkillRegistry | Where-Object { $_.Module -eq 'skills' } | ForEach-Object { $_.Skills })
 # These are `skills` CLI harness names. The installer module remains `antigravity`,
