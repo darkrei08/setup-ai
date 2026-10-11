@@ -33,7 +33,7 @@ export function normalizeKey(raw) {
 const rowCount = (s, modules) =>
   s.screen === "preset" ? PRESETS.length
     : s.screen === "categories" ? categoriesOf(modules).length + 1
-      : s.screen === "modules" ? inCategory(modules, s.category).length
+      : s.screen === "modules" ? inCategory(modules, s.category).length + 2
         : s.screen === "extras" ? inCategory(modules, "Extras").length + 2
           : 0;
 
@@ -111,13 +111,41 @@ export function reduce(state, rawKey, modules) {
   }
   if (s.screen === "modules") {
     const mods = inCategory(modules, s.category);
-    if (key === "back") { go("categories"); s.cursor = categoriesOf(modules).indexOf(s.category); return s; }
+    const returnIdx = mods.length;
+    const summaryIdx = mods.length + 1;
+    if (key === "back") {
+      go("categories");
+      s.cursor = categoriesOf(modules).indexOf(s.category);
+      return s;
+    }
     if (key === "space") {
-      const name = mods[s.cursor].name;
-      s.selected.has(name) ? s.selected.delete(name) : s.selected.add(name);
-    } else if (key === "all") {
+      if (s.cursor < mods.length) {
+        const name = mods[s.cursor].name;
+        s.selected.has(name) ? s.selected.delete(name) : s.selected.add(name);
+      } else if (s.cursor === returnIdx) {
+        go("categories");
+        s.cursor = categoriesOf(modules).indexOf(s.category);
+      } else if (s.cursor === summaryIdx) {
+        go("summary");
+      }
+      return s;
+    }
+    if (key === "all") {
       const allOn = mods.every((m) => s.selected.has(m.name));
       mods.forEach((m) => (allOn ? s.selected.delete(m.name) : s.selected.add(m.name)));
+      return s;
+    }
+    if (key === "enter") {
+      if (s.cursor < mods.length) {
+        const name = mods[s.cursor].name;
+        s.selected.has(name) ? s.selected.delete(name) : s.selected.add(name);
+      } else if (s.cursor === returnIdx) {
+        go("categories");
+        s.cursor = categoriesOf(modules).indexOf(s.category);
+      } else if (s.cursor === summaryIdx) {
+        go("summary");
+      }
+      return s;
     }
     return s;
   }
@@ -170,17 +198,36 @@ export function view(state, modules) {
     lines.push("");
     lines.push(`  \x1b[90m${countSelected} extras selected. Use Space to multi-select, then return or proceed.\x1b[0m`);
   } else if (state.screen === "modules") {
-    lines.push(`  ${B(state.category)} (${B(count)})`, "  Arrows/j-k move   Space toggle   a all/none   Esc back   q quit", "");
-    inCategory(modules, state.category).forEach((m, i) => {
+    const mods = inCategory(modules, state.category);
+    const countSelected = mods.filter((m) => state.selected.has(m.name)).length;
+    lines.push(
+      `  ${B(state.category)} (${B(`${countSelected}/${mods.length} selected`)})`,
+      "  Arrows/j-k move   Space toggle   a all/none   Enter choose   Esc back",
+      ""
+    );
+    mods.forEach((m, i) => {
       const box = state.selected.has(m.name) ? "\x1b[32m[x]\x1b[0m" : "[ ]";
-      const tag = m.core ? "" : " \x1b[33m(optional)\x1b[0m";
-      lines.push(`${pointer(i === state.cursor)} ${box} ${m.name.padEnd(13)}${tag} ${m.desc}`);
+      const tag = m.core ? " \x1b[36m[core]    \x1b[0m" : " \x1b[33m[optional]\x1b[0m";
+      lines.push(`${pointer(i === state.cursor)} ${box} ${m.name.padEnd(14)} ${tag} ${m.desc}`);
     });
+    lines.push("");
+    lines.push(`${pointer(state.cursor === mods.length)} ${B("✔")} Return to category menu`);
+    lines.push(`${pointer(state.cursor === mods.length + 1)} ${B("➜")} Proceed directly to installation summary`);
+    lines.push("");
+    lines.push(`  \x1b[90m${countSelected} in ${state.category} selected. Use Space to multi-select, then return or proceed.\x1b[0m`);
   } else {
     const names = chosenNames(state, modules);
-    lines.push(`  Step 3/3: summary (${B(count)})`, "  Enter install   Esc back   q quit", "");
-    if (!names.length) lines.push("  (nothing selected)");
-    for (let i = 0; i < names.length; i += 6) lines.push("  " + names.slice(i, i + 6).join(", "));
+    lines.push(`  Step 3/3: summary (${B(`${names.length} selected`)})`, "  Enter install   Esc back   q quit", "");
+    if (!names.length) {
+      lines.push("  (nothing selected)");
+    } else {
+      categoriesOf(modules).forEach((c) => {
+        const inCat = inCategory(modules, c).filter((m) => state.selected.has(m.name));
+        if (inCat.length) {
+          lines.push(`  ${B(c)} (${inCat.length}): ` + inCat.map((m) => m.name).join(", "));
+        }
+      });
+    }
   }
   return lines;
 }
