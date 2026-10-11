@@ -81,4 +81,71 @@ assert.equal(supportsCursorUp({ ConEmuANSI: "ON" }, "win32"), true);
 assert.equal(supportsCursorUp({ ConEmuANSI: "OFF" }, "win32"), false);
 assert.equal(supportsCursorUp({ TERM_PROGRAM: "vscode" }, "win32"), true);
 assert.equal(supportsCursorUp({ TERM: "xterm-256color" }, "win32"), true);
+
+// Extras submenu tests
+const modulesWithExtras = [
+  ...modules,
+  { name: "taste", category: "Extras", kind: "skill", core: false, desc: "Taste skill" },
+  { name: "humanizer", category: "Extras", kind: "skill", core: false, desc: "Humanizer skill" },
+  { name: "heroui", category: "Extras", kind: "skill", core: false, desc: "HeroUI skill" },
+  { name: "cockpit", category: "Extras", kind: "software", core: false, desc: "Cockpit GUI" },
+  { name: "extras", category: "Extras", kind: "software", core: false, desc: "Full bundle" },
+];
+
+function runWithExtras(keys) {
+  let s = initState(modulesWithExtras);
+  const frames = [view(s, modulesWithExtras)];
+  for (const k of keys) { s = reduce(s, k, modulesWithExtras); if (s.done) break; frames.push(view(s, modulesWithExtras)); }
+  return { s, frames };
+}
+
+// 1. Navigate to Custom -> Extras category -> opens extras screen
+// Categories: System(0), Agents(1), Extras(2), Gateway(3), Summary(4)
+let exRun = runWithExtras([DOWN, DOWN, ENTER, DOWN, DOWN, ENTER]);
+assert.equal(exRun.s.screen, "extras");
+assert.equal(exRun.s.cursor, 0);
+
+// 2. Multi-select in Extras with Space: select taste and humanizer, return to categories
+// In extras: taste(0) [space], down, humanizer(1) [space], down*4 to Return row(5), enter
+exRun = runWithExtras([
+  DOWN, DOWN, ENTER, // Custom
+  DOWN, DOWN, ENTER, // Open Extras submenu
+  SPACE,             // Select taste
+  DOWN, SPACE,       // Select humanizer
+  DOWN, DOWN, DOWN, DOWN, ENTER // Return to category menu
+]);
+assert.equal(exRun.s.screen, "categories");
+assert.deepEqual(chosenNames(exRun.s, modulesWithExtras), ["base", "node", "pi", "taste", "humanizer"]);
+
+// 3. Multi-select in Extras and proceed directly to summary from Extras
+exRun = runWithExtras([
+  DOWN, DOWN, ENTER, // Custom
+  DOWN, DOWN, ENTER, // Open Extras submenu
+  SPACE,             // Select taste
+  DOWN, SPACE,       // Select humanizer
+  DOWN, DOWN, DOWN, DOWN, DOWN, ENTER, // Proceed directly to installation summary
+  ENTER              // Confirm
+]);
+assert.equal(exRun.s.done, "confirm");
+assert.deepEqual(chosenNames(exRun.s, modulesWithExtras), ["base", "node", "pi", "taste", "humanizer"]);
+
+// 4. Toggle all/none in extras with 'a' and back with Esc
+exRun = runWithExtras([
+  DOWN, DOWN, ENTER, // Custom
+  DOWN, DOWN, ENTER, // Open Extras submenu
+  "a",               // Toggle all extras on
+  ESC                // Back to categories
+]);
+assert.equal(exRun.s.screen, "categories");
+assert.ok(exRun.s.selected.has("taste"));
+assert.ok(exRun.s.selected.has("cockpit"));
+
+// 5. Verify Extras view output formatting
+const extrasView = view({ screen: "extras", cursor: 0, category: "Extras", selected: new Set(["taste"]) }, modulesWithExtras);
+assert.ok(extrasView.some((l) => l.includes("Extras: Optional Skills & Software")));
+assert.ok(extrasView.some((l) => l.includes("[skill]")));
+assert.ok(extrasView.some((l) => l.includes("[software]")));
+assert.ok(extrasView.some((l) => l.includes("Return to category menu")));
+assert.ok(extrasView.some((l) => l.includes("Proceed directly to installation summary")));
+
 console.log("menu tests passed");
