@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv ai-memory lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
+base node bun pi dotenv ai-memory [skillopt-sleep] lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
 ```
 
 ## base
@@ -102,6 +102,18 @@ Installs darkrei08/dotenv's agent-skill stack on **every OS** via `npx skills ad
 (mattpocock/skills); `typescript-advanced` (pedronauck/skills); `show-me`
 (humanlayer/skills) — for every detected agent. `skills add --copy` is
 idempotent, so it is safe alongside the Linux `dotenv` run.
+
+## skillopt-sleep
+
+Optional runtime for the personal SkillOpt fork. It clones the configured fork
+(default `https://github.com/darkrei08/SkillOpt.git`) into `~/.skillopt/src`,
+creates an isolated Python virtual environment, installs the fork in editable
+mode, and verifies `python -m skillopt_sleep --help`. It does not run a sleep
+cycle, schedule jobs, send transcripts, or adopt proposals during installation.
+
+Configure `SKILLOPT_REPO`, `SKILLOPT_REF`, `SKILLOPT_HOME`, or `SKILLOPT_VENV`
+before selecting `--only skillopt-sleep`. Runtime operation and Engram safety
+rules are documented in the dotenv repository's `skillopt/README.md`.
 
 ## Agent modules
 

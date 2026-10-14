@@ -39,6 +39,7 @@ const MODULES = [
   { name: "pi",           core: true,  category: "Agents", desc: "pi.dev coding agent CLI" },
   { name: "dotenv",       core: true,  category: "System", desc: "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" },
   { name: "ai-memory",    core: true,  category: "Memory & review", desc: "ai-memory-kit aimem CLI and templates" },
+  { name: "skillopt-sleep", core: false, category: "Memory & review", desc: "SkillOpt-Sleep runtime for recurring-task mining and gated skill evolution" },
   { name: "lazyvim",      core: true,  category: "Editors", desc: "Neovim x86_64 tarball and LazyVim starter (headless sync)" },
   { name: "pi-packages",  core: true,  category: "Skills & workflows", desc: "Extra Pi packages from a declarative manifest (pi-packages.txt)" },
   { name: "go",           core: true,  category: "System", desc: "Go toolchain" },
@@ -62,6 +63,8 @@ const EXTRA_ITEMS = [
   { extra: true, name: "taste", kind: "skill", core: false, category: "Extras", desc: "Taste skill (design-taste-frontend)" },
   { extra: true, name: "humanizer", kind: "skill", core: false, category: "Extras", desc: "Humanizer skill" },
   { extra: true, name: "heroui", kind: "skill", core: false, category: "Extras", desc: "HeroUI skill (heroui-react)" },
+  { extra: true, name: "emilkowalski", kind: "skill", core: false, category: "Extras", desc: "Emil Kowalski design and animation skills" },
+  { extra: true, name: "mjml-email", kind: "skill", core: false, category: "Extras", desc: "Responsive MJML email skill" },
 ];
 
 // dotenv is Linux-only; drop it from the Windows menu.

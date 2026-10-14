@@ -76,6 +76,10 @@ PI_WORKFLOW_VERSION="${PI_WORKFLOW_VERSION:-}"
 AIMEM_REF="${AIMEM_REF:-v0.1.0}"
 AIMEM_VERSION="${AIMEM_VERSION:-0.1.0}"
 AIMEM_PREFIX="${AIMEM_PREFIX:-${HOME}/.local}"
+SKILLOPT_REPO="${SKILLOPT_REPO:-https://github.com/darkrei08/SkillOpt.git}"
+SKILLOPT_REF="${SKILLOPT_REF:-main}"
+SKILLOPT_HOME="${SKILLOPT_HOME:-${HOME}/.skillopt}"
+SKILLOPT_VENV="${SKILLOPT_VENV:-${SKILLOPT_HOME}/venv}"
 
 DOTENV_REPO="${DOTENV_REPO:-https://github.com/darkrei08/dotenv.git}"
 
@@ -805,7 +809,7 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi dotenv ai-memory lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
+MODULE_ORDER=(base node bun pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
 
 module_desc() {
     case "$1" in
@@ -818,6 +822,7 @@ module_desc() {
         go) printf '%s\n' "Go toolchain" ;;
         dotenv) printf '%s\n' "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" ;;
         ai-memory) printf '%s\n' "ai-memory-kit aimem CLI and templates" ;;
+        skillopt-sleep) printf '%s\n' "SkillOpt-Sleep runtime for recurring-task mining and gated skill evolution (optional)" ;;
         ee) printf '%s\n' "Engineering Excellence skill (npx skills add, all detected agents)" ;;
         skills) printf '%s\n' "Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add" ;;
         pi-workflows) printf '%s\n' "pi-extensible-workflows (published release + npm 12 remote sources for pi installs)" ;;
@@ -835,7 +840,7 @@ module_desc() {
 }
 
 module_is_optional() {
-    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "extras" ]]
+    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "skillopt-sleep" || "$1" == "extras" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -1557,6 +1562,34 @@ mod_ai_memory() {
     fi
     log_event "INFO" "ai-memory" "cli_verified" "Verified ai-memory-kit CLI at its exact install path" 0 "version=${installed_version};path=${aimem_bin}"
 }
+# --- skillopt-sleep ---------------------------------------------------------
+mod_skillopt_sleep() {
+    section "SkillOpt-Sleep"
+    require_command git
+    require_command python3
+    local repo="${SKILLOPT_HOME}/src"
+    local python_bin="${SKILLOPT_VENV}/bin/python"
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "skillopt-sleep" "clone ${SKILLOPT_REPO}#${SKILLOPT_REF} into ${repo}"
+        dry_run_note "skillopt-sleep" "create ${SKILLOPT_VENV} and install the fork in editable mode"
+        return 0
+    fi
+    mkdir -p "${SKILLOPT_HOME}"
+    if [[ ! -d "${repo}/.git" ]]; then
+        run_cmd "skillopt-sleep" git clone --depth 1 --branch "${SKILLOPT_REF}" "${SKILLOPT_REPO}" "${repo}"
+    fi
+    [[ -f "${repo}/pyproject.toml" ]] || {
+        log_event "ERROR" "skillopt-sleep" "runtime_missing" "SkillOpt checkout has no pyproject.toml" 1 "path=${repo}"
+        return 1
+    }
+    if [[ ! -x "${python_bin}" ]]; then
+        run_cmd "skillopt-sleep" python3 -m venv "${SKILLOPT_VENV}"
+    fi
+    run_cmd "skillopt-sleep" "${python_bin}" -m pip install --disable-pip-version-check --upgrade --editable "${repo}"
+    run_cmd "skillopt-sleep" "${python_bin}" -m skillopt_sleep --help
+    log_event "INFO" "skillopt-sleep" "runtime_verified" "Verified SkillOpt-Sleep fork runtime" 0 "python=${python_bin};repo=${repo};ref=${SKILLOPT_REF}"
+}
+
 # --- lazyvim ----------------------------------------------------------------
 mod_lazyvim() {
     section "Neovim + LazyVim"

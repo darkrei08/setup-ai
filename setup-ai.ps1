@@ -88,6 +88,10 @@ $DotenvDir  = if ($env:DOTENV_DIR) { $env:DOTENV_DIR } else { Join-Path $HOME "g
 $PiAgentDir = if ($env:PI_CODING_AGENT_DIR) { $env:PI_CODING_AGENT_DIR } else { Join-Path $HOME ".pi\agent" }
 $PiExtDir   = Join-Path $PiAgentDir "extensions"
 $PiNpmDir   = Join-Path $PiAgentDir "npm"
+$SkillOptRepo = if ($env:SKILLOPT_REPO) { $env:SKILLOPT_REPO } else { "https://github.com/darkrei08/SkillOpt.git" }
+$SkillOptRef = if ($env:SKILLOPT_REF) { $env:SKILLOPT_REF } else { "main" }
+$SkillOptHome = if ($env:SKILLOPT_HOME) { $env:SKILLOPT_HOME } else { Join-Path $HOME ".skillopt" }
+$SkillOptVenv = if ($env:SKILLOPT_VENV) { $env:SKILLOPT_VENV } else { Join-Path $SkillOptHome "venv" }
 # Pinned CLI-Anything revision whose .pi-extension/cli-anything assets the extras module installs.
 $CliAnythingRef = '34f519533bc175d2fe287ab8316b0dd99bb9cc43'
 
@@ -1171,7 +1175,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
+$ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
@@ -1183,6 +1187,7 @@ $ModuleDesc = [ordered]@{
     'go'           = 'Go toolchain'
     'dotenv'       = 'darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)'
     'ai-memory'    = 'ai-memory-kit aimem CLI and templates'
+    'skillopt-sleep' = 'SkillOpt-Sleep runtime for recurring-task mining and gated skill evolution (optional)'
     'ee'           = 'Engineering Excellence skill (npx skills add, all detected agents)'
     'skills'       = 'Upstream agent skills (herdr, grilling, research, typescript-advanced, show-me, ...) via npx skills add'
     'pi-workflows' = 'pi-extensible-workflows (published release + npm 12 remote sources for pi installs)'
@@ -1196,7 +1201,7 @@ $ModuleDesc = [ordered]@{
     'cliproxyapi'  = 'CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)'
     'extras'       = 'Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)'
 }
-$ModuleOptional = @{ 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
+$ModuleOptional = @{ 'skillopt-sleep' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -1394,6 +1399,32 @@ function Mod-AiMemory {
         throw "ai-memory-kit version mismatch after repair"
     }
     Write-Log INFO $phase "verified" "ai-memory-kit $aimemVersion installed" 0 "bin=$aimemBin;cmd=$aimemCmd"
+}
+
+function Mod-SkillOptSleep {
+    $phase = "skillopt-sleep"
+    $repo = Join-Path $SkillOptHome "src"
+    $python = Join-Path $SkillOptVenv "Scripts\python.exe"
+    Write-Log INFO $phase "start" "SkillOpt-Sleep runtime"
+    if ($DryRun) {
+        Write-Log INFO $phase "plan" "Clone $SkillOptRepo#$SkillOptRef, create $SkillOptVenv, and install the fork in editable mode"
+        return
+    }
+    if (-not (Test-Cmd git)) { throw "git is required for skillopt-sleep" }
+    if (-not (Test-Cmd python)) { throw "python is required for skillopt-sleep" }
+    New-Item -ItemType Directory -Force -Path $SkillOptHome | Out-Null
+    if (-not (Test-Path -LiteralPath (Join-Path $repo ".git") -PathType Container)) {
+        Invoke-Step -Phase $phase -Action { git clone --depth 1 --branch $SkillOptRef $SkillOptRepo $repo }
+    }
+    if (-not (Test-Path -LiteralPath (Join-Path $repo "pyproject.toml") -PathType Leaf)) {
+        throw "SkillOpt checkout has no pyproject.toml: $repo"
+    }
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        Invoke-Step -Phase $phase -Action { python -m venv $SkillOptVenv }
+    }
+    Invoke-Step -Phase $phase -Action { & $python -m pip install --disable-pip-version-check --upgrade --editable $repo }
+    Invoke-Step -Phase $phase -Action { & $python -m skillopt_sleep --help }
+    Write-Log INFO $phase "runtime_verified" "Verified SkillOpt-Sleep fork runtime" 0 "python=$python;repo=$repo;ref=$SkillOptRef"
 }
 
 function Mod-LazyVim {
@@ -2885,7 +2916,7 @@ function Mod-Cliproxyapi {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
-    'pi' = ${function:Mod-Pi}; 'ai-memory' = ${function:Mod-AiMemory}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
+    'pi' = ${function:Mod-Pi}; 'ai-memory' = ${function:Mod-AiMemory}; 'skillopt-sleep' = ${function:Mod-SkillOptSleep}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
     'gentle-ai' = ${function:Mod-GentleAi}
@@ -3038,6 +3069,15 @@ function Get-WindowsModuleInventory {
     param([string]$ModuleName)
     $items = @()
     switch ($ModuleName) {
+        'skillopt-sleep' {
+            $present = Test-Path -LiteralPath $SkillOptHome -PathType Container
+            $items += [pscustomobject]@{
+                Module = 'skillopt-sleep'
+                Resource = 'SkillOpt-Sleep runtime'
+                Classification = if ($present) { 'protected' } else { 'absent' }
+                Reason = if ($present) { 'user-owned runtime files are protected' } else { 'runtime directory not present' }
+            }
+        }
         'opencode' {
             $status = Get-OpenCodeEnvInventoryStatus
             $items += [pscustomobject]@{
