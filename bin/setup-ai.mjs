@@ -54,7 +54,7 @@ const MODULES = [
   { name: "gentle-ai",    core: true,  category: "Memory & review", desc: "gentle-ai / gga ecosystem configurator (per-agent select + MCP) + gentle-pi" },
   { name: "cockpit",      core: false, kind: "software", category: "Extras", desc: "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" },
   { name: "cliproxyapi",  core: false, category: "Gateway", desc: "CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)" },
-  { name: "extras",       core: false, kind: "software", category: "Extras", desc: "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" },
+  { name: "extras",       core: false, kind: "software", category: "Extras", desc: "Optional shared Taste, Humanizer, HeroUI, Emil design, MJML email, and Impeccable skills" },
 ];
 
 // Registry entries of the Extras module (ids mirror SKILL_REGISTRY in setup-ai.sh and

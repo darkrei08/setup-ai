@@ -1199,7 +1199,7 @@ $ModuleDesc = [ordered]@{
     'opencode'     = 'opencode agent CLI (opencode-ai)'
     'cockpit'      = 'cockpit-tools desktop GUI app (optional, CC BY-NC-SA)'
     'cliproxyapi'  = 'CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)'
-    'extras'       = 'Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)'
+    'extras'       = 'Optional shared Taste, Humanizer, HeroUI, Emil design, MJML email, and Impeccable skills'
 }
 $ModuleOptional = @{ 'skillopt-sleep' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
 

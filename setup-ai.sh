@@ -834,7 +834,7 @@ module_desc() {
         opencode) printf '%s\n' "opencode agent CLI (opencode-ai)" ;;
         cockpit) printf '%s\n' "cockpit-tools desktop GUI app (optional, CC BY-NC-SA)" ;;
         cliproxyapi) printf '%s\n' "CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)" ;;
-        extras) printf '%s\n' "Shared Taste, Humanizer, and HeroUI skills plus Impeccable (optional)" ;;
+        extras) printf '%s\n' "Optional shared Taste, Humanizer, HeroUI, Emil design, MJML email, and Impeccable skills" ;;
         *) return 1 ;;
     esac
 }

@@ -153,8 +153,9 @@ install runs `npx skills@latest add <source> --skill <skill> --global --agent <a
 (`-Extras` on Windows) installs only the chosen entries; `--only extras` installs
 everything below. The menu lists each entry under Extras.
 
-Stages Taste (`design-taste-frontend`), Humanizer, and HeroUI (`heroui-react`) in
-`~/.agents/skills`, the canonical shared-skill root. Existing canonical or
+Stages Taste (`design-taste-frontend`), Humanizer, HeroUI (`heroui-react`), Emil's
+design and animation skills, and the MJML email skill in `~/.agents/skills`, the
+canonical shared-skill root. Existing canonical or
 agent-specific copies and links are preserved when they conflict; matching
 copies are left in place. The skills are linked for Claude Code, Codex, OpenCode,
 Gemini CLI, and Antigravity CLI under its `.gemini/antigravity-cli/skills` root.
