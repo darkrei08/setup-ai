@@ -12,9 +12,9 @@ Issue: #143. Cross-platform launcher/menu change; implementation remains on the 
 
 ## Tasks
 
-- T1 [S1-S4] Define the canonical Gentle AI preset in the Node menu and tests. Route: launcher/menu. Commit: pending (implementation complete; commit deferred by repository policy).
-- T2 [S1-S4] Mirror preset selection and module order in Bash and PowerShell. Route: cross-platform parity. Commit: pending.
-- T3 [S2-S4] Add focused resource-safety and compatibility verification. Route: tests/docs. Commit: pending.
+- T1 [S1-S4] Define the canonical Gentle AI preset in the Node menu and tests. Route: launcher/menu. Commit: f2fc76b.
+- T2 [S1-S4] Mirror preset selection and module order in Bash and PowerShell. Route: cross-platform parity. Commit: f2fc76b.
+- T3 [S2-S4] Add focused resource-safety and compatibility verification. Route: tests/docs. Commit: f2fc76b.
 - T4 [S5] Keep dotenv cleanup out of scope and record the separate incident boundary. Route: non-goal. Commit: none.
 
 ## Log
@@ -23,3 +23,4 @@ Issue: #143. Cross-platform launcher/menu change; implementation remains on the 
 - L2: Issue #143 was created before implementation and explicitly excludes dotenv cleanup.
 - L3: User preference: use Vekexasia pi-extensible-workflows tools and avoid Gentle AI workflow helpers; use gpt-5.6-luna roles through Herdr when delegating.
 - L4: T1 implementation evidence: `bin/menu.mjs` adds the `gentle-ai` preset selecting `base`, `node`, `pi`, `pi-workflows`, and `gentle-ai`; `tests/menu.test.mjs` covers the selection; focused Node tests and syntax/diff checks passed. Bash and PowerShell parity remain T2.
+- L5: Commit `f2fc76b` records the completed Gentle AI preset implementation, parity test, ODD task artifacts, host checks, seven-family Linux matrix, GGA review, and native RDD approval.
