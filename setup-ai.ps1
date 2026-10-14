@@ -1176,6 +1176,8 @@ function Get-PiPackagesManifest {
 # ==============================================================================
 
 $ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
+# The launcher passes this ordered selection through -Only for the Gentle AI preset.
+$GentleAiPreset = @('base','node','pi','pi-workflows','gentle-ai')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
@@ -2935,7 +2937,8 @@ function Show-List {
         $tag = if ($ModuleOptional.ContainsKey($m)) { "optional" } else { "core    " }
         "{0,-10} {1,-14} {2}" -f "[$tag]", $m, $ModuleDesc[$m] | Write-Host
     }
-    Write-Host "`nUse: -Only csv | -Extras ids | -All | -Verbose | (default = core)"
+    Write-Host "`nPresets: gentle-ai = $($GentleAiPreset -join ',')"
+    Write-Host "Use: -Only csv | -Extras ids | -All | -Verbose | (default = core)"
 }
 
 function Show-Help {
