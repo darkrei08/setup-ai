@@ -15,7 +15,8 @@
     "pi-packages.example.txt",
     "templates",
     "README.md",
-    "docs"
+    "docs",
+    "tests"
   ],
   "engines": {
     "node": ">=18"
