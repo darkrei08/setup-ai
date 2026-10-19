@@ -1,3 +1,3 @@
 Feature: Gentle AI preset and workflow resource safeguards
 Source: odd/tasks/gentle-ai-preset.md
-Tasks: T1 Node menu/tests; T2 Bash/PowerShell parity; T3 resource-safety verification and README; T4 dotenv remains out of scope. Preset/parity commit: f2fc76b; README/boundary documentation: 88d06ff.
+Tasks: T1 Node menu/tests; T2 Bash/PowerShell parity; T3 resource-safety verification and README; T4 dotenv remains out of scope; T5 external runtime safeguards pending in pi-extensible-workflows. Preset/parity commit: f2fc76b; README/boundary documentation: 88d06ff.

@@ -16,6 +16,7 @@ Issue: #143. Cross-platform launcher/menu change; implementation remains on the 
 - T2 [S1-S4] Mirror preset selection and module order in Bash and PowerShell. Route: cross-platform parity. Commit: f2fc76b.
 - T3 [S2-S4] Add focused resource-safety and compatibility verification. Route: tests/docs. Commit: f2fc76b (preset/parity), 88d06ff (README and boundary documentation).
 - T4 [S5] Keep dotenv cleanup out of scope and record the separate incident boundary. Route: non-goal. Commit: none.
+- T5 [S2] Implement and verify runtime safeguards in pi-extensible-workflows before closing #143. Route: external runtime dependency. Commit: pending upstream.
 
 ## Log
 
@@ -25,3 +26,4 @@ Issue: #143. Cross-platform launcher/menu change; implementation remains on the 
 - L4: T1 implementation evidence: `bin/menu.mjs` adds the `gentle-ai` preset selecting `base`, `node`, `pi`, `pi-workflows`, and `gentle-ai`; `tests/menu.test.mjs` covers the selection; focused Node tests and syntax/diff checks passed. Bash and PowerShell parity remain T2.
 - L5: Commit `f2fc76b` records the completed Gentle AI preset implementation, parity test, ODD task artifacts, host checks, seven-family Linux matrix, GGA review, and native RDD approval.
 - L6: Failover-model audit found criteria S2 role allowlists, bounded concurrency validation, and provider/model context safeguards are external pi-extensible-workflows behavior, not implemented by setup-ai; README now documents the preset without claiming those runtime guarantees.
+- L7: User selected `keep-runtime`: retain all S2 runtime requirements in #143. The issue remains open pending linked pi-extensible-workflows implementation and evidence; a public scope comment was added to #143.
