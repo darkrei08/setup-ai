@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 4.0.2
+ Version: 4.0.3
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, vendor installers where documented,
@@ -69,7 +69,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "4.0.2"
+$ScriptVersion = "4.0.3"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"

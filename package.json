@@ -1,6 +1,6 @@
 {
   "name": "@darkrei08/setup-ai",
-  "version": "4.0.2",
+  "version": "4.0.3",
   "description": "Cross-OS installer for an AI coding toolchain (pi, codex, antigravity, opencode, herdr, gentle-ai/gga, Engineering Excellence) with an interactive module menu and per-agent MCP registration.",
   "type": "module",
   "bin": {
@@ -15,7 +15,8 @@
     "pi-packages.example.txt",
     "templates",
     "README.md",
-    "docs"
+    "docs",
+    "tests"
   ],
   "engines": {
     "node": ">=18"
@@ -26,6 +27,7 @@
     "win32"
   ],
   "scripts": {
+    "test": "node tests/menu.test.mjs && node tests/launcher-flags.test.mjs",
     "list": "node bin/setup-ai.mjs --list",
     "check:retry-marker": "node bin/check-workflow-retry-marker.mjs"
   },
