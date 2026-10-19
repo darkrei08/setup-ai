@@ -14,7 +14,7 @@ Issue: #143. Cross-platform launcher/menu change; implementation remains on the 
 
 - T1 [S1-S4] Define the canonical Gentle AI preset in the Node menu and tests. Route: launcher/menu. Commit: f2fc76b.
 - T2 [S1-S4] Mirror preset selection and module order in Bash and PowerShell. Route: cross-platform parity. Commit: f2fc76b.
-- T3 [S2-S4] Add focused resource-safety and compatibility verification. Route: tests/docs. Commit: f2fc76b (preset/parity); README follow-up pending local commit.
+- T3 [S2-S4] Add focused resource-safety and compatibility verification. Route: tests/docs. Commit: f2fc76b (preset/parity), 88d06ff (README and boundary documentation).
 - T4 [S5] Keep dotenv cleanup out of scope and record the separate incident boundary. Route: non-goal. Commit: none.
 
 ## Log
