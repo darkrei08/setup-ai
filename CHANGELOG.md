@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.3] - 2026-10-19
+
+### Fixed
+
+- Reissued the 4.0.2 package contents under a new patch version after npm retained an inaccessible staged-version reservation for 4.0.2.
+
 ## [4.0.2] - 2026-10-19
 
 ### Added
