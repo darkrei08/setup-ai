@@ -45,6 +45,14 @@ function screenAfter(frames, cols = 80, relative = true) {
 assert.deepEqual(chosenNames(run([DOWN, ENTER]).s, modules), modules.map((m) => m.name)); // Everything
 assert.deepEqual(chosenNames(run([ENTER]).s, modules), ["base", "node", "pi"]); // Core
 assert.deepEqual(chosenNames(run([DOWN, DOWN, DOWN, ENTER]).s, modules), ["base", "node", "pi"]); // Minimal
+const gentleModules = [
+  ...modules,
+  { name: "pi-workflows", category: "Skills & workflows", core: false, desc: "d" },
+  { name: "gentle-ai", category: "Memory & review", core: false, desc: "d" },
+];
+let gentleState = initState(gentleModules);
+for (const key of [DOWN, DOWN, DOWN, DOWN, ENTER]) gentleState = reduce(gentleState, key, gentleModules);
+assert.deepEqual(chosenNames(gentleState, gentleModules), ["base", "node", "pi", "pi-workflows", "gentle-ai"]); // Gentle AI
 // Custom: Agents category (2nd), toggle codex, back, continue, confirm
 let r = run([DOWN, DOWN, ENTER, DOWN, ENTER, DOWN, SPACE, ESC, DOWN, DOWN, ENTER, ENTER]);
 assert.equal(r.s.done, "confirm");

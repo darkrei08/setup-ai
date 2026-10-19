@@ -6,8 +6,10 @@ export const PRESETS = [
   { id: "all", label: "Everything", desc: "Every module, including optional ones" },
   { id: "custom", label: "Custom", desc: "Pick modules by category" },
   { id: "minimal", label: "Minimal", desc: "base, node, pi" },
+  { id: "gentle-ai", label: "Gentle AI", desc: "Foundation + Gentle AI workflows" },
 ];
 const MINIMAL = ["base", "node", "pi"];
+const GENTLE_AI = ["base", "node", "pi", "pi-workflows", "gentle-ai"];
 const CATEGORY_ORDER = ["System", "Agents", "Skills & workflows", "Memory & review", "Editors", "Extras", "Gateway"];
 
 export const categoriesOf = (modules) =>
@@ -57,7 +59,8 @@ export function reduce(state, rawKey, modules) {
     if (s.custom) return go("categories");
     s.selected = new Set(id === "all" ? modules.map((m) => m.name)
       : id === "minimal" ? modules.filter((m) => MINIMAL.includes(m.name)).map((m) => m.name)
-        : modules.filter((m) => m.core).map((m) => m.name));
+        : id === "gentle-ai" ? modules.filter((m) => GENTLE_AI.includes(m.name)).map((m) => m.name)
+          : modules.filter((m) => m.core).map((m) => m.name));
     return go("summary");
   }
   if (s.screen === "categories") {

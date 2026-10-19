@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 4.0.0
+ Version: 4.0.2
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, vendor installers where documented,
@@ -69,7 +69,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "4.0.0"
+$ScriptVersion = "4.0.2"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $LogDir = Join-Path $ScriptDir "logs"
@@ -1176,6 +1176,8 @@ function Get-PiPackagesManifest {
 # ==============================================================================
 
 $ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
+# The launcher passes this ordered selection through -Only for the Gentle AI preset.
+$GentleAiPreset = @('base','node','pi','pi-workflows','gentle-ai')
 
 $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
@@ -2935,7 +2937,8 @@ function Show-List {
         $tag = if ($ModuleOptional.ContainsKey($m)) { "optional" } else { "core    " }
         "{0,-10} {1,-14} {2}" -f "[$tag]", $m, $ModuleDesc[$m] | Write-Host
     }
-    Write-Host "`nUse: -Only csv | -Extras ids | -All | -Verbose | (default = core)"
+    Write-Host "`nPresets: gentle-ai = $($GentleAiPreset -join ',')"
+    Write-Host "Use: -Only csv | -Extras ids | -All | -Verbose | (default = core)"
 }
 
 function Show-Help {

@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 4.0.0
+# Version: 4.0.2
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -30,7 +30,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="4.0.0"
+SCRIPT_VERSION="4.0.2"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
@@ -810,6 +810,8 @@ EOF
 # ==============================================================================
 
 MODULE_ORDER=(base node bun pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
+# The launcher passes this ordered selection through --only for the Gentle AI preset.
+GENTLE_AI_PRESET=(base node pi pi-workflows gentle-ai)
 
 module_desc() {
     case "$1" in
@@ -4406,7 +4408,8 @@ print_list() {
         if module_is_optional "${m}"; then tag="optional"; else tag="core    "; fi
         printf '  [%s] %-14s %s\n' "${tag}" "${m}" "$(module_desc "${m}")"
     done
-    printf '\nUse: --only <csv> | --extras <ids> | --all | --dry-run | --verbose | (default = core)\n'
+    printf '\nPresets: gentle-ai = %s\n' "$(IFS=,; printf '%s' "${GENTLE_AI_PRESET[*]}")"
+    printf 'Use: --only <csv> | --extras <ids> | --all | --dry-run | --verbose | (default = core)\n'
     printf 'Lifecycle: --dry-run (plan only) | --uninstall [--yes] [--purge] [--only <csv>]\n'
 }
 
