@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.2] - 2026-10-19
+
+### Added
+
+- Added a cross-platform `Gentle AI` installer preset selecting only `base`, `node`, `pi`, `pi-workflows`, and `gentle-ai`, with matching Node, Bash, PowerShell, and parity coverage ([#143](https://github.com/darkrei08/setup-ai/issues/143)).
+
+### Documentation
+
+- Documented the preset and recorded that role allowlists, bounded concurrency, and provider/model context-token safeguards remain runtime requirements of `pi-extensible-workflows` tracked by #143.
+
 ### Fixed
 
 - PowerShell JSONL records now match bash for the same event. `step_expected` logs the observed native exit code in `rc` and `err` instead of a hardcoded `0`, and every `Write-Log ERROR` site passes a non-zero return code so it carries the `err` object that the bash record already had (`install_missing`, `version_mismatch`, `pi_enable_failed`, and the rest). Windows runtime verification is pending ([#84](https://github.com/darkrei08/setup-ai/issues/84)).
