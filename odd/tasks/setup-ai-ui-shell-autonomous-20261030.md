@@ -101,7 +101,8 @@ S5. The launcher keeps working without a TTY (`--list`, `--help`, fallback core 
 | T4 | RED: focused menu tests for S1-S3 | S1-S3 | tdd | `npm test` failing output before the fix | done |
 | T5 | Implement fixes in `bin/menu.mjs` + `bin/setup-ai.mjs` | S1-S5 | inline | diff +64/-16 in the first pass | done |
 | T6 | GREEN: npm test, list, syntax/parse, parity, PTY check | S1-S5 | tdd + container-test-matrix | see L8 | done |
-| T7 | Container matrix, gga, local work-unit commit | - | work-unit-commits | see L8 | pending |
+| T7 | Container matrix, gga, local work-unit commit | - | work-unit-commits | gga PASSED (fresh and cached); commit `c286a8a` | done |
+| T8 | Final report, orch_report, Engram handoff | - | reporting | see L10 | done |
 | T8 | Final report, orch_report, Engram handoff | - | reporting | final message | pending |
 
 ## Evidence plan
@@ -220,6 +221,25 @@ Use only the relevant skills: pi-herdr-orchestrator, wayfinder, reusable-data-se
   The reviewer was re-dispatched alone with the canonical `reviewer-model` alias and
   `retries: 0`, and returned its findings in one attempt. The failover alias is a
   harness configuration defect, outside this repository.
+
+### L10 — commit and slice evidence (proven)
+
+- `c286a8a fix(launcher): keep the menu frame inside narrow terminals` on
+  `feat/setup-ai-ui-shell-autonomous-20261030`, 9 files, +460/-17.
+- `gga run` before the commit: exit 0, `STATUS: PASSED` for `bin/menu.mjs`,
+  `bin/setup-ai.mjs`, `tests/menu.test.mjs`; the pre-commit hook then passed the same
+  three files from cache.
+- Slice note: the commit is 477 authored lines, past the ~400 guidance, because the
+  verified work unit carries its own ODD map and the two evidence files (386 lines of
+  documentation). The executable change is 83 authored lines (menu + launcher + test)
+  and is not separable from its tests and docs without breaking the rule that keeps
+  them together. This is the only slice for the feature; it closes it.
+- Native review: `gentle_review` assess over the committed range returned risk
+  `medium`, `reviewDue: false` (`under_budget`), no escalated high-risk item, so no
+  review lineage was started. RDD switch reads `on`; the assessment, not a skip, is
+  the basis for not starting one.
+- Post-commit state: worktree clean on the feature branch, one commit ahead of
+  `origin/main`; nothing pushed, no PR, no issue, no tag.
 
 ### L7 — proven defect evidence (pre-change)
 
