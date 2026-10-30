@@ -1,5 +1,9 @@
 # Change & refactor log
 
+## 2026-10-30 — PowerShell dotenv workflow parity
+
+`setup-ai.ps1` now matches `setup-ai.sh` on the dotenv workflow path: it installs and version-verifies `pi-extensible-workflows` inside the dotenv extensions directory (with `ignore-scripts=false` and the npm 12 opt-in), probes all three install roots for the transient-rename retry, and repoints stale extension/barrel symlinks. Covered by `tests/powershell-dotenv-workflows.ps1` (fake npm/pi), which fails against the previous `setup-ai.ps1`, and the pwsh container row now runs it. Native Windows runtime verification not run.
+
 ## 2026-10-30 — Launcher menu frame portability
 
 `bin/menu.mjs` now derives the frame width from the terminal (`frameWidth`, clamp 18-70 on `columns - 3`), centres the banner title from its length, shows each preset's module count from the shared preset-selection helper, and uses ASCII action marks. `bin/setup-ai.mjs` passes the live `process.stdout.columns` on every draw. Covered by `tests/menu.test.mjs`. No installer or module behavior changed, so Bash/PowerShell needed no mirroring; native Windows console rendering was not verified.

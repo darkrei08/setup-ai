@@ -103,6 +103,8 @@ S5. The launcher keeps working without a TTY (`--list`, `--help`, fallback core 
 | T6 | GREEN: npm test, list, syntax/parse, parity, PTY check | S1-S5 | tdd + container-test-matrix | see L8 | done |
 | T7 | Container matrix, gga, local work-unit commit | - | work-unit-commits | gga PASSED (fresh and cached); commit `c286a8a` | done |
 | T8 | Final report, orch_report, Engram handoff | - | reporting | see L10 | done |
+| T9 | Release: PR #150, merge, tag `v4.0.4`, npm publication | - | docs/releasing.md | see L11 | done |
+| T10 | Fix the three pre-existing `setup-ai.ps1` parity findings | - | follow-up | `gga` with the role provider | pending |
 | T8 | Final report, orch_report, Engram handoff | - | reporting | final message | pending |
 
 ## Evidence plan
@@ -240,6 +242,29 @@ Use only the relevant skills: pi-herdr-orchestrator, wayfinder, reusable-data-se
   the basis for not starting one.
 - Post-commit state: worktree clean on the feature branch, one commit ahead of
   `origin/main`; nothing pushed, no PR, no issue, no tag.
+
+### L11 — release and review-gate delivery (proven)
+
+- Release path per `docs/releasing.md`: branch pushed, PR #150 merged into `main` at
+  `3e017fa`, annotated tag `v4.0.4` on that merge commit, `publish.yml` run
+  `41083655445` completed success, GitHub Release `v4.0.4` created.
+- npm: the workflow printed `+ @darkrei08/setup-ai@4.0.4` with a processing notice; the
+  version resolved as `4.0.4` and `dist-tags.latest` became `4.0.4` about two minutes
+  later. Verified with `npm view @darkrei08/setup-ai@4.0.4 version`.
+- Review gate corrected to the shared dotenv mechanism: `.gga` now declares
+  `PROVIDER="kilo:reviewer-model"` (the local Pi bridge `agents/gga-pi/bin/kilo`
+  resolves `reviewer-model` from `pi-ext-roles` and runs that role's model plus effort)
+  instead of a hardcoded OpenCode model. The pre-commit hook already preferred
+  `agents/gga-pi/run-gga.sh`, but the bridge symlink was missing in this worktree, so
+  earlier commits silently fell back to bare `gga`. The bridge is now linked and
+  gitignored; a bare `gga run` fails closed.
+- The role-based reviewer reported STATUS: FAILED on three **pre-existing**
+  `setup-ai.ps1` parity findings (Windows `-DryRun`, dotenv workflow extensions not
+  linked, stale symlink not repaired). None is caused by the version bump; they are
+  recorded as follow-up T10 and were not fixed in this slice.
+- Host limits for the Windows route: no `/dev/kvm` (Proxmox guest without nested
+  virtualization) and 25 GB free versus the 32 GB minimum in the dockur/windows
+  README, so a local Windows container test is BLOCKED on this machine.
 
 ### L7 — proven defect evidence (pre-change)
 
