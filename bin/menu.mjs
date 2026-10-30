@@ -12,6 +12,15 @@ const MINIMAL = ["base", "node", "pi"];
 const GENTLE_AI = ["base", "node", "pi", "pi-workflows", "gentle-ai"];
 const CATEGORY_ORDER = ["System", "Agents", "Skills & workflows", "Memory & review", "Editors", "Extras", "Gateway"];
 
+// 18 = title width: the narrowest frame that still renders the banner.
+export const frameWidth = (cols) => Math.max(18, Math.min(70, (Number.isFinite(cols) ? cols : 80) - 3));
+
+const presetSelection = (id, modules) =>
+  id === "all" ? modules.map((m) => m.name)
+    : id === "minimal" ? modules.filter((m) => MINIMAL.includes(m.name)).map((m) => m.name)
+      : id === "gentle-ai" ? modules.filter((m) => GENTLE_AI.includes(m.name)).map((m) => m.name)
+        : modules.filter((m) => m.core).map((m) => m.name);
+
 export const categoriesOf = (modules) =>
   CATEGORY_ORDER.filter((c) => modules.some((m) => m.category === c));
 const inCategory = (modules, c) => modules.filter((m) => m.category === c);
@@ -57,10 +66,7 @@ export function reduce(state, rawKey, modules) {
     const id = PRESETS[s.cursor].id;
     s.custom = id === "custom";
     if (s.custom) return go("categories");
-    s.selected = new Set(id === "all" ? modules.map((m) => m.name)
-      : id === "minimal" ? modules.filter((m) => MINIMAL.includes(m.name)).map((m) => m.name)
-        : id === "gentle-ai" ? modules.filter((m) => GENTLE_AI.includes(m.name)).map((m) => m.name)
-          : modules.filter((m) => m.core).map((m) => m.name));
+    s.selected = new Set(presetSelection(id, modules));
     return go("summary");
   }
   if (s.screen === "categories") {
@@ -165,13 +171,20 @@ const B = (t) => `\x1b[1m${t}\x1b[0m`;
 const C = (t) => `\x1b[36m${t}\x1b[0m`;
 const pointer = (on) => (on ? C(">") : " ");
 
-export function view(state, modules) {
-  const rule = "\x1b[1;36m+" + "-".repeat(70) + "+\x1b[0m";
-  const lines = [rule, "\x1b[1;36m|\x1b[0m" + " ".repeat(26) + B("AI Dev Suite setup") + " ".repeat(26) + "\x1b[1;36m|\x1b[0m", rule];
+export function view(state, modules, cols) {
+  const inner = frameWidth(cols);
+  const title = "AI Dev Suite setup";
+  const left = Math.floor((inner - title.length) / 2);
+  const rule = "\x1b[1;36m+" + "-".repeat(inner) + "+\x1b[0m";
+  const header = "\x1b[1;36m|\x1b[0m" + " ".repeat(left) + B(title) + " ".repeat(inner - title.length - left) + "\x1b[1;36m|\x1b[0m";
+  const lines = [rule, header, rule];
   const count = `${state.selected.size}/${modules.length} selected`;
   if (state.screen === "preset") {
     lines.push("  Step 1/3: choose a preset", "  Arrows/j-k move   Enter select   q quit", "");
-    PRESETS.forEach((p, i) => lines.push(`${pointer(i === state.cursor)} ${p.label.padEnd(12)} ${p.desc}`));
+    PRESETS.forEach((p, i) => {
+      const count = p.id === "custom" ? "" : `${presetSelection(p.id, modules).length} modules`;
+      lines.push(`${pointer(i === state.cursor)} ${p.label.padEnd(12)} ${count.padEnd(11)} ${p.desc}`);
+    });
   } else if (state.screen === "categories") {
     lines.push(`  Step 2/3: pick a category (${B(count)})`, "  Arrows/j-k move   Enter open   Esc back   q quit", "");
     categoriesOf(modules).forEach((c, i) => {
@@ -196,8 +209,8 @@ export function view(state, modules) {
       lines.push(`${pointer(i === state.cursor)} ${box} ${m.name.padEnd(12)} ${badge} ${m.desc}`);
     });
     lines.push("");
-    lines.push(`${pointer(state.cursor === extras.length)} ${B("✔")} Return to category menu`);
-    lines.push(`${pointer(state.cursor === extras.length + 1)} ${B("➜")} Proceed directly to installation summary`);
+    lines.push(`${pointer(state.cursor === extras.length)} ${B("<")} Return to category menu`);
+    lines.push(`${pointer(state.cursor === extras.length + 1)} ${B(">")} Proceed directly to installation summary`);
     lines.push("");
     lines.push(`  \x1b[90m${countSelected} extras selected. Use Space to multi-select, then return or proceed.\x1b[0m`);
   } else if (state.screen === "modules") {
@@ -214,8 +227,8 @@ export function view(state, modules) {
       lines.push(`${pointer(i === state.cursor)} ${box} ${m.name.padEnd(14)} ${tag} ${m.desc}`);
     });
     lines.push("");
-    lines.push(`${pointer(state.cursor === mods.length)} ${B("✔")} Return to category menu`);
-    lines.push(`${pointer(state.cursor === mods.length + 1)} ${B("➜")} Proceed directly to installation summary`);
+    lines.push(`${pointer(state.cursor === mods.length)} ${B("<")} Return to category menu`);
+    lines.push(`${pointer(state.cursor === mods.length + 1)} ${B(">")} Proceed directly to installation summary`);
     lines.push("");
     lines.push(`  \x1b[90m${countSelected} in ${state.category} selected. Use Space to multi-select, then return or proceed.\x1b[0m`);
   } else {

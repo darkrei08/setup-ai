@@ -1,5 +1,9 @@
 # Change & refactor log
 
+## 2026-10-30 — Launcher menu frame portability
+
+`bin/menu.mjs` now derives the frame width from the terminal (`frameWidth`, clamp 18-70 on `columns - 3`), centres the banner title from its length, shows each preset's module count from the shared preset-selection helper, and uses ASCII action marks. `bin/setup-ai.mjs` passes the live `process.stdout.columns` on every draw. Covered by `tests/menu.test.mjs`. No installer or module behavior changed, so Bash/PowerShell needed no mirroring; native Windows console rendering was not verified.
+
 ## 2026-10-06 — Issue #83 Windows gentle-ai resolver
 
 `Resolve-GentleAiCli` now probes `GOBIN`, `GOPATH\bin`, `%USERPROFILE%\go\bin` (where the vendor `go install` writes) before the legacy `%LOCALAPPDATA%\gentle-ai\bin`. Covered by `tests/gentle-ai-cli-resolution-pwsh.sh` (Linux pwsh). Native Windows verification not run.

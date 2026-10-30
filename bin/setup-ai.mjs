@@ -156,9 +156,10 @@ function interactiveMenu() {
     stdin.resume();
     stdin.setEncoding("utf8");
 
-    const draw = createRenderer(process.stdout);
+    const render = createRenderer(process.stdout);
+    const draw = (state) => render(view(state, menuModules, process.stdout.columns));
     let state = initState(menuModules);
-    draw(view(state, menuModules));
+    draw(state);
 
     const cleanup = () => {
       try {
@@ -185,7 +186,7 @@ function interactiveMenu() {
         cleanup();
         resolve(chosenNames(state, menuModules));
       } else {
-        draw(view(state, menuModules));
+        draw(state);
       }
     };
     stdin.on("data", onData);
