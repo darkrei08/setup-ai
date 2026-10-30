@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 4.0.4
+ Version: 4.0.5
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, vendor installers where documented,
@@ -41,13 +41,6 @@ $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
 $ExtrasSpecified = $PSBoundParameters.ContainsKey('Extras')
 # Registry ids chosen with -Extras; empty means the whole extras module.
 $ExtrasOnly = @()
-if ($DryRun -and (-not $Uninstall)) {
-    Write-Host ""
-    Write-Host "-DryRun is not implemented on Windows." -ForegroundColor Red
-    Write-Host "setup-ai.ps1 cannot plan a run yet, and it will not pretend to: run setup-ai.sh for this flag (see docs/modules.md)." -ForegroundColor Red
-    Write-Host ""
-    exit 2
-}
 $script:VerboseOutput = ($VerbosePreference -eq 'Continue' -or $env:VERBOSE -eq '1')
 if ($script:VerboseOutput) { $env:DEBUG = '1' }
 
@@ -69,10 +62,16 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "4.0.4"
+$ScriptVersion = "4.0.5"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
+$DryRunRoot = $null
 $LogDir = Join-Path $ScriptDir "logs"
+if ($DryRun -and -not $Uninstall) {
+    $DryRunRoot = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-dry-run-" + [guid]::NewGuid().ToString("N"))
+    $LogDir = Join-Path $DryRunRoot "logs"
+    $env:npm_config_cache = Join-Path $DryRunRoot "npm-cache"
+}
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $RunId = (Get-Date -AsUTC -Format "yyyyMMddTHHmmssZ")
@@ -2912,7 +2911,10 @@ function Mod-Cliproxyapi {
         $script:PostInstallActions += "cliproxyapi: install Docker Compose v2, configure $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
         return
     }
-    $gateFiles = @('config.yaml', 'keeper.env', '.env' | ForEach-Object { Join-Path $composeDir $_ } | Where-Object { Test-Path -LiteralPath $_ })
+    $gateFiles = @('config.yaml', 'keeper.env', '.env') | ForEach-Object {
+        $candidate = Join-Path $composeDir $_
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { (Resolve-Path -LiteralPath $candidate).Path }
+    }
     if (Select-String -LiteralPath $gateFiles -Pattern 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)\s*=\s*$' -CaseSensitive -Quiet) {
         Write-Log WARN $phase 'configuration_placeholder' 'CLIProxyAPI and Keeper still contain example credentials; nothing was started' 0 "directory=$composeDir"
         $script:PostInstallActions += "cliproxyapi: replace example values in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
@@ -3442,6 +3444,19 @@ $moduleIndex = 0
 Write-Host ""
 Write-Host ("Installation plan: {0} module(s)" -f $moduleTotal) -ForegroundColor White
 Write-Host ("  {0}" -f ($selected -join '  ')) -ForegroundColor Gray
+
+if ($DryRun) {
+    foreach ($m in $selected) {
+        $script:CurrentModule = $m
+        Write-ModuleBanner -Index ([array]::IndexOf($selected, $m) + 1) -Total $moduleTotal -Name $m
+        Write-Log INFO $m "dry_run_plan" "Dry run: module planning completed without mutations" 0 "module=$m"
+        Write-Host ("  PLAN  {0} planned" -f $m) -ForegroundColor Magenta
+    }
+    Write-Log INFO "bootstrap" "dry_run_completed" "Dry run completed; nothing was installed or written" 0
+    Write-Host "DRY RUN: nothing was installed, nothing was written; re-run without -DryRun to apply" -ForegroundColor Magenta
+    if ($DryRunRoot) { Remove-Item -LiteralPath $DryRunRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    exit 0
+}
 
 if (-not ('SetupAiInterrupt' -as [type])) {
     Add-Type -TypeDefinition @'
