@@ -23,15 +23,18 @@
 #   PROVIDER="minimax"
 #   PROVIDER="minimax:MiniMax-M3"
 # NOTE: claude/gemini are not installed on this machine (see `gentle-ai doctor`).
-# Review runs through the OpenCode CLI on the OpenCode Go subscription, the same
-# model this repository is developed with; codex was the earlier choice.
-PROVIDER="opencode:cliproxyapi/gemini-3.8-flash-high"
-# The reviewer is the opencode agent this machine already runs (gentle-orchestrator:
-# gentle-ai, engram, full tool access), so the review can run its own checks.
-# That agent answers with prose before it states the verdict, which is why the
-# verdict parser is tolerant: a strict parse would block sound reviews on layout.
-# The blocking verdict still comes from the review text, and the committer runs the
-# repository's required commands before committing.
+# The reviewer is the shared dotenv profile mechanism, not a hardcoded model: `kilo`
+# here is the local Pi bridge `agents/gga-pi/bin/kilo` (from darkrei08/dotenv), which
+# resolves `reviewer-model` from ~/.pi/agent/pi-ext-roles/settings.json and runs that
+# role's model with its effort over the CLIProxyAPI provider. The role definition
+# picks the model, never this file. The bridge is only on PATH through
+# `agents/gga-pi/run-gga.sh run`, which the pre-commit hook calls; a bare `gga run`
+# without the bridge fails closed instead of silently using another provider.
+PROVIDER="kilo:reviewer-model"
+# The role answers with prose before it states the verdict, which is why the verdict
+# parser is tolerant: a strict parse would block sound reviews on layout. The blocking
+# verdict still comes from the review text, and the committer runs the repository's
+# required commands before committing.
 
 # File patterns to include in review (comma-separated)
 # Default: * (all files)
