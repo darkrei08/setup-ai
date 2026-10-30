@@ -1525,16 +1525,36 @@ function Link-DotenvWorkflowExtensions {
     if (-not (Test-Path -LiteralPath $parent)) {
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
-    if (-not (Test-Path -LiteralPath $TargetDir)) {
+    $targetItem = Get-Item -LiteralPath $TargetDir -Force -ErrorAction SilentlyContinue
+    if ($null -eq $targetItem) {
         New-Item -ItemType SymbolicLink -Path $TargetDir -Target $SourceDir -Force | Out-Null
+    } elseif ($targetItem.LinkType -eq 'SymbolicLink') {
+        $targetPath = [string]$targetItem.Target
+        if (-not [IO.Path]::IsPathRooted($targetPath)) { $targetPath = Join-Path (Split-Path -Parent $TargetDir) $targetPath }
+        $targetPath = [IO.Path]::GetFullPath($targetPath)
+        $sourcePath = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $SourceDir -ErrorAction Stop).Path)
+        if ($targetPath -ne $sourcePath) {
+            Remove-Item -LiteralPath $TargetDir -Force
+            New-Item -ItemType SymbolicLink -Path $TargetDir -Target $SourceDir -Force | Out-Null
+        }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $TargetDir "develop-issues.ts"))) {
         Write-Log ERROR "dotenv-workflows" "symlink_verification_failed" "Failed to verify pi-ext-workflows target: $TargetDir" 1
         throw "Failed to verify pi-ext-workflows target: $TargetDir"
     }
     if (Test-Path -LiteralPath $SourceBarrel) {
-        if (-not (Test-Path -LiteralPath $TargetBarrel)) {
+        $barrelItem = Get-Item -LiteralPath $TargetBarrel -Force -ErrorAction SilentlyContinue
+        if ($null -eq $barrelItem) {
             New-Item -ItemType SymbolicLink -Path $TargetBarrel -Target $SourceBarrel -Force | Out-Null
+        } elseif ($barrelItem.LinkType -eq 'SymbolicLink') {
+            $targetBarrelPath = [string]$barrelItem.Target
+            if (-not [IO.Path]::IsPathRooted($targetBarrelPath)) { $targetBarrelPath = Join-Path (Split-Path -Parent $TargetBarrel) $targetBarrelPath }
+            $targetBarrelPath = [IO.Path]::GetFullPath($targetBarrelPath)
+            $sourceBarrelPath = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $SourceBarrel -ErrorAction Stop).Path)
+            if ($targetBarrelPath -ne $sourceBarrelPath) {
+                Remove-Item -LiteralPath $TargetBarrel -Force
+                New-Item -ItemType SymbolicLink -Path $TargetBarrel -Target $SourceBarrel -Force | Out-Null
+            }
         }
         if (-not (Test-Path -LiteralPath $TargetBarrel)) {
             Write-Log ERROR "dotenv-workflows" "barrel_verification_failed" "Failed to verify piextworkflows.ts target: $TargetBarrel" 1
@@ -1602,24 +1622,44 @@ function Mod-PiWorkflows {
         }
     }
 
-    # Prove the artifact pi will load carries the transient-rename retry the published
-    # release ships. Reading the installed file - not the install command - is the only
-    # proof of which build was loaded; an unproven root is reported, never hidden.
-    foreach ($root in @($PiExtDir, $PiNpmDir)) {
-        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
-        $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
-        $null = Assert-TransientRenameRetry -IoJs $rootIo -Phase "pi-workflows" -Context "root=$root"
-    }
-
-    # Cross-OS parity with setup-ai.sh: link dotenv workflow extensions if present
     $dotenvExtDir = Join-Path $DotenvDir "pi\agent\extensions\pi-ext-workflows"
     $dotenvBarrel = Join-Path $DotenvDir "pi\agent\extensions\piextworkflows.ts"
     if (Test-Path -LiteralPath $dotenvExtDir -PathType Container) {
+        Enable-NpmRemoteSources -Dir $dotenvExtDir
+        Add-LineIfMissing -Path (Join-Path $dotenvExtDir ".npmrc") -Line "ignore-scripts=false"
+        Push-Location $dotenvExtDir
+        try {
+            Invoke-Step -Phase "dotenv-workflows" -Action {
+                npm install --save-exact --no-audit --no-fund --legacy-peer-deps "pi-extensible-workflows@$ver"
+            }
+        } finally { Pop-Location }
+
+        $dotenvPkg = Join-Path $dotenvExtDir "node_modules/pi-extensible-workflows/package.json"
+        if (-not (Test-Path -LiteralPath $dotenvPkg -PathType Leaf)) {
+            Write-Log ERROR "dotenv-workflows" "install_missing" "pi-extensible-workflows not installed in dotenv extensions dir ($dotenvPkg)" 1
+            throw "pi-extensible-workflows not installed in dotenv extensions dir ($dotenvPkg)"
+        }
+        $dotenvInstalled = (Get-Content -Raw -LiteralPath $dotenvPkg | ConvertFrom-Json -ErrorAction Stop).version
+        if ($dotenvInstalled -ne $ver) {
+            Write-Log ERROR "dotenv-workflows" "version_mismatch" "Installed dotenv workflow version mismatch (expected=$ver actual=$dotenvInstalled)" 1
+            throw "Installed dotenv workflow version mismatch (expected=$ver actual=$dotenvInstalled)"
+        }
+        Write-Log INFO "dotenv-workflows" "module_verified" "Verified installed dotenv workflow package" 0 "path=$dotenvPkg"
+
+        # Link workflow extensions and barrel into live PI_EXTENSIONS_DIR so pi loads developIssues.
         Link-DotenvWorkflowExtensions `
             -SourceDir $dotenvExtDir `
             -TargetDir (Join-Path $PiExtDir "pi-ext-workflows") `
             -SourceBarrel $dotenvBarrel `
             -TargetBarrel (Join-Path $PiExtDir "piextworkflows.ts")
+    }
+
+    # Prove the artifact pi will load carries the transient-rename retry. Reading the installed
+    # file - not the install command - is the only proof of which build was loaded.
+    foreach ($root in @($PiExtDir, $dotenvExtDir, $PiNpmDir)) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
+        $null = Assert-TransientRenameRetry -IoJs $rootIo -Phase "pi-workflows" -Context "root=$root"
     }
 }
 

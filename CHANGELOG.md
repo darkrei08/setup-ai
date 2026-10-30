@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Windows now mirrors the Bash dotenv workflow path: `Mod-PiWorkflows` installs and version-verifies `pi-extensible-workflows` inside the dotenv extensions directory, the transient-rename retry probe covers that root too, and `Link-DotenvWorkflowExtensions` repoints a stale extension or barrel symlink instead of leaving it in place (`tests/powershell-dotenv-workflows.ps1`). Native Windows runtime verification is pending.
+
 ## [4.0.4] - 2026-10-30
 
 ### Changed
