@@ -16,3 +16,6 @@ buugg/
 .worktrees/
 .serena/
 docs/research/
+
+# Local GGA Pi bridge (symlink into the dotenv checkout; never committed)
+/agents/gga-pi

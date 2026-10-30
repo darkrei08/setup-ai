@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [4.0.4] - 2026-10-30
+
+### Changed
+
+- The launcher menu frame now follows the terminal width (`clamp(18, 70, columns - 3)`) and centres its title from the title length, so the box stays closed in narrow panes instead of losing its right border; preset rows show how many modules each preset installs, and the action rows use ASCII marks so legacy console fonts render them. No installer or module behavior changed.
+
 ## [4.0.3] - 2026-10-19
 
 ### Fixed
