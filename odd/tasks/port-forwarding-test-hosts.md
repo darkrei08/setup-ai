@@ -21,7 +21,39 @@ private hostnames in any repository.
   checkout has no `ssh/config` fragment, no `LocalForward`, no `RemoteForward`.
   So this is greenfield, not a repair.
 
-## Primitives (primary source: `man 5 ssh_config`, OpenSSH shipped on this host)
+## Measured state of the test path (2026-10-30)
+
+The human supplied `ipconfig /all` from the Windows machine, and the Linux side was probed
+with `tailscale status` and TCP connects. Findings, identifiers removed on purpose:
+
+- Both machines are on the **same Tailscale tailnet**, and the Windows peer shows as
+  `active; direct <lan-ip>:41641`. A tailnet peer connection needs no LAN port forward
+  and no VPN setup of our own; the host alias used below is `win-test`.
+- From this Linux host, TCP **22 (ssh), 5985 (WinRM), 8006, 3389 (RDP)** on that peer are
+  closed/filtered. So there is no remote shell yet: OpenSSH Server and WinRM are not
+  listening. That is the one missing human provisioning step.
+- On the Linux side (`ss -ltnp`): the CLIProxyAPI gateway on **8317 is already bound to
+  the tailnet address**, not only to loopback, and **8080** is bound to `0.0.0.0`. Both
+  are reachable from `win-test` with no tunnel at all.
+- Still **loopback-only** here: **9222** (the BrowserOS/CDP endpoint), **3000**,
+  **8190**. Those are exactly the services that need a `RemoteForward` from
+  `win-test`, or a deliberate rebind.
+
+### Human provisioning step on `win-test` (documented Windows commands)
+
+```powershell
+Add-WindowsCapability -Online -Name OpenSSH.Server~~~~0.0.1.0
+Start-Service sshd
+Set-Service -Name sshd -StartupType Automatic
+# firewall rule OpenSSH-Server-In-TCP if it was not created by the install
+```
+
+Source: Microsoft Learn, "Get started with OpenSSH Server for Windows"
+(https://learn.microsoft.com/windows-server/administration/openssh/openssh_install_firstuse),
+retrieved 2026-10-30. Then the Linux key goes into the Windows user's
+`administrators_authorized_keys` or `authorized_keys`, and `ssh -G win-test` on the Linux
+side must resolve to the intended configuration before any test run.
+
 
 - `LocalForward [bind_address:]port host:hostport` - a local TCP port is forwarded over
   the secure channel to a destination **reachable from the remote machine**. Use it
@@ -68,11 +100,15 @@ private hostnames in any repository.
 
 ## Decisions
 
-- D1 (needs the human): which machine is the Windows test target, by alias only, and
-  does it already run OpenSSH Server?
-- D2 (needs the human): is the reverse tunnel required at all, or does the Windows box
-  reach the Linux services through a routable address? The answer decides whether
-  `RemoteForward` lines are part of the minimal shape.
+- D1 (answered): the test target is the tailnet peer aliased `win-test`. A route exists
+  today; OpenSSH Server is not enabled yet, so test execution stays blocked until the
+  provisioning block above runs on that machine.
+- D2 (answered): a reverse tunnel is needed only for the loopback-only services
+  (9222 CDP, 3000, 8190). The gateway on 8317 and 8080 are already reachable over the
+  tailnet and need no forwarding.
+- D3 (open, human): does the Windows box run the tests against its own installed tools,
+  or must it also reach this Linux host's models/CLIProxyAPI? If yes, add the two
+  `RemoteForward` lines for 9222 and 8190 only.
 
 ## Not yet specified
 
