@@ -22,7 +22,32 @@ for (const modules of [bashModules, powershellModules, nodeModules]) {
   if (!modules.includes('cliproxyapi') || modules.includes('rotator')) {
     throw new Error('CLIProxyAPI must replace rotator in install registries');
   }
+  for (const contextTool of ['toon', 'lea', 'sqz', 'llmlingua']) {
+    if (!modules.includes(contextTool)) throw new Error(`Missing context module ${contextTool}`);
+  }
 }
+for (const [name, source, needles] of [
+  ['toon', sh, ['mod_toon()', 'TOON_VERSION', 'toon --version', 'bun add --global --exact']],
+  ['lea', sh, ['mod_lea()', 'vendor/wz-ai-context-formats.cjs', 'encodeLEA']],
+  ['sqz', sh, ['mod_sqz()', 'sqz --version']],
+  ['llmlingua', sh, ['mod_llmlingua()', 'pip install --dry-run', 'torch==${LLMLINGUA_TORCH_VERSION}', 'download_guard']],
+  ['toon', ps, ['function Mod-Toon', 'toon --version', 'bun add --global --exact']],
+  ['lea', ps, ['function Mod-Lea', 'vendor\\wz-ai-context-formats.cjs', 'encodeLEA']],
+  ['sqz', ps, ['function Mod-Sqz', 'sqz --version']],
+  ['llmlingua', ps, ['function Mod-Llmlingua', 'uv pip install --dry-run', 'LlmlinguaTorchVersion']],
+]) {
+  for (const needle of needles) if (!source.includes(needle)) throw new Error(`${name} missing ${needle}`);
+}
+if (!sh.includes('path|lea|') || !sh.includes('path|llmlingua|')) throw new Error('Owned context-tool paths missing from Bash uninstall catalog');
+const windowsInventory = ps.match(/function Get-WindowsModuleInventory \{([\s\S]*?)\n    return \$items\n\}/)?.[1] ?? '';
+for (const contextTool of ['toon', 'lea', 'sqz', 'llmlingua']) {
+  if (!windowsInventory.includes(`'${contextTool}' {`)) throw new Error(`Windows uninstall inventory missing ${contextTool}`);
+}
+if (!windowsInventory.includes('$LeaPrefix') || !windowsInventory.includes('$LlmlinguaPrefix') ||
+    !windowsInventory.includes("'TOON CLI'") || !windowsInventory.includes("'sqz CLI'")) {
+  throw new Error('Windows context-tool inventory must retain the Bash-owned paths and all four resources');
+}
+if (!mjs.includes('category: "Context"') || !mjs.includes('core: false')) throw new Error('Context modules must be optional launcher entries');
 if (/^\s*rotator\s*\)/m.test(sh) || /'rotator'\s*=/.test(ps) ||
     /\{ name: "rotator"/.test(mjs) || !mjs.includes('category: "Gateway"')) {
   throw new Error('rotator must not be installable and CLIProxyAPI must remain in the Gateway category');

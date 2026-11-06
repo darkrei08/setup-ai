@@ -91,6 +91,15 @@ $SkillOptRepo = if ($env:SKILLOPT_REPO) { $env:SKILLOPT_REPO } else { "https://g
 $SkillOptRef = if ($env:SKILLOPT_REF) { $env:SKILLOPT_REF } else { "main" }
 $SkillOptHome = if ($env:SKILLOPT_HOME) { $env:SKILLOPT_HOME } else { Join-Path $HOME ".skillopt" }
 $SkillOptVenv = if ($env:SKILLOPT_VENV) { $env:SKILLOPT_VENV } else { Join-Path $SkillOptHome "venv" }
+$ToonVersion = if ($env:TOON_VERSION) { $env:TOON_VERSION } else { '2.3.0' }
+$ToonPackage = if ($env:TOON_PACKAGE) { $env:TOON_PACKAGE } else { '@toon-format/cli' }
+$LeaPrefix = if ($env:LEA_PREFIX) { $env:LEA_PREFIX } else { Join-Path $HOME '.local\share\setup-ai\lea' }
+$LlmlinguaVersion = if ($env:LLMLINGUA_VERSION) { $env:LLMLINGUA_VERSION } else { '0.2.2' }
+$LlmlinguaTorchVersion = if ($env:LLMLINGUA_TORCH_VERSION) { $env:LLMLINGUA_TORCH_VERSION } else { '2.6.0+cpu' }
+$LlmlinguaPythonVersion = if ($env:LLMLINGUA_PYTHON_VERSION) { $env:LLMLINGUA_PYTHON_VERSION } else { '3.12' }
+$LlmlinguaCpuIndexUrl = if ($env:LLMLINGUA_CPU_INDEX_URL) { $env:LLMLINGUA_CPU_INDEX_URL } else { 'https://download.pytorch.org/whl/cpu' }
+$LlmlinguaPypiIndexUrl = if ($env:LLMLINGUA_PYPI_INDEX_URL) { $env:LLMLINGUA_PYPI_INDEX_URL } else { 'https://pypi.org/simple' }
+$LlmlinguaPrefix = if ($env:LLMLINGUA_PREFIX) { $env:LLMLINGUA_PREFIX } else { Join-Path $HOME '.local\share\setup-ai\llmlingua' }
 # Pinned CLI-Anything revision whose .pi-extension/cli-anything assets the extras module installs.
 $CliAnythingRef = '34f519533bc175d2fe287ab8316b0dd99bb9cc43'
 
@@ -1174,7 +1183,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
+$ModuleOrder = @('base','node','bun','toon','lea','sqz','llmlingua','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
 # The launcher passes this ordered selection through -Only for the Gentle AI preset.
 $GentleAiPreset = @('base','node','pi','pi-workflows','gentle-ai')
 
@@ -1182,6 +1191,10 @@ $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
     'node'         = 'Node.js v22 + npm@latest (nvm on Unix, winget on Windows)'
     'bun'          = 'Bun runtime'
+    'toon'         = 'TOON CLI converter (installed; verify: toon --version)'
+    'lea'          = 'LEA context encoder (installed vendored module; verify: node -e encodeLEA)'
+    'sqz'          = 'sqz token-optimized CLI (declared-only; verify: sqz --version)'
+    'llmlingua'    = 'LLMLingua CPU library only (installed uv venv; verify: Python import)'
     'pi'           = 'pi.dev coding agent CLI'
     'lazyvim'      = 'Neovim x86_64 tarball and LazyVim starter (headless sync)'
     'pi-packages'  = 'Extra Pi packages from a declarative manifest (pi-packages.txt)'
@@ -1202,7 +1215,7 @@ $ModuleDesc = [ordered]@{
     'cliproxyapi'  = 'CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)'
     'extras'       = 'Optional shared Taste, Humanizer, HeroUI, Emil design, MJML email, and Impeccable skills'
 }
-$ModuleOptional = @{ 'skillopt-sleep' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
+$ModuleOptional = @{ 'skillopt-sleep' = $true; 'toon' = $true; 'lea' = $true; 'sqz' = $true; 'llmlingua' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -1294,6 +1307,84 @@ function Mod-Bun {
         Write-Log ERROR "bun" "install_missing" "bun not found on PATH after remote installer" 1
         throw "bun not found on PATH after remote installer"
     }
+}
+
+function Mod-Toon {
+    $phase = 'toon'
+    Write-Log INFO $phase 'start' 'TOON CLI'
+    if (-not (Test-Cmd bun)) { throw 'bun not found; TOON requires Bun' }
+    $script:SetupAiToonVersion = ''
+    if (Test-Cmd toon) {
+        $verified = Invoke-Step -Phase $phase -Optional -Verify -Action { $script:SetupAiToonVersion = (toon --version).Trim() }
+        if ($verified -and $script:SetupAiToonVersion -eq $ToonVersion) {
+            Write-Log INFO $phase 'already_present' "TOON CLI $ToonVersion already installed"
+            return
+        }
+    }
+    Invoke-Step -Phase $phase -Action { bun add --global --exact "$ToonPackage@$ToonVersion" }
+    $script:SetupAiToonVersion = ''
+    Invoke-Step -Phase $phase -Verify -Action { $script:SetupAiToonVersion = (toon --version).Trim() }
+    if ($script:SetupAiToonVersion -ne $ToonVersion) { throw "TOON CLI version mismatch after installation (expected $ToonVersion, got $($script:SetupAiToonVersion))" }
+    Write-Log INFO $phase 'verified' "TOON CLI $ToonVersion installed"
+}
+
+function Mod-Lea {
+    $phase = 'lea'
+    Write-Log INFO $phase 'start' 'LEA context encoder'
+    $source = Join-Path $ScriptDir 'vendor\wz-ai-context-formats.cjs'
+    $targetDir = $LeaPrefix
+    $target = Join-Path $targetDir 'wz-ai-context-formats.cjs'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Vendored LEA source missing: $source" }
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    Invoke-Step -Phase $phase -Action { Copy-Item -LiteralPath $source -Destination $target -Force }
+    Invoke-Step -Phase $phase -Verify -Action {
+        node -e 'const formats = require(process.argv[1]); const output = formats.encodeLEA({sources: {S1: "fixture"}, evidence: [{id: "E1", source: "S1", content: "ok"}]}); if (!output.includes("### SOURCE DICTIONARY") || !output.includes("| E1 | [S1] | ok |")) process.exit(1)' $target
+    }
+    Write-Log INFO $phase 'verified' 'Vendored LEA formatter installed and verified' 0 "path=$target"
+}
+
+function Mod-Sqz {
+    $phase = 'sqz'
+    Write-Log INFO $phase 'start' 'sqz CLI'
+    if (-not (Test-Cmd sqz)) { throw 'sqz not found; install the official sqz binary before selecting this module' }
+    $script:SetupAiSqzVersion = ''
+    Invoke-Step -Phase $phase -Verify -Action { $script:SetupAiSqzVersion = (sqz --version).Trim() }
+    if ($script:SetupAiSqzVersion -ne 'sqz 1.9.0') { throw "sqz version mismatch (expected sqz 1.9.0, got $($script:SetupAiSqzVersion))" }
+    Write-Log INFO $phase 'verified' 'Existing sqz CLI verified' 0 "version=$($script:SetupAiSqzVersion)"
+}
+
+function Mod-Llmlingua {
+    $phase = 'llmlingua'
+    Write-Log INFO $phase 'start' 'LLMLingua'
+    if (-not (Test-Cmd uv)) { throw 'uv not found; LLMLingua requires uv' }
+    $spec = @("llmlingua==$LlmlinguaVersion", "torch==$LlmlinguaTorchVersion")
+    $venv = Join-Path $LlmlinguaPrefix 'venv'
+    $python = Join-Path $venv 'Scripts\python.exe'
+    New-Item -ItemType Directory -Force -Path $LlmlinguaPrefix | Out-Null
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        Invoke-Step -Phase $phase -Action { uv venv --python $LlmlinguaPythonVersion $venv }
+    }
+    $verifyCode = "from importlib.metadata import version; from llmlingua import PromptCompressor; import torch; assert version('llmlingua') == '$LlmlinguaVersion'; assert torch.__version__ == '$LlmlinguaTorchVersion'; assert PromptCompressor.__name__ == 'PromptCompressor'; assert not torch.cuda.is_available(); print(torch.__version__)"
+    $script:SetupAiLlmlinguaRuntime = ''
+    if (Test-Path -LiteralPath $python -PathType Leaf) {
+        $verified = Invoke-Step -Phase $phase -Optional -Verify -Action {
+            $script:SetupAiLlmlinguaRuntime = (& $python -c $verifyCode)
+        }
+        if ($verified) {
+            Write-Log INFO $phase 'runtime_verified' 'Existing CPU-only LLMLingua environment verified' 0 "python=$python;version=$LlmlinguaVersion;torch=$LlmlinguaTorchVersion"
+            return
+        }
+    }
+    $script:SetupAiLlmlinguaPlan = ''
+    Invoke-Step -Phase $phase -Verify -Action {
+        $script:SetupAiLlmlinguaPlan = (uv pip install --dry-run --python $python --index-url $LlmlinguaCpuIndexUrl --extra-index-url $LlmlinguaPypiIndexUrl --index-strategy unsafe-best-match @spec 2>&1 | Out-String)
+    }
+    if ($script:SetupAiLlmlinguaPlan -match '(?m)^\s*\+\s+(nvidia-|cuda-)' -or $script:SetupAiLlmlinguaPlan -notmatch [regex]::Escape("+ torch==$LlmlinguaTorchVersion")) {
+        throw "Refusing LLMLingua install because uv did not resolve the pinned CPU-only torch wheel; no download started (version $LlmlinguaVersion; torch $LlmlinguaTorchVersion)"
+    }
+    Invoke-Step -Phase $phase -Action { uv pip install --python $python --index-url $LlmlinguaCpuIndexUrl --extra-index-url $LlmlinguaPypiIndexUrl --index-strategy unsafe-best-match @spec }
+    Invoke-Step -Phase $phase -Verify -Action { & $python -c $verifyCode }
+    Write-Log INFO $phase 'verified' 'Installed and verified CPU-only LLMLingua without a compressor model' 0 "python=$python;version=$LlmlinguaVersion;torch=$LlmlinguaTorchVersion"
 }
 
 function Mod-Pi {
@@ -2960,6 +3051,7 @@ function Mod-Cliproxyapi {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
+    'toon' = ${function:Mod-Toon}; 'lea' = ${function:Mod-Lea}; 'sqz' = ${function:Mod-Sqz}; 'llmlingua' = ${function:Mod-Llmlingua}
     'pi' = ${function:Mod-Pi}; 'ai-memory' = ${function:Mod-AiMemory}; 'skillopt-sleep' = ${function:Mod-SkillOptSleep}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
@@ -3114,6 +3206,40 @@ function Get-WindowsModuleInventory {
     param([string]$ModuleName)
     $items = @()
     switch ($ModuleName) {
+        'toon' {
+            $items += [pscustomobject]@{
+                Module = 'toon'
+                Resource = 'TOON CLI'
+                Classification = 'protected'
+                Reason = 'Bun-managed global CLI is protected'
+            }
+        }
+        'lea' {
+            $present = Test-Path -LiteralPath $LeaPrefix -PathType Container
+            $items += [pscustomobject]@{
+                Module = 'lea'
+                Resource = $LeaPrefix
+                Classification = if ($present) { 'protected' } else { 'absent' }
+                Reason = if ($present) { 'setup-ai-owned LEA path is inventory-only on Windows' } else { 'LEA path not present' }
+            }
+        }
+        'sqz' {
+            $items += [pscustomobject]@{
+                Module = 'sqz'
+                Resource = 'sqz CLI'
+                Classification = 'protected'
+                Reason = 'Existing external CLI is not setup-ai-owned'
+            }
+        }
+        'llmlingua' {
+            $present = Test-Path -LiteralPath $LlmlinguaPrefix -PathType Container
+            $items += [pscustomobject]@{
+                Module = 'llmlingua'
+                Resource = $LlmlinguaPrefix
+                Classification = if ($present) { 'protected' } else { 'absent' }
+                Reason = if ($present) { 'setup-ai-owned LLMLingua path is inventory-only on Windows' } else { 'LLMLingua path not present' }
+            }
+        }
         'skillopt-sleep' {
             $present = Test-Path -LiteralPath $SkillOptHome -PathType Container
             $items += [pscustomobject]@{

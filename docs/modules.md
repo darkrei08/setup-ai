@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun pi dotenv ai-memory [skillopt-sleep] lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
+base node bun [toon] [lea] [sqz] [llmlingua] pi dotenv ai-memory [skillopt-sleep] lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
 ```
 
 ## base
@@ -26,6 +26,31 @@ and installs `nala`, then performs the bulk install through `nala install`.
 The runtimes the rest of the toolchain needs. Node.js v22 via `nvm` on
 Unix/macOS, `winget` on Windows; `bun`; the Go toolchain; the `pi` CLI through
 `pi.dev/install.sh` (or `install.ps1`).
+
+## toon / lea / sqz / llmlingua *(opt-in)*
+
+The context-tool modules are optional and can be selected independently with
+`--only toon,lea,sqz,llmlingua` or from the menu.
+
+- **TOON** installs the pinned official `@toon-format/cli@2.3.0` globally with
+  Bun. The vendored formatter delegates TOON encode/decode helpers to that
+  executable. Verification: `toon --version` -> `2.3.0`.
+- **LEA** is not a CLI. It copies the vendored
+  `vendor/wz-ai-context-formats.cjs` module into
+  `~/.local/share/setup-ai/lea/wz-ai-context-formats.cjs`. Verification:
+  `node -e 'const m=require("<path>/wz-ai-context-formats.cjs"); const o=m.encodeLEA({sources:{S1:"fixture"},evidence:[{id:"E1",source:"S1",content:"ok"}]}); if(!o.includes("### SOURCE DICTIONARY")) process.exit(1)'` -> exit 0.
+- **sqz** is declared-only by setup-ai: it is not downloaded or replaced. An
+  existing installed binary is required. Verification: `sqz --version` ->
+  `sqz 1.9.0`.
+- **LLMLingua** installs only the library and its CPU-only PyTorch dependency in
+  `~/.local/share/setup-ai/llmlingua/venv`, using uv and Python 3.12. It does not
+  download a compressor model. Verification:
+  `$HOME/.local/share/setup-ai/llmlingua/venv/bin/python -c 'from llmlingua import PromptCompressor; import torch; assert PromptCompressor.__name__ == "PromptCompressor"; assert "+cpu" in torch.__version__; assert not torch.cuda.is_available()'` -> exit 0.
+  The verified CPU plan downloaded 852.8 MiB and installed
+  `llmlingua==0.2.2` with `torch==2.6.0+cpu`; CUDA packages are rejected before
+  download.
+
+The LLMLingua module never uses the unrelated MinerU virtual environment.
 
 ## dotenv
 
@@ -277,8 +302,9 @@ directory only when its marker names the pinned revision and `--purge` is given.
 Anything else is reported as `skipped (not verified as setup-ai-owned)`. The shared
 skills, Impeccable files, and HyperFrames skill updates are not removed.
 
-On Windows, `setup-ai.ps1` refuses `-DryRun` and `-Uninstall` with exit 2 and points
-users to `setup-ai.sh`; Windows lifecycle operations are not implemented yet.
+On Windows, `setup-ai.ps1 -Uninstall` performs receipt-backed inventory/removal
+for the selected modules. It refuses `-DryRun` for install runs with exit 2;
+Windows cannot currently plan an installation without changing state.
 
 Back to the [README](../README.md) · Related:
 [install matrix](./install-matrix.md) · [logs](./logs.md) ·

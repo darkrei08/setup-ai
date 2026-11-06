@@ -10,7 +10,7 @@ export const PRESETS = [
 ];
 const MINIMAL = ["base", "node", "pi"];
 const GENTLE_AI = ["base", "node", "pi", "pi-workflows", "gentle-ai"];
-const CATEGORY_ORDER = ["System", "Agents", "Skills & workflows", "Memory & review", "Editors", "Extras", "Gateway"];
+export const CATEGORY_ORDER = ["System", "Context", "Agents", "Skills & workflows", "Memory & review", "Editors", "Extras", "Gateway"];
 
 // 18 = title width: the narrowest frame that still renders the banner.
 export const frameWidth = (cols) => Math.max(18, Math.min(70, (Number.isFinite(cols) ? cols : 80) - 3));
