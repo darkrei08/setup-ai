@@ -1,29 +1,23 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 const root = new URL("../", import.meta.url);
-const require = createRequire(import.meta.url);
-const formats = require(fileURLToPath(new URL("vendor/wz-ai-context-formats.cjs", root)));
-const lea = formats.encodeLEA({
-  sources: { S1: "fixture.md" },
-  evidence: [{ id: "E1", source: "S1", content: "fixture" }],
-});
-assert.match(lea, /### SOURCE DICTIONARY/);
-assert.match(lea, /\| E1 \| \[S1\] \| fixture \|/);
-const toon = formats.toTOON("items", [{ id: 1, name: "Alice" }]);
-assert.match(toon, /items:\n\[1\]\{id,name\}:/);
-assert.deepEqual(formats.fromTOON(toon), { label: "items", items: [{ id: 1, name: "Alice" }] });
 
 const bash = readFileSync(new URL("setup-ai.sh", root), "utf8");
 const powershell = readFileSync(new URL("setup-ai.ps1", root), "utf8");
 const launcher = readFileSync(new URL("bin/setup-ai.mjs", root), "utf8");
-for (const tool of ["toon", "lea", "sqz", "llmlingua"]) {
+for (const tool of ["toon", "sqz"]) {
   assert.match(bash, new RegExp(`mod_${tool}`));
   assert.match(powershell, new RegExp(`Mod-${tool[0].toUpperCase()}${tool.slice(1)}`));
   assert.match(launcher, new RegExp(`name: "${tool}"`));
+}
+// LEA and LLMLingua were removed as redundant; no inventory may declare them again.
+for (const removed of ["lea", "llmlingua"]) {
+  const pascal = `Mod-${removed[0].toUpperCase()}${removed.slice(1)}`;
+  assert.doesNotMatch(bash, new RegExp(`mod_${removed}\\(\\)`));
+  assert.doesNotMatch(powershell, new RegExp(`${pascal} \\{`));
+  assert.doesNotMatch(launcher, new RegExp(`name: "${removed}"`));
 }
 // A launcher category missing from the menu order is silently unreachable.
 const menu = await import(new URL("bin/menu.mjs", root));
@@ -48,4 +42,4 @@ const sqz = spawnSync("sqz", ["--version"], { encoding: "utf8" });
 assert.equal(sqz.status, 0, `${sqz.stderr || sqz.stdout}`);
 assert.equal(`${sqz.stdout}${sqz.stderr}`.trim(), "sqz 1.9.0");
 
-console.log("Context tool declarations, TOON/LEA runtime verification passed");
+console.log("Context tool declarations, TOON/sqz runtime verification passed");
