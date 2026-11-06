@@ -1,7 +1,7 @@
 // Drives the progressive menu with scripted keys and a tiny terminal emulator.
 // Run: node tests/menu.test.mjs
 import assert from "node:assert/strict";
-import { chosenNames, createRenderer, initState, reduce, supportsCursorUp, view } from "../bin/menu.mjs";
+import { chosenNames, createRenderer, frameWidth, initState, reduce, supportsCursorUp, view } from "../bin/menu.mjs";
 
 const modules = [
   { name: "base", category: "System", core: true, desc: "d" },
@@ -39,6 +39,33 @@ function screenAfter(frames, cols = 80, relative = true) {
   const draw = createRenderer(out, relative);
   frames.forEach(draw);
   return rows.filter((r) => r !== undefined);
+}
+
+// S1: frame geometry follows terminal width and centers the title from its own length.
+const stripAnsi = (line) => line.replace(/\x1b\[[0-9;]*m/g, "");
+assert.deepEqual([21, 40, 60, 72, 80, 100].map(frameWidth), [18, 37, 57, 69, 70, 70]);
+assert.equal(frameWidth(), 70);
+assert.equal(frameWidth(Number.NaN), 70);
+for (const cols of [40, 60, 72, 80, 100]) {
+  const [top, middle, bottom] = view(initState(modules), modules, cols).slice(0, 3).map(stripAnsi);
+  assert.ok([top, middle, bottom].every((line) => line.length <= cols - 1));
+  assert.equal(top.length, middle.length);
+  assert.equal(middle.length, bottom.length);
+  assert.ok([top, middle, bottom].every((line) => /^[+|].*[+|]$/.test(line)));
+  const inner = frameWidth(cols);
+  const title = "AI Dev Suite setup";
+  assert.equal(middle.indexOf(title) - 1, Math.floor((inner - title.length) / 2));
+}
+
+// S2: every non-custom preset displays the size of its confirmed selection.
+for (const [index, label] of [[0, "Core"], [1, "Everything"], [3, "Minimal"], [4, "Gentle AI"]]) {
+  let confirmed = initState(modules);
+  for (let i = 0; i < index; i++) confirmed = reduce(confirmed, DOWN, modules);
+  confirmed = reduce(confirmed, ENTER, modules);
+  const count = chosenNames(confirmed, modules).length;
+  const presetRow = view({ ...initState(modules), cursor: index }, modules)
+    .find((line) => stripAnsi(line).includes(label));
+  assert.ok(new RegExp(`(^| )${count} modules`).test(stripAnsi(presetRow ?? "")));
 }
 
 // Presets
@@ -99,6 +126,14 @@ const modulesWithExtras = [
   { name: "cockpit", category: "Extras", kind: "software", core: false, desc: "Cockpit GUI" },
   { name: "extras", category: "Extras", kind: "software", core: false, desc: "Full bundle" },
 ];
+
+// S3: action rows remain ASCII on module and extras screens.
+for (const frame of [
+  view({ screen: "modules", cursor: 0, category: "System", selected: new Set() }, modules),
+  view({ screen: "extras", cursor: 0, category: "Extras", selected: new Set() }, modulesWithExtras),
+]) {
+  assert.ok(frame.every((line) => [...stripAnsi(line)].every((char) => char.codePointAt(0) <= 0x7f)));
+}
 
 function runWithExtras(keys) {
   let s = initState(modulesWithExtras);

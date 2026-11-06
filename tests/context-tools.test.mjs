@@ -25,6 +25,17 @@ for (const tool of ["toon", "lea", "sqz", "llmlingua"]) {
   assert.match(powershell, new RegExp(`Mod-${tool[0].toUpperCase()}${tool.slice(1)}`));
   assert.match(launcher, new RegExp(`name: "${tool}"`));
 }
+// A launcher category missing from the menu order is silently unreachable.
+const menu = await import(new URL("bin/menu.mjs", root));
+const launcherCategories = [
+  ...new Set([...launcher.matchAll(/category: "([^"]+)"/g)].map((m) => m[1])),
+];
+for (const category of launcherCategories) {
+  assert.ok(
+    menu.CATEGORY_ORDER.includes(category),
+    `bin/menu.mjs CATEGORY_ORDER is missing launcher category "${category}"`,
+  );
+}
 
 for (const source of [bash, powershell]) {
   assert.match(source, /toon --version/);
