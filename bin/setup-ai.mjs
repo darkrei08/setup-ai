@@ -36,10 +36,15 @@ const MODULES = [
   { name: "base",         core: true,  category: "System", desc: "System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)" },
   { name: "node",         core: true,  category: "System", desc: "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" },
   { name: "bun",          core: true,  category: "System", desc: "Bun runtime" },
+  { name: "toon",         core: false, category: "Context", desc: "TOON CLI converter (installed; verify: toon --version)" },
+  { name: "lea",          core: false, category: "Context", desc: "LEA context encoder (installed vendored module; verify: node -e encodeLEA)" },
+  { name: "sqz",          core: false, category: "Context", desc: "sqz token-optimized CLI (declared-only; verify: sqz --version)" },
+  { name: "graphify",     core: false, category: "Context", desc: "graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)" },
+  { name: "llmlingua",    core: false, category: "Context", desc: "LLMLingua CPU library only (installed uv venv; verify: Python import)" },
   { name: "pi",           core: true,  category: "Agents", desc: "pi.dev coding agent CLI" },
   { name: "dotenv",       core: true,  category: "System", desc: "darkrei08/dotenv dotfiles (Linux only: clones + runs setup_env.sh)" },
   { name: "ai-memory",    core: true,  category: "Memory & review", desc: "ai-memory-kit aimem CLI and templates" },
-  { name: "skillopt-sleep", core: false, category: "Memory & review", desc: "SkillOpt-Sleep runtime for recurring-task mining and gated skill evolution" },
+  { name: "skillopt-sleep", core: false, category: "Memory & review", desc: "SkillOpt-Sleep runtime for recurring-task mining and gated skill evolution (optional)" },
   { name: "lazyvim",      core: true,  category: "Editors", desc: "Neovim x86_64 tarball and LazyVim starter (headless sync)" },
   { name: "pi-packages",  core: true,  category: "Skills & workflows", desc: "Extra Pi packages from a declarative manifest (pi-packages.txt)" },
   { name: "go",           core: true,  category: "System", desc: "Go toolchain" },
@@ -137,7 +142,7 @@ function toScriptArgs(mode, csv, unattended = false, extras = getVal("--extras")
   if (extras) args.push(isWin ? "-Extras" : "--extras", extras);
   if (unattended) args.push(isWin ? "-Yes" : "--yes");
   if (has("--verbose") || has("-v")) args.push(isWin ? "-Verbose" : "--verbose");
-  if (has("--dry-run") && !isWin) args.push("--dry-run");
+  if (has("--dry-run")) args.push(isWin ? "-DryRun" : "--dry-run");
   return args;
 }
 
@@ -156,9 +161,10 @@ function interactiveMenu() {
     stdin.resume();
     stdin.setEncoding("utf8");
 
-    const draw = createRenderer(process.stdout);
+    const render = createRenderer(process.stdout);
+    const draw = (state) => render(view(state, menuModules, process.stdout.columns));
     let state = initState(menuModules);
-    draw(view(state, menuModules));
+    draw(state);
 
     const cleanup = () => {
       try {
@@ -185,7 +191,7 @@ function interactiveMenu() {
         cleanup();
         resolve(chosenNames(state, menuModules));
       } else {
-        draw(view(state, menuModules));
+        draw(state);
       }
     };
     stdin.on("data", onData);
@@ -221,11 +227,6 @@ async function main() {
     return;
   }
 
-  if (isWin && has("--dry-run")) {
-    console.error("--dry-run is not implemented on Windows; setup-ai.ps1 refuses to plan a run.");
-    process.exitCode = 2;
-    return;
-  }
   if (isWin && has("--purge")) {
     console.error("--purge is not implemented on Windows; the uninstall lifecycle is unavailable.");
     process.exitCode = 2;
@@ -263,7 +264,7 @@ async function main() {
     if (only) uninstallArgs.push(isWin ? "-Only" : "--only", only);
     if (has("--yes") || has("-y")) uninstallArgs.push(isWin ? "-Yes" : "--yes");
     if (has("--purge") && !isWin) uninstallArgs.push("--purge");
-    if (has("--dry-run") && !isWin) uninstallArgs.push("--dry-run");
+    if (has("--dry-run")) uninstallArgs.push(isWin ? "-DryRun" : "--dry-run");
     if (has("--verbose") || has("-v")) uninstallArgs.push(isWin ? "-Verbose" : "--verbose");
     return runScript(uninstallArgs);
   }

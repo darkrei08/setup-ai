@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 4.0.3
+ Version: 4.0.5
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, vendor installers where documented,
@@ -41,13 +41,6 @@ $OnlySpecified = $PSBoundParameters.ContainsKey('Only')
 $ExtrasSpecified = $PSBoundParameters.ContainsKey('Extras')
 # Registry ids chosen with -Extras; empty means the whole extras module.
 $ExtrasOnly = @()
-if ($DryRun -and (-not $Uninstall)) {
-    Write-Host ""
-    Write-Host "-DryRun is not implemented on Windows." -ForegroundColor Red
-    Write-Host "setup-ai.ps1 cannot plan a run yet, and it will not pretend to: run setup-ai.sh for this flag (see docs/modules.md)." -ForegroundColor Red
-    Write-Host ""
-    exit 2
-}
 $script:VerboseOutput = ($VerbosePreference -eq 'Continue' -or $env:VERBOSE -eq '1')
 if ($script:VerboseOutput) { $env:DEBUG = '1' }
 
@@ -69,10 +62,16 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "4.0.3"
+$ScriptVersion = "4.0.5"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
+$DryRunRoot = $null
 $LogDir = Join-Path $ScriptDir "logs"
+if ($DryRun -and -not $Uninstall) {
+    $DryRunRoot = Join-Path ([IO.Path]::GetTempPath()) ("setup-ai-dry-run-" + [guid]::NewGuid().ToString("N"))
+    $LogDir = Join-Path $DryRunRoot "logs"
+    $env:npm_config_cache = Join-Path $DryRunRoot "npm-cache"
+}
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 $RunId = (Get-Date -AsUTC -Format "yyyyMMddTHHmmssZ")
@@ -92,6 +91,15 @@ $SkillOptRepo = if ($env:SKILLOPT_REPO) { $env:SKILLOPT_REPO } else { "https://g
 $SkillOptRef = if ($env:SKILLOPT_REF) { $env:SKILLOPT_REF } else { "main" }
 $SkillOptHome = if ($env:SKILLOPT_HOME) { $env:SKILLOPT_HOME } else { Join-Path $HOME ".skillopt" }
 $SkillOptVenv = if ($env:SKILLOPT_VENV) { $env:SKILLOPT_VENV } else { Join-Path $SkillOptHome "venv" }
+$ToonVersion = if ($env:TOON_VERSION) { $env:TOON_VERSION } else { '2.3.0' }
+$ToonPackage = if ($env:TOON_PACKAGE) { $env:TOON_PACKAGE } else { '@toon-format/cli' }
+$LeaPrefix = if ($env:LEA_PREFIX) { $env:LEA_PREFIX } else { Join-Path $HOME '.local\share\setup-ai\lea' }
+$LlmlinguaVersion = if ($env:LLMLINGUA_VERSION) { $env:LLMLINGUA_VERSION } else { '0.2.2' }
+$LlmlinguaTorchVersion = if ($env:LLMLINGUA_TORCH_VERSION) { $env:LLMLINGUA_TORCH_VERSION } else { '2.6.0+cpu' }
+$LlmlinguaPythonVersion = if ($env:LLMLINGUA_PYTHON_VERSION) { $env:LLMLINGUA_PYTHON_VERSION } else { '3.12' }
+$LlmlinguaCpuIndexUrl = if ($env:LLMLINGUA_CPU_INDEX_URL) { $env:LLMLINGUA_CPU_INDEX_URL } else { 'https://download.pytorch.org/whl/cpu' }
+$LlmlinguaPypiIndexUrl = if ($env:LLMLINGUA_PYPI_INDEX_URL) { $env:LLMLINGUA_PYPI_INDEX_URL } else { 'https://pypi.org/simple' }
+$LlmlinguaPrefix = if ($env:LLMLINGUA_PREFIX) { $env:LLMLINGUA_PREFIX } else { Join-Path $HOME '.local\share\setup-ai\llmlingua' }
 # Pinned CLI-Anything revision whose .pi-extension/cli-anything assets the extras module installs.
 $CliAnythingRef = '34f519533bc175d2fe287ab8316b0dd99bb9cc43'
 
@@ -1175,7 +1183,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
+$ModuleOrder = @('base','node','bun','toon','lea','sqz','graphify','llmlingua','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
 # The launcher passes this ordered selection through -Only for the Gentle AI preset.
 $GentleAiPreset = @('base','node','pi','pi-workflows','gentle-ai')
 
@@ -1183,6 +1191,11 @@ $ModuleDesc = [ordered]@{
     'base'         = 'System packages (build tools, git, gh, python, neovim, jq, imagemagick, go, clipboard)'
     'node'         = 'Node.js v22 + npm@latest (nvm on Unix, winget on Windows)'
     'bun'          = 'Bun runtime'
+    'toon'         = 'TOON CLI converter (installed; verify: toon --version)'
+    'lea'          = 'LEA context encoder (installed vendored module; verify: node -e encodeLEA)'
+    'sqz'          = 'sqz token-optimized CLI (declared-only; verify: sqz --version)'
+    'graphify'     = 'graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)'
+    'llmlingua'    = 'LLMLingua CPU library only (installed uv venv; verify: Python import)'
     'pi'           = 'pi.dev coding agent CLI'
     'lazyvim'      = 'Neovim x86_64 tarball and LazyVim starter (headless sync)'
     'pi-packages'  = 'Extra Pi packages from a declarative manifest (pi-packages.txt)'
@@ -1203,7 +1216,7 @@ $ModuleDesc = [ordered]@{
     'cliproxyapi'  = 'CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)'
     'extras'       = 'Optional shared Taste, Humanizer, HeroUI, Emil design, MJML email, and Impeccable skills'
 }
-$ModuleOptional = @{ 'skillopt-sleep' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
+$ModuleOptional = @{ 'skillopt-sleep' = $true; 'toon' = $true; 'lea' = $true; 'sqz' = $true; 'graphify' = $true; 'llmlingua' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -1295,6 +1308,109 @@ function Mod-Bun {
         Write-Log ERROR "bun" "install_missing" "bun not found on PATH after remote installer" 1
         throw "bun not found on PATH after remote installer"
     }
+}
+
+function Mod-Toon {
+    $phase = 'toon'
+    Write-Log INFO $phase 'start' 'TOON CLI'
+    if (-not (Test-Cmd bun)) { throw 'bun not found; TOON requires Bun' }
+    $script:SetupAiToonVersion = ''
+    if (Test-Cmd toon) {
+        $verified = Invoke-Step -Phase $phase -Optional -Verify -Action { $script:SetupAiToonVersion = (toon --version).Trim() }
+        if ($verified -and $script:SetupAiToonVersion -eq $ToonVersion) {
+            Write-Log INFO $phase 'already_present' "TOON CLI $ToonVersion already installed"
+            return
+        }
+    }
+    Invoke-Step -Phase $phase -Action { bun add --global --exact "$ToonPackage@$ToonVersion" }
+    $script:SetupAiToonVersion = ''
+    Invoke-Step -Phase $phase -Verify -Action { $script:SetupAiToonVersion = (toon --version).Trim() }
+    if ($script:SetupAiToonVersion -ne $ToonVersion) { throw "TOON CLI version mismatch after installation (expected $ToonVersion, got $($script:SetupAiToonVersion))" }
+    Write-Log INFO $phase 'verified' "TOON CLI $ToonVersion installed"
+}
+
+function Mod-Lea {
+    $phase = 'lea'
+    Write-Log INFO $phase 'start' 'LEA context encoder'
+    $source = Join-Path $ScriptDir 'vendor\wz-ai-context-formats.cjs'
+    $targetDir = $LeaPrefix
+    $target = Join-Path $targetDir 'wz-ai-context-formats.cjs'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw "Vendored LEA source missing: $source" }
+    New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+    Invoke-Step -Phase $phase -Action { Copy-Item -LiteralPath $source -Destination $target -Force }
+    Invoke-Step -Phase $phase -Verify -Action {
+        node -e 'const formats = require(process.argv[1]); const output = formats.encodeLEA({sources: {S1: "fixture"}, evidence: [{id: "E1", source: "S1", content: "ok"}]}); if (!output.includes("### SOURCE DICTIONARY") || !output.includes("| E1 | [S1] | ok |")) process.exit(1)' $target
+    }
+    Write-Log INFO $phase 'verified' 'Vendored LEA formatter installed and verified' 0 "path=$target"
+}
+
+function Mod-Graphify {
+    $phase = 'graphify'
+    Write-Log INFO $phase 'start' 'graphify code knowledge graph'
+    if (-not (Test-Cmd uv)) { throw 'uv not found; graphify requires uv (https://docs.astral.sh/uv/)' }
+    $script:SetupAiGraphifyVersion = ''
+    # uv tool install is idempotent: an existing graphifyy environment is resolved
+    # in place, so a second run upgrades instead of failing.
+    # The mcp extra is required: graphify-mcp ships without it and dies at startup
+    # with ModuleNotFoundError, so the plain package installs a broken server.
+    Invoke-Step -Phase $phase -Action { & uv tool install 'graphifyy[mcp]' }
+    Invoke-Step -Phase $phase -Verify -Action { $script:SetupAiGraphifyVersion = (graphify --version).Trim() }
+    if (-not $script:SetupAiGraphifyVersion) { throw 'graphify --version printed nothing after installation' }
+    if (-not (Test-Cmd graphify-mcp)) { throw 'graphify-mcp not found on PATH after uv tool install graphifyy[mcp]' }
+    # The binary exists even without the extra, so presence proves nothing: the
+    # server itself aborts on `import mcp`. Verify the import in the tool env.
+    $graphifyVenv = Join-Path (uv tool dir) 'graphifyy'
+    $graphifyPython = @(
+        (Join-Path $graphifyVenv 'bin/python'),
+        (Join-Path $graphifyVenv 'Scripts/python.exe')
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $graphifyPython) { throw "graphify tool environment not found under $graphifyVenv" }
+    Invoke-Step -Phase $phase -Verify -Action { & $graphifyPython -c 'import mcp' }
+    Write-Log INFO $phase 'verified' 'graphify CLI and MCP server verified' 0 "version=$($script:SetupAiGraphifyVersion)"
+}
+
+function Mod-Sqz {
+    $phase = 'sqz'
+    Write-Log INFO $phase 'start' 'sqz CLI'
+    if (-not (Test-Cmd sqz)) { throw 'sqz not found; install the official sqz binary before selecting this module' }
+    $script:SetupAiSqzVersion = ''
+    Invoke-Step -Phase $phase -Verify -Action { $script:SetupAiSqzVersion = (sqz --version).Trim() }
+    if ($script:SetupAiSqzVersion -ne 'sqz 1.9.0') { throw "sqz version mismatch (expected sqz 1.9.0, got $($script:SetupAiSqzVersion))" }
+    Write-Log INFO $phase 'verified' 'Existing sqz CLI verified' 0 "version=$($script:SetupAiSqzVersion)"
+}
+
+function Mod-Llmlingua {
+    $phase = 'llmlingua'
+    Write-Log INFO $phase 'start' 'LLMLingua'
+    if (-not (Test-Cmd uv)) { throw 'uv not found; LLMLingua requires uv' }
+    $spec = @("llmlingua==$LlmlinguaVersion", "torch==$LlmlinguaTorchVersion")
+    $venv = Join-Path $LlmlinguaPrefix 'venv'
+    $python = Join-Path $venv 'Scripts\python.exe'
+    New-Item -ItemType Directory -Force -Path $LlmlinguaPrefix | Out-Null
+    if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
+        Invoke-Step -Phase $phase -Action { uv venv --python $LlmlinguaPythonVersion $venv }
+    }
+    $verifyCode = "from importlib.metadata import version; from llmlingua import PromptCompressor; import torch; assert version('llmlingua') == '$LlmlinguaVersion'; assert torch.__version__ == '$LlmlinguaTorchVersion'; assert PromptCompressor.__name__ == 'PromptCompressor'; assert not torch.cuda.is_available(); print(torch.__version__)"
+    $script:SetupAiLlmlinguaRuntime = ''
+    if (Test-Path -LiteralPath $python -PathType Leaf) {
+        $verified = Invoke-Step -Phase $phase -Optional -Verify -Action {
+            $script:SetupAiLlmlinguaRuntime = (& $python -c $verifyCode)
+        }
+        if ($verified) {
+            Write-Log INFO $phase 'runtime_verified' 'Existing CPU-only LLMLingua environment verified' 0 "python=$python;version=$LlmlinguaVersion;torch=$LlmlinguaTorchVersion"
+            return
+        }
+    }
+    $script:SetupAiLlmlinguaPlan = ''
+    Invoke-Step -Phase $phase -Verify -Action {
+        $script:SetupAiLlmlinguaPlan = (uv pip install --dry-run --python $python --index-url $LlmlinguaCpuIndexUrl --extra-index-url $LlmlinguaPypiIndexUrl --index-strategy unsafe-best-match @spec 2>&1 | Out-String)
+    }
+    if ($script:SetupAiLlmlinguaPlan -match '(?m)^\s*\+\s+(nvidia-|cuda-)' -or $script:SetupAiLlmlinguaPlan -notmatch [regex]::Escape("+ torch==$LlmlinguaTorchVersion")) {
+        throw "Refusing LLMLingua install because uv did not resolve the pinned CPU-only torch wheel; no download started (version $LlmlinguaVersion; torch $LlmlinguaTorchVersion)"
+    }
+    Invoke-Step -Phase $phase -Action { uv pip install --python $python --index-url $LlmlinguaCpuIndexUrl --extra-index-url $LlmlinguaPypiIndexUrl --index-strategy unsafe-best-match @spec }
+    Invoke-Step -Phase $phase -Verify -Action { & $python -c $verifyCode }
+    Write-Log INFO $phase 'verified' 'Installed and verified CPU-only LLMLingua without a compressor model' 0 "python=$python;version=$LlmlinguaVersion;torch=$LlmlinguaTorchVersion"
 }
 
 function Mod-Pi {
@@ -1525,16 +1641,36 @@ function Link-DotenvWorkflowExtensions {
     if (-not (Test-Path -LiteralPath $parent)) {
         New-Item -ItemType Directory -Force -Path $parent | Out-Null
     }
-    if (-not (Test-Path -LiteralPath $TargetDir)) {
+    $targetItem = Get-Item -LiteralPath $TargetDir -Force -ErrorAction SilentlyContinue
+    if ($null -eq $targetItem) {
         New-Item -ItemType SymbolicLink -Path $TargetDir -Target $SourceDir -Force | Out-Null
+    } elseif ($targetItem.LinkType -eq 'SymbolicLink') {
+        $targetPath = [string]$targetItem.Target
+        if (-not [IO.Path]::IsPathRooted($targetPath)) { $targetPath = Join-Path (Split-Path -Parent $TargetDir) $targetPath }
+        $targetPath = [IO.Path]::GetFullPath($targetPath)
+        $sourcePath = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $SourceDir -ErrorAction Stop).Path)
+        if ($targetPath -ne $sourcePath) {
+            Remove-Item -LiteralPath $TargetDir -Force
+            New-Item -ItemType SymbolicLink -Path $TargetDir -Target $SourceDir -Force | Out-Null
+        }
     }
     if (-not (Test-Path -LiteralPath (Join-Path $TargetDir "develop-issues.ts"))) {
         Write-Log ERROR "dotenv-workflows" "symlink_verification_failed" "Failed to verify pi-ext-workflows target: $TargetDir" 1
         throw "Failed to verify pi-ext-workflows target: $TargetDir"
     }
     if (Test-Path -LiteralPath $SourceBarrel) {
-        if (-not (Test-Path -LiteralPath $TargetBarrel)) {
+        $barrelItem = Get-Item -LiteralPath $TargetBarrel -Force -ErrorAction SilentlyContinue
+        if ($null -eq $barrelItem) {
             New-Item -ItemType SymbolicLink -Path $TargetBarrel -Target $SourceBarrel -Force | Out-Null
+        } elseif ($barrelItem.LinkType -eq 'SymbolicLink') {
+            $targetBarrelPath = [string]$barrelItem.Target
+            if (-not [IO.Path]::IsPathRooted($targetBarrelPath)) { $targetBarrelPath = Join-Path (Split-Path -Parent $TargetBarrel) $targetBarrelPath }
+            $targetBarrelPath = [IO.Path]::GetFullPath($targetBarrelPath)
+            $sourceBarrelPath = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $SourceBarrel -ErrorAction Stop).Path)
+            if ($targetBarrelPath -ne $sourceBarrelPath) {
+                Remove-Item -LiteralPath $TargetBarrel -Force
+                New-Item -ItemType SymbolicLink -Path $TargetBarrel -Target $SourceBarrel -Force | Out-Null
+            }
         }
         if (-not (Test-Path -LiteralPath $TargetBarrel)) {
             Write-Log ERROR "dotenv-workflows" "barrel_verification_failed" "Failed to verify piextworkflows.ts target: $TargetBarrel" 1
@@ -1602,24 +1738,44 @@ function Mod-PiWorkflows {
         }
     }
 
-    # Prove the artifact pi will load carries the transient-rename retry the published
-    # release ships. Reading the installed file - not the install command - is the only
-    # proof of which build was loaded; an unproven root is reported, never hidden.
-    foreach ($root in @($PiExtDir, $PiNpmDir)) {
-        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
-        $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
-        $null = Assert-TransientRenameRetry -IoJs $rootIo -Phase "pi-workflows" -Context "root=$root"
-    }
-
-    # Cross-OS parity with setup-ai.sh: link dotenv workflow extensions if present
     $dotenvExtDir = Join-Path $DotenvDir "pi\agent\extensions\pi-ext-workflows"
     $dotenvBarrel = Join-Path $DotenvDir "pi\agent\extensions\piextworkflows.ts"
     if (Test-Path -LiteralPath $dotenvExtDir -PathType Container) {
+        Enable-NpmRemoteSources -Dir $dotenvExtDir
+        Add-LineIfMissing -Path (Join-Path $dotenvExtDir ".npmrc") -Line "ignore-scripts=false"
+        Push-Location $dotenvExtDir
+        try {
+            Invoke-Step -Phase "dotenv-workflows" -Action {
+                npm install --save-exact --no-audit --no-fund --legacy-peer-deps "pi-extensible-workflows@$ver"
+            }
+        } finally { Pop-Location }
+
+        $dotenvPkg = Join-Path $dotenvExtDir "node_modules/pi-extensible-workflows/package.json"
+        if (-not (Test-Path -LiteralPath $dotenvPkg -PathType Leaf)) {
+            Write-Log ERROR "dotenv-workflows" "install_missing" "pi-extensible-workflows not installed in dotenv extensions dir ($dotenvPkg)" 1
+            throw "pi-extensible-workflows not installed in dotenv extensions dir ($dotenvPkg)"
+        }
+        $dotenvInstalled = (Get-Content -Raw -LiteralPath $dotenvPkg | ConvertFrom-Json -ErrorAction Stop).version
+        if ($dotenvInstalled -ne $ver) {
+            Write-Log ERROR "dotenv-workflows" "version_mismatch" "Installed dotenv workflow version mismatch (expected=$ver actual=$dotenvInstalled)" 1
+            throw "Installed dotenv workflow version mismatch (expected=$ver actual=$dotenvInstalled)"
+        }
+        Write-Log INFO "dotenv-workflows" "module_verified" "Verified installed dotenv workflow package" 0 "path=$dotenvPkg"
+
+        # Link workflow extensions and barrel into live PI_EXTENSIONS_DIR so pi loads developIssues.
         Link-DotenvWorkflowExtensions `
             -SourceDir $dotenvExtDir `
             -TargetDir (Join-Path $PiExtDir "pi-ext-workflows") `
             -SourceBarrel $dotenvBarrel `
             -TargetBarrel (Join-Path $PiExtDir "piextworkflows.ts")
+    }
+
+    # Prove the artifact pi will load carries the transient-rename retry. Reading the installed
+    # file - not the install command - is the only proof of which build was loaded.
+    foreach ($root in @($PiExtDir, $dotenvExtDir, $PiNpmDir)) {
+        if (-not (Test-Path -LiteralPath $root -PathType Container)) { continue }
+        $rootIo = Join-Path $root "node_modules\pi-extensible-workflows\dist\src\io.js"
+        $null = Assert-TransientRenameRetry -IoJs $rootIo -Phase "pi-workflows" -Context "root=$root"
     }
 }
 
@@ -2872,7 +3028,10 @@ function Mod-Cliproxyapi {
         $script:PostInstallActions += "cliproxyapi: install Docker Compose v2, configure $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
         return
     }
-    $gateFiles = @('config.yaml', 'keeper.env', '.env' | ForEach-Object { Join-Path $composeDir $_ } | Where-Object { Test-Path -LiteralPath $_ })
+    $gateFiles = @('config.yaml', 'keeper.env', '.env') | ForEach-Object {
+        $candidate = Join-Path $composeDir $_
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) { (Resolve-Path -LiteralPath $candidate).Path }
+    }
     if (Select-String -LiteralPath $gateFiles -Pattern 'REPLACE_WITH|replace-with|YOUR_USER|^(LOGIN_PASSWORD|KEEPER_LOGIN_PASSWORD|CPA_MANAGEMENT_KEY|GITSTORE_GIT_TOKEN)\s*=\s*$' -CaseSensitive -Quiet) {
         Write-Log WARN $phase 'configuration_placeholder' 'CLIProxyAPI and Keeper still contain example credentials; nothing was started' 0 "directory=$composeDir"
         $script:PostInstallActions += "cliproxyapi: replace example values in $($configFiles -join ', '), then rerun setup-ai -Only cliproxyapi"
@@ -2918,6 +3077,7 @@ function Mod-Cliproxyapi {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
+    'toon' = ${function:Mod-Toon}; 'lea' = ${function:Mod-Lea}; 'sqz' = ${function:Mod-Sqz}; 'graphify' = ${function:Mod-Graphify}; 'llmlingua' = ${function:Mod-Llmlingua}
     'pi' = ${function:Mod-Pi}; 'ai-memory' = ${function:Mod-AiMemory}; 'skillopt-sleep' = ${function:Mod-SkillOptSleep}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
@@ -3072,6 +3232,48 @@ function Get-WindowsModuleInventory {
     param([string]$ModuleName)
     $items = @()
     switch ($ModuleName) {
+        'toon' {
+            $items += [pscustomobject]@{
+                Module = 'toon'
+                Resource = 'TOON CLI'
+                Classification = 'protected'
+                Reason = 'Bun-managed global CLI is protected'
+            }
+        }
+        'lea' {
+            $present = Test-Path -LiteralPath $LeaPrefix -PathType Container
+            $items += [pscustomobject]@{
+                Module = 'lea'
+                Resource = $LeaPrefix
+                Classification = if ($present) { 'protected' } else { 'absent' }
+                Reason = if ($present) { 'setup-ai-owned LEA path is inventory-only on Windows' } else { 'LEA path not present' }
+            }
+        }
+        'sqz' {
+            $items += [pscustomobject]@{
+                Module = 'sqz'
+                Resource = 'sqz CLI'
+                Classification = 'protected'
+                Reason = 'Existing external CLI is not setup-ai-owned'
+            }
+        }
+        'graphify' {
+            $items += [pscustomobject]@{
+                Module = 'graphify'
+                Resource = 'graphify CLI and MCP server'
+                Classification = 'protected'
+                Reason = 'uv-tool-managed CLI environment is not setup-ai-owned'
+            }
+        }
+        'llmlingua' {
+            $present = Test-Path -LiteralPath $LlmlinguaPrefix -PathType Container
+            $items += [pscustomobject]@{
+                Module = 'llmlingua'
+                Resource = $LlmlinguaPrefix
+                Classification = if ($present) { 'protected' } else { 'absent' }
+                Reason = if ($present) { 'setup-ai-owned LLMLingua path is inventory-only on Windows' } else { 'LLMLingua path not present' }
+            }
+        }
         'skillopt-sleep' {
             $present = Test-Path -LiteralPath $SkillOptHome -PathType Container
             $items += [pscustomobject]@{
@@ -3402,6 +3604,19 @@ $moduleIndex = 0
 Write-Host ""
 Write-Host ("Installation plan: {0} module(s)" -f $moduleTotal) -ForegroundColor White
 Write-Host ("  {0}" -f ($selected -join '  ')) -ForegroundColor Gray
+
+if ($DryRun) {
+    foreach ($m in $selected) {
+        $script:CurrentModule = $m
+        Write-ModuleBanner -Index ([array]::IndexOf($selected, $m) + 1) -Total $moduleTotal -Name $m
+        Write-Log INFO $m "dry_run_plan" "Dry run: module planning completed without mutations" 0 "module=$m"
+        Write-Host ("  PLAN  {0} planned" -f $m) -ForegroundColor Magenta
+    }
+    Write-Log INFO "bootstrap" "dry_run_completed" "Dry run completed; nothing was installed or written" 0
+    Write-Host "DRY RUN: nothing was installed, nothing was written; re-run without -DryRun to apply" -ForegroundColor Magenta
+    if ($DryRunRoot) { Remove-Item -LiteralPath $DryRunRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    exit 0
+}
 
 if (-not ('SetupAiInterrupt' -as [type])) {
     Add-Type -TypeDefinition @'

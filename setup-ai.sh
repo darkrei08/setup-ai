@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 4.0.3
+# Version: 4.0.5
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -30,7 +30,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="4.0.3"
+SCRIPT_VERSION="4.0.5"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
@@ -80,6 +80,15 @@ SKILLOPT_REPO="${SKILLOPT_REPO:-https://github.com/darkrei08/SkillOpt.git}"
 SKILLOPT_REF="${SKILLOPT_REF:-main}"
 SKILLOPT_HOME="${SKILLOPT_HOME:-${HOME}/.skillopt}"
 SKILLOPT_VENV="${SKILLOPT_VENV:-${SKILLOPT_HOME}/venv}"
+TOON_VERSION="${TOON_VERSION:-2.3.0}"
+TOON_PACKAGE="${TOON_PACKAGE:-@toon-format/cli}"
+LEA_PREFIX="${LEA_PREFIX:-${HOME}/.local/share/setup-ai/lea}"
+LLMLINGUA_VERSION="${LLMLINGUA_VERSION:-0.2.2}"
+LLMLINGUA_TORCH_VERSION="${LLMLINGUA_TORCH_VERSION:-2.6.0+cpu}"
+LLMLINGUA_PYTHON_VERSION="${LLMLINGUA_PYTHON_VERSION:-3.12}"
+LLMLINGUA_CPU_INDEX_URL="${LLMLINGUA_CPU_INDEX_URL:-https://download.pytorch.org/whl/cpu}"
+LLMLINGUA_PYPI_INDEX_URL="${LLMLINGUA_PYPI_INDEX_URL:-https://pypi.org/simple}"
+LLMLINGUA_PREFIX="${LLMLINGUA_PREFIX:-${HOME}/.local/share/setup-ai/llmlingua}"
 
 DOTENV_REPO="${DOTENV_REPO:-https://github.com/darkrei08/dotenv.git}"
 
@@ -809,7 +818,7 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
+MODULE_ORDER=(base node bun toon lea sqz graphify llmlingua pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
 # The launcher passes this ordered selection through --only for the Gentle AI preset.
 GENTLE_AI_PRESET=(base node pi pi-workflows gentle-ai)
 
@@ -819,6 +828,11 @@ module_desc() {
         lazyvim) printf '%s\n' "Neovim x86_64 tarball and LazyVim starter (headless sync)" ;;
         node) printf '%s\n' "Node.js v22 + npm@latest (nvm on Unix, winget on Windows)" ;;
         bun) printf '%s\n' "Bun runtime" ;;
+        toon) printf '%s\n' "TOON CLI converter (installed; verify: toon --version)" ;;
+        lea) printf '%s\n' "LEA context encoder (installed vendored module; verify: node -e encodeLEA)" ;;
+        sqz) printf '%s\n' "sqz token-optimized CLI (declared-only; verify: sqz --version)" ;;
+        graphify) printf '%s\n' "graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)" ;;
+        llmlingua) printf '%s\n' "LLMLingua CPU library only (installed uv venv; verify: Python import)" ;;
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
         pi-packages) printf '%s\n' "Extra Pi packages from a declarative manifest (pi-packages.txt)" ;;
         go) printf '%s\n' "Go toolchain" ;;
@@ -842,7 +856,7 @@ module_desc() {
 }
 
 module_is_optional() {
-    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "skillopt-sleep" || "$1" == "extras" ]]
+    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "skillopt-sleep" || "$1" == "toon" || "$1" == "lea" || "$1" == "sqz" || "$1" == "graphify" || "$1" == "llmlingua" || "$1" == "extras" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -1748,6 +1762,138 @@ mod_bun() {
     else
         return 1
     fi
+}
+
+# --- TOON -------------------------------------------------------------------
+mod_toon() {
+    section "TOON"
+    require_command bun
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "toon" "install ${TOON_PACKAGE}@${TOON_VERSION} globally with Bun and verify toon --version"
+        return 0
+    fi
+    local version=""
+    if command -v toon >/dev/null 2>&1 && capture_cmd version "toon" --optional toon --version && [[ "${version}" == "${TOON_VERSION}" ]]; then
+        log_event "INFO" "toon" "cli_verified" "Verified TOON CLI" 0 "package=${TOON_PACKAGE};version=${version};path=$(command -v toon)"
+        return 0
+    fi
+    run_cmd "toon" bun add --global --exact "${TOON_PACKAGE}@${TOON_VERSION}"
+    capture_cmd version "toon" toon --version || return 1
+    [[ "${version}" == "${TOON_VERSION}" ]] || {
+        log_event "ERROR" "toon" "version_mismatch" "TOON CLI version mismatch after installation" 1 "expected=${TOON_VERSION};actual=${version};path=$(command -v toon || printf '%s' missing)"
+        return 1
+    }
+    log_event "INFO" "toon" "cli_verified" "Installed and verified TOON CLI" 0 "package=${TOON_PACKAGE};version=${version};path=$(command -v toon)"
+}
+
+# --- LEA --------------------------------------------------------------------
+mod_lea() {
+    section "LEA"
+    local source="${SCRIPT_DIR}/vendor/wz-ai-context-formats.cjs"
+    local target="${LEA_PREFIX}/wz-ai-context-formats.cjs"
+    [[ -f "${source}" ]] || {
+        log_event "ERROR" "lea" "source_missing" "Vendored LEA source is missing" 1 "expected=${source}"
+        return 1
+    }
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "lea" "copy the vendored Wizard-AI context formatter to ${target} and verify encodeLEA"
+        return 0
+    fi
+    mkdir -p "${LEA_PREFIX}"
+    run_cmd "lea" cp -f "${source}" "${target}"
+    run_cmd "lea" node -e 'const formats = require(process.argv[1]); const output = formats.encodeLEA({sources: {S1: "fixture"}, evidence: [{id: "E1", source: "S1", content: "ok"}]}); if (!output.includes("### SOURCE DICTIONARY") || !output.includes("| E1 | [S1] | ok |")) process.exit(1)' "${target}"
+    log_event "INFO" "lea" "runtime_verified" "Installed and verified vendored LEA formatter" 0 "path=${target}"
+}
+
+# --- sqz --------------------------------------------------------------------
+mod_sqz() {
+    section "sqz"
+    require_command sqz
+    local version=""
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "sqz" "verify the existing sqz binary with sqz --version"
+        return 0
+    fi
+    capture_cmd version "sqz" sqz --version || return 1
+    [[ "${version}" == "sqz 1.9.0" ]] || {
+        log_event "ERROR" "sqz" "version_mismatch" "sqz version mismatch" 1 "expected=sqz 1.9.0;actual=${version};path=$(command -v sqz)"
+        return 1
+    }
+    log_event "INFO" "sqz" "cli_verified" "Verified existing sqz CLI" 0 "version=${version};path=$(command -v sqz)"
+}
+
+# --- LLMLingua --------------------------------------------------------------
+mod_llmlingua() {
+    section "LLMLingua"
+    require_command uv
+    local venv="${LLMLINGUA_PREFIX}/venv"
+    local python_bin="${venv}/bin/python"
+    local -a uv_index_args=(--index-url "${LLMLINGUA_CPU_INDEX_URL}" --extra-index-url "${LLMLINGUA_PYPI_INDEX_URL}" --index-strategy unsafe-best-match)
+    local -a uv_specs=("llmlingua==${LLMLINGUA_VERSION}" "torch==${LLMLINGUA_TORCH_VERSION}")
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "llmlingua" "create ${venv} with uv Python ${LLMLINGUA_PYTHON_VERSION}; install llmlingua==${LLMLINGUA_VERSION} and torch==${LLMLINGUA_TORCH_VERSION} from the CPU PyTorch index; verify the Python import"
+        return 0
+    fi
+    mkdir -p "${LLMLINGUA_PREFIX}"
+    local verify_code="from importlib.metadata import version; from llmlingua import PromptCompressor; import torch; assert version('llmlingua') == '${LLMLINGUA_VERSION}'; assert torch.__version__ == '${LLMLINGUA_TORCH_VERSION}'; assert PromptCompressor.__name__ == 'PromptCompressor'; assert not torch.cuda.is_available()"
+    if [[ ! -x "${python_bin}" ]]; then
+        run_cmd "llmlingua" uv venv --python "${LLMLINGUA_PYTHON_VERSION}" "${venv}"
+    fi
+    if [[ -x "${python_bin}" ]]; then
+        local existing=""
+        if capture_cmd existing "llmlingua" --optional "${python_bin}" -c "${verify_code}"; then
+            log_event "INFO" "llmlingua" "runtime_verified" "Existing CPU-only LLMLingua environment verified" 0 "python=${python_bin};version=${LLMLINGUA_VERSION};torch=${LLMLINGUA_TORCH_VERSION}"
+            return 0
+        fi
+    fi
+    local plan=""
+    capture_cmd plan "llmlingua" sh -c 'uv "$@" 2>&1' sh pip install --dry-run --python "${python_bin}" "${uv_index_args[@]}" "${uv_specs[@]}" || return 1
+    if grep -Eq '^[[:space:]]*\+[[:space:]]+(nvidia-|cuda-)' <<<"${plan}" || [[ "${plan}" != *" + torch==${LLMLINGUA_TORCH_VERSION}"* ]]; then
+        log_event "ERROR" "llmlingua" "download_guard" "Refusing LLMLingua install because uv did not resolve the pinned CPU-only torch wheel; no download started" 1 "version=${LLMLINGUA_VERSION};torch=${LLMLINGUA_TORCH_VERSION};prefix=${LLMLINGUA_PREFIX};upgrade=review the CPU-only dependency plan"
+        return 1
+    fi
+    run_cmd "llmlingua" uv pip install --python "${python_bin}" "${uv_index_args[@]}" "${uv_specs[@]}"
+    run_cmd "llmlingua" "${python_bin}" -c "${verify_code}"
+    log_event "INFO" "llmlingua" "runtime_verified" "Installed and verified CPU-only LLMLingua without a compressor model" 0 "python=${python_bin};version=${LLMLINGUA_VERSION};torch=${LLMLINGUA_TORCH_VERSION}"
+}
+
+mod_graphify() {
+    section "graphify"
+    require_command uv
+    local version="" mcp_bin=""
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "graphify" "uv tool install \"graphifyy[mcp]\""
+        dry_run_note "graphify" "verify graphify --version and graphify-mcp --help"
+        return 0
+    fi
+    # uv tool install is idempotent: an existing graphifyy environment is resolved
+    # in place, so a second run upgrades instead of failing.
+    # The mcp extra is required: graphify-mcp ships without it and dies at startup
+    # with ModuleNotFoundError, so the plain package installs a broken server.
+    run_cmd "graphify" uv tool install "graphifyy[mcp]"
+    capture_cmd version "graphify" graphify --version || return 1
+    [[ -n "${version}" ]] || {
+        log_event "ERROR" "graphify" "version_empty" "graphify --version printed nothing" 1 "path=$(command -v graphify || true)"
+        return 1
+    }
+    mcp_bin="$(command -v graphify-mcp || true)"
+    [[ -n "${mcp_bin}" ]] || {
+        log_event "ERROR" "graphify" "mcp_missing" "graphify-mcp is not on PATH after uv tool install" 1 "version=${version}"
+        return 1
+    }
+    # The binary exists even without the extra, so presence proves nothing: the
+    # server itself aborts on `import mcp`. Verify the import in the tool env.
+    local tool_python
+    tool_python="$(uv tool dir)/graphifyy/bin/python"
+    [[ -x "${tool_python}" ]] || {
+        log_event "ERROR" "graphify" "tool_env_missing" "graphify tool environment not found" 1 "expected=${tool_python}"
+        return 1
+    }
+    "${tool_python}" -c 'import mcp' 2>/dev/null || {
+        log_event "ERROR" "graphify" "mcp_extra_missing" "graphify-mcp cannot start because the mcp extra is absent" 1 "install=graphifyy[mcp]"
+        return 1
+    }
+    log_event "INFO" "graphify" "cli_verified" "Verified graphify CLI and MCP server" 0 "version=${version};mcp=${mcp_bin}"
 }
 
 # --- pi ---------------------------------------------------------------------
@@ -3946,6 +4092,8 @@ uninstall_catalog() {
     printf 'path|dotenv|%s|d|\n' "${DOTENV_DIR}"
     printf 'path|ai-memory|%s|-|\n' "${AIMEM_PREFIX}/bin/aimem"
     printf 'path|ai-memory|%s|-|\n' "${AIMEM_PREFIX}/share/ai-memory-kit"
+    printf 'path|lea|%s|d|\n' "${LEA_PREFIX}"
+    printf 'path|llmlingua|%s|d|\n' "${LLMLINGUA_PREFIX}"
     # extras entries carry their exact ownership marker; unmarked copies are never removed.
     printf 'npm-global|extras|typescript-express-starter|-|setup-ai extras npm-global typescript-express-starter\n'
     printf 'npm-global|extras|@alibaba-group/open-code-review|-|setup-ai extras npm-global @alibaba-group/open-code-review\n'
