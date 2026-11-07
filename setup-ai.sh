@@ -818,7 +818,7 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun toon lea sqz llmlingua pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
+MODULE_ORDER=(base node bun toon lea sqz graphify llmlingua pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
 # The launcher passes this ordered selection through --only for the Gentle AI preset.
 GENTLE_AI_PRESET=(base node pi pi-workflows gentle-ai)
 
@@ -831,6 +831,7 @@ module_desc() {
         toon) printf '%s\n' "TOON CLI converter (installed; verify: toon --version)" ;;
         lea) printf '%s\n' "LEA context encoder (installed vendored module; verify: node -e encodeLEA)" ;;
         sqz) printf '%s\n' "sqz token-optimized CLI (declared-only; verify: sqz --version)" ;;
+        graphify) printf '%s\n' "graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)" ;;
         llmlingua) printf '%s\n' "LLMLingua CPU library only (installed uv venv; verify: Python import)" ;;
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
         pi-packages) printf '%s\n' "Extra Pi packages from a declarative manifest (pi-packages.txt)" ;;
@@ -855,7 +856,7 @@ module_desc() {
 }
 
 module_is_optional() {
-    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "skillopt-sleep" || "$1" == "toon" || "$1" == "lea" || "$1" == "sqz" || "$1" == "llmlingua" || "$1" == "extras" ]]
+    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "skillopt-sleep" || "$1" == "toon" || "$1" == "lea" || "$1" == "sqz" || "$1" == "graphify" || "$1" == "llmlingua" || "$1" == "extras" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -1854,6 +1855,45 @@ mod_llmlingua() {
     run_cmd "llmlingua" uv pip install --python "${python_bin}" "${uv_index_args[@]}" "${uv_specs[@]}"
     run_cmd "llmlingua" "${python_bin}" -c "${verify_code}"
     log_event "INFO" "llmlingua" "runtime_verified" "Installed and verified CPU-only LLMLingua without a compressor model" 0 "python=${python_bin};version=${LLMLINGUA_VERSION};torch=${LLMLINGUA_TORCH_VERSION}"
+}
+
+mod_graphify() {
+    section "graphify"
+    require_command uv
+    local version="" mcp_bin=""
+    if (( DRY_RUN == 1 )); then
+        dry_run_note "graphify" "uv tool install \"graphifyy[mcp]\""
+        dry_run_note "graphify" "verify graphify --version and graphify-mcp --help"
+        return 0
+    fi
+    # uv tool install is idempotent: an existing graphifyy environment is resolved
+    # in place, so a second run upgrades instead of failing.
+    # The mcp extra is required: graphify-mcp ships without it and dies at startup
+    # with ModuleNotFoundError, so the plain package installs a broken server.
+    run_cmd "graphify" uv tool install "graphifyy[mcp]"
+    capture_cmd version "graphify" graphify --version || return 1
+    [[ -n "${version}" ]] || {
+        log_event "ERROR" "graphify" "version_empty" "graphify --version printed nothing" 1 "path=$(command -v graphify || true)"
+        return 1
+    }
+    mcp_bin="$(command -v graphify-mcp || true)"
+    [[ -n "${mcp_bin}" ]] || {
+        log_event "ERROR" "graphify" "mcp_missing" "graphify-mcp is not on PATH after uv tool install" 1 "version=${version}"
+        return 1
+    }
+    # The binary exists even without the extra, so presence proves nothing: the
+    # server itself aborts on `import mcp`. Verify the import in the tool env.
+    local tool_python
+    tool_python="$(uv tool dir)/graphifyy/bin/python"
+    [[ -x "${tool_python}" ]] || {
+        log_event "ERROR" "graphify" "tool_env_missing" "graphify tool environment not found" 1 "expected=${tool_python}"
+        return 1
+    }
+    "${tool_python}" -c 'import mcp' 2>/dev/null || {
+        log_event "ERROR" "graphify" "mcp_extra_missing" "graphify-mcp cannot start because the mcp extra is absent" 1 "install=graphifyy[mcp]"
+        return 1
+    }
+    log_event "INFO" "graphify" "cli_verified" "Verified graphify CLI and MCP server" 0 "version=${version};mcp=${mcp_bin}"
 }
 
 # --- pi ---------------------------------------------------------------------

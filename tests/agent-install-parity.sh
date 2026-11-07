@@ -22,7 +22,7 @@ for (const modules of [bashModules, powershellModules, nodeModules]) {
   if (!modules.includes('cliproxyapi') || modules.includes('rotator')) {
     throw new Error('CLIProxyAPI must replace rotator in install registries');
   }
-  for (const contextTool of ['toon', 'lea', 'sqz', 'llmlingua']) {
+  for (const contextTool of ['toon', 'lea', 'sqz', 'graphify', 'llmlingua']) {
     if (!modules.includes(contextTool)) throw new Error(`Missing context module ${contextTool}`);
   }
 }
@@ -30,17 +30,19 @@ for (const [name, source, needles] of [
   ['toon', sh, ['mod_toon()', 'TOON_VERSION', 'toon --version', 'bun add --global --exact']],
   ['lea', sh, ['mod_lea()', 'vendor/wz-ai-context-formats.cjs', 'encodeLEA']],
   ['sqz', sh, ['mod_sqz()', 'sqz --version']],
+  ['graphify', sh, ['mod_graphify()', 'uv tool install "graphifyy[mcp]"', 'graphify --version', 'graphify-mcp', 'import mcp']],
   ['llmlingua', sh, ['mod_llmlingua()', 'pip install --dry-run', 'torch==${LLMLINGUA_TORCH_VERSION}', 'download_guard']],
   ['toon', ps, ['function Mod-Toon', 'toon --version', 'bun add --global --exact']],
   ['lea', ps, ['function Mod-Lea', 'vendor\\wz-ai-context-formats.cjs', 'encodeLEA']],
   ['sqz', ps, ['function Mod-Sqz', 'sqz --version']],
+  ['graphify', ps, ['function Mod-Graphify', "uv tool install 'graphifyy[mcp]'", 'graphify --version', 'graphify-mcp', 'import mcp']],
   ['llmlingua', ps, ['function Mod-Llmlingua', 'uv pip install --dry-run', 'LlmlinguaTorchVersion']],
 ]) {
   for (const needle of needles) if (!source.includes(needle)) throw new Error(`${name} missing ${needle}`);
 }
 if (!sh.includes('path|lea|') || !sh.includes('path|llmlingua|')) throw new Error('Owned context-tool paths missing from Bash uninstall catalog');
 const windowsInventory = ps.match(/function Get-WindowsModuleInventory \{([\s\S]*?)\n    return \$items\n\}/)?.[1] ?? '';
-for (const contextTool of ['toon', 'lea', 'sqz', 'llmlingua']) {
+for (const contextTool of ['toon', 'lea', 'sqz', 'graphify', 'llmlingua']) {
   if (!windowsInventory.includes(`'${contextTool}' {`)) throw new Error(`Windows uninstall inventory missing ${contextTool}`);
 }
 if (!windowsInventory.includes('$LeaPrefix') || !windowsInventory.includes('$LlmlinguaPrefix') ||
@@ -94,6 +96,10 @@ if (!shellOptional.includes('"extras"') || !/'extras'\s*=\s*\$true/.test(powersh
 }
 const nodeExtras = mjs.match(/\{ name: "extras",\s*core: (true|false)/);
 if (!nodeExtras || nodeExtras[1] !== 'false') throw new Error('Node extras must be unchecked by default');
+if (!shellOptional.includes('"graphify"') || !/'graphify'\s*=\s*\$true/.test(powershellOptional) ||
+    !/\{ name: "graphify",\s*core: false/.test(mjs)) {
+  throw new Error('graphify must be optional in both installers and unchecked by default');
+}
 const bashStage = sh.match(/install_extras_skill\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
 const psStage = ps.match(/function Install-ExtrasSkill \{([\s\S]*?)\n\}/)?.[1] ?? '';
 if (!bashStage.includes('cd "${stage_cwd}"') || !/skills@latest add[^\n]*--global --agent/.test(bashStage) ||

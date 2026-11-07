@@ -8,7 +8,7 @@ The order below is the execution order (`MODULE_ORDER` in `setup-ai.sh`,
 stay identical):
 
 ```
-base node bun [toon] [lea] [sqz] [llmlingua] pi dotenv ai-memory [skillopt-sleep] lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
+base node bun [toon] [lea] [sqz] [graphify] [llmlingua] pi dotenv ai-memory [skillopt-sleep] lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai [cockpit] [cliproxyapi] [extras]
 ```
 
 ## base
@@ -27,10 +27,10 @@ The runtimes the rest of the toolchain needs. Node.js v22 via `nvm` on
 Unix/macOS, `winget` on Windows; `bun`; the Go toolchain; the `pi` CLI through
 `pi.dev/install.sh` (or `install.ps1`).
 
-## toon / lea / sqz / llmlingua *(opt-in)*
+## toon / lea / sqz / graphify / llmlingua *(opt-in)*
 
 The context-tool modules are optional and can be selected independently with
-`--only toon,lea,sqz,llmlingua` or from the menu.
+`--only toon,lea,sqz,graphify,llmlingua` or from the menu.
 
 - **TOON** installs the pinned official `@toon-format/cli@2.3.0` globally with
   Bun. The vendored formatter delegates TOON encode/decode helpers to that
@@ -42,6 +42,15 @@ The context-tool modules are optional and can be selected independently with
 - **sqz** is declared-only by setup-ai: it is not downloaded or replaced. An
   existing installed binary is required. Verification: `sqz --version` ->
   `sqz 1.9.0`.
+- **graphify** installs the `graphifyy` package with `uv tool install` and
+  provides both the `graphify` CLI and the `graphify-mcp` server. The `mcp`
+  extra is mandatory: `graphify-mcp` ships without it and dies at startup with
+  `ModuleNotFoundError: No module named 'mcp'`, so the install is
+  `uv tool install "graphifyy[mcp]"` and never the plain package. Verification:
+  `graphify --version`, `graphify-mcp` on `PATH`, and `import mcp` inside the
+  tool environment. The install is idempotent: a second run resolves the
+  existing tool environment in place. `graphify-out/` is local build output and
+  stays untracked.
 - **LLMLingua** installs only the library and its CPU-only PyTorch dependency in
   `~/.local/share/setup-ai/llmlingua/venv`, using uv and Python 3.12. It does not
   download a compressor model. Verification:
