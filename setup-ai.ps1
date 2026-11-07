@@ -1183,7 +1183,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','toon','lea','sqz','llmlingua','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
+$ModuleOrder = @('base','node','bun','toon','lea','sqz','graphify','llmlingua','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
 # The launcher passes this ordered selection through -Only for the Gentle AI preset.
 $GentleAiPreset = @('base','node','pi','pi-workflows','gentle-ai')
 
@@ -1194,6 +1194,7 @@ $ModuleDesc = [ordered]@{
     'toon'         = 'TOON CLI converter (installed; verify: toon --version)'
     'lea'          = 'LEA context encoder (installed vendored module; verify: node -e encodeLEA)'
     'sqz'          = 'sqz token-optimized CLI (declared-only; verify: sqz --version)'
+    'graphify'     = 'graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)'
     'llmlingua'    = 'LLMLingua CPU library only (installed uv venv; verify: Python import)'
     'pi'           = 'pi.dev coding agent CLI'
     'lazyvim'      = 'Neovim x86_64 tarball and LazyVim starter (headless sync)'
@@ -1215,7 +1216,7 @@ $ModuleDesc = [ordered]@{
     'cliproxyapi'  = 'CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)'
     'extras'       = 'Optional shared Taste, Humanizer, HeroUI, Emil design, MJML email, and Impeccable skills'
 }
-$ModuleOptional = @{ 'skillopt-sleep' = $true; 'toon' = $true; 'lea' = $true; 'sqz' = $true; 'llmlingua' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
+$ModuleOptional = @{ 'skillopt-sleep' = $true; 'toon' = $true; 'lea' = $true; 'sqz' = $true; 'graphify' = $true; 'llmlingua' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -1341,6 +1342,31 @@ function Mod-Lea {
         node -e 'const formats = require(process.argv[1]); const output = formats.encodeLEA({sources: {S1: "fixture"}, evidence: [{id: "E1", source: "S1", content: "ok"}]}); if (!output.includes("### SOURCE DICTIONARY") || !output.includes("| E1 | [S1] | ok |")) process.exit(1)' $target
     }
     Write-Log INFO $phase 'verified' 'Vendored LEA formatter installed and verified' 0 "path=$target"
+}
+
+function Mod-Graphify {
+    $phase = 'graphify'
+    Write-Log INFO $phase 'start' 'graphify code knowledge graph'
+    if (-not (Test-Cmd uv)) { throw 'uv not found; graphify requires uv (https://docs.astral.sh/uv/)' }
+    $script:SetupAiGraphifyVersion = ''
+    # uv tool install is idempotent: an existing graphifyy environment is resolved
+    # in place, so a second run upgrades instead of failing.
+    # The mcp extra is required: graphify-mcp ships without it and dies at startup
+    # with ModuleNotFoundError, so the plain package installs a broken server.
+    Invoke-Step -Phase $phase -Action { & uv tool install 'graphifyy[mcp]' }
+    Invoke-Step -Phase $phase -Verify -Action { $script:SetupAiGraphifyVersion = (graphify --version).Trim() }
+    if (-not $script:SetupAiGraphifyVersion) { throw 'graphify --version printed nothing after installation' }
+    if (-not (Test-Cmd graphify-mcp)) { throw 'graphify-mcp not found on PATH after uv tool install graphifyy[mcp]' }
+    # The binary exists even without the extra, so presence proves nothing: the
+    # server itself aborts on `import mcp`. Verify the import in the tool env.
+    $graphifyVenv = Join-Path (uv tool dir) 'graphifyy'
+    $graphifyPython = @(
+        (Join-Path $graphifyVenv 'bin/python'),
+        (Join-Path $graphifyVenv 'Scripts/python.exe')
+    ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if (-not $graphifyPython) { throw "graphify tool environment not found under $graphifyVenv" }
+    Invoke-Step -Phase $phase -Verify -Action { & $graphifyPython -c 'import mcp' }
+    Write-Log INFO $phase 'verified' 'graphify CLI and MCP server verified' 0 "version=$($script:SetupAiGraphifyVersion)"
 }
 
 function Mod-Sqz {
@@ -3051,7 +3077,7 @@ function Mod-Cliproxyapi {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
-    'toon' = ${function:Mod-Toon}; 'lea' = ${function:Mod-Lea}; 'sqz' = ${function:Mod-Sqz}; 'llmlingua' = ${function:Mod-Llmlingua}
+    'toon' = ${function:Mod-Toon}; 'lea' = ${function:Mod-Lea}; 'sqz' = ${function:Mod-Sqz}; 'graphify' = ${function:Mod-Graphify}; 'llmlingua' = ${function:Mod-Llmlingua}
     'pi' = ${function:Mod-Pi}; 'ai-memory' = ${function:Mod-AiMemory}; 'skillopt-sleep' = ${function:Mod-SkillOptSleep}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
@@ -3229,6 +3255,14 @@ function Get-WindowsModuleInventory {
                 Resource = 'sqz CLI'
                 Classification = 'protected'
                 Reason = 'Existing external CLI is not setup-ai-owned'
+            }
+        }
+        'graphify' {
+            $items += [pscustomobject]@{
+                Module = 'graphify'
+                Resource = 'graphify CLI and MCP server'
+                Classification = 'protected'
+                Reason = 'uv-tool-managed CLI environment is not setup-ai-owned'
             }
         }
         'llmlingua' {

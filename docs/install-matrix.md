@@ -20,6 +20,7 @@ result.
 | TOON | `toon` | `bun add --global --exact @toon-format/cli@2.3.0`; verify `toon --version` -> `2.3.0` | same | same |
 | LEA | vendored `wz-ai-context-formats.cjs` | copy; verify `node -e 'require(<path>).encodeLEA(...)'` -> exit 0 | same | same |
 | sqz | `sqz` | declared-only; verify existing `sqz --version` -> `sqz 1.9.0` | same | existing binary required |
+| graphify | `graphify` / `graphify-mcp` | `uv tool install "graphifyy[mcp]"`; verify `graphify --version` | same | same |
 | LLMLingua | isolated Python module | `uv venv --python 3.12`; install `llmlingua==0.2.2 torch==2.6.0+cpu` from the CPU index; verify the CPU import | same | same |
 | Engineering Excellence | skill | `npx skills@latest add darkrei08/Engineering-Excellence --agent <agent>` | same | same |
 
