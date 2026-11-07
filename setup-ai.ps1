@@ -1183,7 +1183,7 @@ function Get-PiPackagesManifest {
 # Module registry
 # ==============================================================================
 
-$ModuleOrder = @('base','node','bun','toon','lea','sqz','graphify','llmlingua','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
+$ModuleOrder = @('base','node','bun','toon','lea','graphify','llmlingua','pi','dotenv','ai-memory','skillopt-sleep','lazyvim','pi-packages','go','ee','skills','pi-workflows','herdr','claude-code','codex','antigravity','opencode','gentle-ai','cockpit','cliproxyapi','extras')
 # The launcher passes this ordered selection through -Only for the Gentle AI preset.
 $GentleAiPreset = @('base','node','pi','pi-workflows','gentle-ai')
 
@@ -1193,7 +1193,6 @@ $ModuleDesc = [ordered]@{
     'bun'          = 'Bun runtime'
     'toon'         = 'TOON CLI converter (installed; verify: toon --version)'
     'lea'          = 'LEA context encoder (installed vendored module; verify: node -e encodeLEA)'
-    'sqz'          = 'sqz token-optimized CLI (declared-only; verify: sqz --version)'
     'graphify'     = 'graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)'
     'llmlingua'    = 'LLMLingua CPU library only (installed uv venv; verify: Python import)'
     'pi'           = 'pi.dev coding agent CLI'
@@ -1216,7 +1215,7 @@ $ModuleDesc = [ordered]@{
     'cliproxyapi'  = 'CLIProxyAPI and CPA Usage Keeper Docker Compose stack (optional, opt-in)'
     'extras'       = 'Optional shared Taste, Humanizer, HeroUI, Emil design, MJML email, and Impeccable skills'
 }
-$ModuleOptional = @{ 'skillopt-sleep' = $true; 'toon' = $true; 'lea' = $true; 'sqz' = $true; 'graphify' = $true; 'llmlingua' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
+$ModuleOptional = @{ 'skillopt-sleep' = $true; 'toon' = $true; 'lea' = $true; 'graphify' = $true; 'llmlingua' = $true; 'cockpit' = $true; 'cliproxyapi' = $true; 'extras' = $true }
 
 # ==============================================================================
 # Modules
@@ -1367,16 +1366,6 @@ function Mod-Graphify {
     if (-not $graphifyPython) { throw "graphify tool environment not found under $graphifyVenv" }
     Invoke-Step -Phase $phase -Verify -Action { & $graphifyPython -c 'import mcp' }
     Write-Log INFO $phase 'verified' 'graphify CLI and MCP server verified' 0 "version=$($script:SetupAiGraphifyVersion)"
-}
-
-function Mod-Sqz {
-    $phase = 'sqz'
-    Write-Log INFO $phase 'start' 'sqz CLI'
-    if (-not (Test-Cmd sqz)) { throw 'sqz not found; install the official sqz binary before selecting this module' }
-    $script:SetupAiSqzVersion = ''
-    Invoke-Step -Phase $phase -Verify -Action { $script:SetupAiSqzVersion = (sqz --version).Trim() }
-    if ($script:SetupAiSqzVersion -ne 'sqz 1.9.0') { throw "sqz version mismatch (expected sqz 1.9.0, got $($script:SetupAiSqzVersion))" }
-    Write-Log INFO $phase 'verified' 'Existing sqz CLI verified' 0 "version=$($script:SetupAiSqzVersion)"
 }
 
 function Mod-Llmlingua {
@@ -3077,7 +3066,7 @@ function Mod-Cliproxyapi {
 
 $ModuleFn = @{
     'base' = ${function:Mod-Base}; 'node' = ${function:Mod-Node}; 'bun' = ${function:Mod-Bun}
-    'toon' = ${function:Mod-Toon}; 'lea' = ${function:Mod-Lea}; 'sqz' = ${function:Mod-Sqz}; 'graphify' = ${function:Mod-Graphify}; 'llmlingua' = ${function:Mod-Llmlingua}
+    'toon' = ${function:Mod-Toon}; 'lea' = ${function:Mod-Lea}; 'graphify' = ${function:Mod-Graphify}; 'llmlingua' = ${function:Mod-Llmlingua}
     'pi' = ${function:Mod-Pi}; 'ai-memory' = ${function:Mod-AiMemory}; 'skillopt-sleep' = ${function:Mod-SkillOptSleep}; 'pi-packages' = ${function:Mod-PiPackages}; 'go' = ${function:Mod-Go}; 'dotenv' = ${function:Mod-Dotenv}; 'lazyvim' = ${function:Mod-LazyVim}; 'ee' = ${function:Mod-Ee}
     'skills' = ${function:Mod-Skills}
     'pi-workflows' = ${function:Mod-PiWorkflows}; 'herdr' = ${function:Mod-Herdr}; 'claude-code' = ${function:Mod-ClaudeCode}
@@ -3247,14 +3236,6 @@ function Get-WindowsModuleInventory {
                 Resource = $LeaPrefix
                 Classification = if ($present) { 'protected' } else { 'absent' }
                 Reason = if ($present) { 'setup-ai-owned LEA path is inventory-only on Windows' } else { 'LEA path not present' }
-            }
-        }
-        'sqz' {
-            $items += [pscustomobject]@{
-                Module = 'sqz'
-                Resource = 'sqz CLI'
-                Classification = 'protected'
-                Reason = 'Existing external CLI is not setup-ai-owned'
             }
         }
         'graphify' {

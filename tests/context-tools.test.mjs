@@ -20,7 +20,7 @@ assert.deepEqual(formats.fromTOON(toon), { label: "items", items: [{ id: 1, name
 const bash = readFileSync(new URL("setup-ai.sh", root), "utf8");
 const powershell = readFileSync(new URL("setup-ai.ps1", root), "utf8");
 const launcher = readFileSync(new URL("bin/setup-ai.mjs", root), "utf8");
-for (const tool of ["toon", "lea", "sqz", "llmlingua"]) {
+for (const tool of ["toon", "lea", "llmlingua"]) {
   assert.match(bash, new RegExp(`mod_${tool}`));
   assert.match(powershell, new RegExp(`Mod-${tool[0].toUpperCase()}${tool.slice(1)}`));
   assert.match(launcher, new RegExp(`name: "${tool}"`));
@@ -44,8 +44,5 @@ for (const source of [bash, powershell]) {
 const toonCli = spawnSync("toon", ["--version"], { encoding: "utf8" });
 assert.equal(toonCli.status, 0, `${toonCli.stderr || toonCli.stdout}`);
 assert.equal(`${toonCli.stdout}${toonCli.stderr}`.trim(), "2.3.0");
-const sqz = spawnSync("sqz", ["--version"], { encoding: "utf8" });
-assert.equal(sqz.status, 0, `${sqz.stderr || sqz.stdout}`);
-assert.equal(`${sqz.stdout}${sqz.stderr}`.trim(), "sqz 1.9.0");
 
 console.log("Context tool declarations, TOON/LEA runtime verification passed");

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- The `sqz` module. It never installed anything: it required an existing `sqz` binary and accepted only the exact string `sqz 1.9.0`, and no `sqz` package exists in the npm registry, so the module could only fail on a machine that did not already have that binary. Registered module order, descriptions, optional set, launcher entry, docs and tests are updated together.
+
 ## [4.0.5] - 2026-10-30
 
 ### Fixed

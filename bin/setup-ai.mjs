@@ -38,7 +38,6 @@ const MODULES = [
   { name: "bun",          core: true,  category: "System", desc: "Bun runtime" },
   { name: "toon",         core: false, category: "Context", desc: "TOON CLI converter (installed; verify: toon --version)" },
   { name: "lea",          core: false, category: "Context", desc: "LEA context encoder (installed vendored module; verify: node -e encodeLEA)" },
-  { name: "sqz",          core: false, category: "Context", desc: "sqz token-optimized CLI (declared-only; verify: sqz --version)" },
   { name: "graphify",     core: false, category: "Context", desc: "graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)" },
   { name: "llmlingua",    core: false, category: "Context", desc: "LLMLingua CPU library only (installed uv venv; verify: Python import)" },
   { name: "pi",           core: true,  category: "Agents", desc: "pi.dev coding agent CLI" },

@@ -818,7 +818,7 @@ EOF
 # unsupported" when a runtime it targets is still absent.
 # ==============================================================================
 
-MODULE_ORDER=(base node bun toon lea sqz graphify llmlingua pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
+MODULE_ORDER=(base node bun toon lea graphify llmlingua pi dotenv ai-memory skillopt-sleep lazyvim pi-packages go ee skills pi-workflows herdr claude-code codex antigravity opencode gentle-ai cockpit cliproxyapi extras)
 # The launcher passes this ordered selection through --only for the Gentle AI preset.
 GENTLE_AI_PRESET=(base node pi pi-workflows gentle-ai)
 
@@ -830,7 +830,6 @@ module_desc() {
         bun) printf '%s\n' "Bun runtime" ;;
         toon) printf '%s\n' "TOON CLI converter (installed; verify: toon --version)" ;;
         lea) printf '%s\n' "LEA context encoder (installed vendored module; verify: node -e encodeLEA)" ;;
-        sqz) printf '%s\n' "sqz token-optimized CLI (declared-only; verify: sqz --version)" ;;
         graphify) printf '%s\n' "graphify code knowledge graph and MCP server (uv tool install graphifyy[mcp]; verify: graphify --version)" ;;
         llmlingua) printf '%s\n' "LLMLingua CPU library only (installed uv venv; verify: Python import)" ;;
         pi) printf '%s\n' "pi.dev coding agent CLI" ;;
@@ -856,7 +855,7 @@ module_desc() {
 }
 
 module_is_optional() {
-    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "skillopt-sleep" || "$1" == "toon" || "$1" == "lea" || "$1" == "sqz" || "$1" == "graphify" || "$1" == "llmlingua" || "$1" == "extras" ]]
+    [[ "$1" == "cockpit" || "$1" == "cliproxyapi" || "$1" == "skillopt-sleep" || "$1" == "toon" || "$1" == "lea" || "$1" == "graphify" || "$1" == "llmlingua" || "$1" == "extras" ]]
 }
 
 # ------------------------------------------------------------------------------
@@ -1803,23 +1802,6 @@ mod_lea() {
     run_cmd "lea" cp -f "${source}" "${target}"
     run_cmd "lea" node -e 'const formats = require(process.argv[1]); const output = formats.encodeLEA({sources: {S1: "fixture"}, evidence: [{id: "E1", source: "S1", content: "ok"}]}); if (!output.includes("### SOURCE DICTIONARY") || !output.includes("| E1 | [S1] | ok |")) process.exit(1)' "${target}"
     log_event "INFO" "lea" "runtime_verified" "Installed and verified vendored LEA formatter" 0 "path=${target}"
-}
-
-# --- sqz --------------------------------------------------------------------
-mod_sqz() {
-    section "sqz"
-    require_command sqz
-    local version=""
-    if (( DRY_RUN == 1 )); then
-        dry_run_note "sqz" "verify the existing sqz binary with sqz --version"
-        return 0
-    fi
-    capture_cmd version "sqz" sqz --version || return 1
-    [[ "${version}" == "sqz 1.9.0" ]] || {
-        log_event "ERROR" "sqz" "version_mismatch" "sqz version mismatch" 1 "expected=sqz 1.9.0;actual=${version};path=$(command -v sqz)"
-        return 1
-    }
-    log_event "INFO" "sqz" "cli_verified" "Verified existing sqz CLI" 0 "version=${version};path=$(command -v sqz)"
 }
 
 # --- LLMLingua --------------------------------------------------------------

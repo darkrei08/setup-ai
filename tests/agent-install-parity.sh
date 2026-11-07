@@ -22,19 +22,17 @@ for (const modules of [bashModules, powershellModules, nodeModules]) {
   if (!modules.includes('cliproxyapi') || modules.includes('rotator')) {
     throw new Error('CLIProxyAPI must replace rotator in install registries');
   }
-  for (const contextTool of ['toon', 'lea', 'sqz', 'graphify', 'llmlingua']) {
+  for (const contextTool of ['toon', 'lea', 'graphify', 'llmlingua']) {
     if (!modules.includes(contextTool)) throw new Error(`Missing context module ${contextTool}`);
   }
 }
 for (const [name, source, needles] of [
   ['toon', sh, ['mod_toon()', 'TOON_VERSION', 'toon --version', 'bun add --global --exact']],
   ['lea', sh, ['mod_lea()', 'vendor/wz-ai-context-formats.cjs', 'encodeLEA']],
-  ['sqz', sh, ['mod_sqz()', 'sqz --version']],
   ['graphify', sh, ['mod_graphify()', 'uv tool install "graphifyy[mcp]"', 'graphify --version', 'graphify-mcp', 'import mcp']],
   ['llmlingua', sh, ['mod_llmlingua()', 'pip install --dry-run', 'torch==${LLMLINGUA_TORCH_VERSION}', 'download_guard']],
   ['toon', ps, ['function Mod-Toon', 'toon --version', 'bun add --global --exact']],
   ['lea', ps, ['function Mod-Lea', 'vendor\\wz-ai-context-formats.cjs', 'encodeLEA']],
-  ['sqz', ps, ['function Mod-Sqz', 'sqz --version']],
   ['graphify', ps, ['function Mod-Graphify', "uv tool install 'graphifyy[mcp]'", 'graphify --version', 'graphify-mcp', 'import mcp']],
   ['llmlingua', ps, ['function Mod-Llmlingua', 'uv pip install --dry-run', 'LlmlinguaTorchVersion']],
 ]) {
@@ -42,12 +40,12 @@ for (const [name, source, needles] of [
 }
 if (!sh.includes('path|lea|') || !sh.includes('path|llmlingua|')) throw new Error('Owned context-tool paths missing from Bash uninstall catalog');
 const windowsInventory = ps.match(/function Get-WindowsModuleInventory \{([\s\S]*?)\n    return \$items\n\}/)?.[1] ?? '';
-for (const contextTool of ['toon', 'lea', 'sqz', 'graphify', 'llmlingua']) {
+for (const contextTool of ['toon', 'lea', 'graphify', 'llmlingua']) {
   if (!windowsInventory.includes(`'${contextTool}' {`)) throw new Error(`Windows uninstall inventory missing ${contextTool}`);
 }
 if (!windowsInventory.includes('$LeaPrefix') || !windowsInventory.includes('$LlmlinguaPrefix') ||
-    !windowsInventory.includes("'TOON CLI'") || !windowsInventory.includes("'sqz CLI'")) {
-  throw new Error('Windows context-tool inventory must retain the Bash-owned paths and all four resources');
+    !windowsInventory.includes("'TOON CLI'")) {
+  throw new Error('Windows context-tool inventory must retain the Bash-owned paths and all resources');
 }
 if (!mjs.includes('category: "Context"') || !mjs.includes('core: false')) throw new Error('Context modules must be optional launcher entries');
 if (/^\s*rotator\s*\)/m.test(sh) || /'rotator'\s*=/.test(ps) ||
