@@ -1,8 +1,9 @@
 # Releasing
 
-Releases are published from a clean, protected `main` checkout through GitHub Actions.
-The workflow creates the GitHub Release with generated notes, then publishes the exact
-annotated tag to npm using trusted publishing (OIDC).
+Releases are published automatically when an annotated `vX.Y.Z` tag is pushed from a
+clean, protected `main` checkout. GitHub Actions creates the GitHub Release with generated
+notes, then publishes the exact tag to npm using trusted publishing (OIDC). Manual workflow
+dispatch remains available for reruns and recovery.
 
 ## One-time npm trust setup
 
@@ -29,19 +30,25 @@ locally; publication belongs to the workflow.
    npm pack --dry-run
    ```
 
-3. Create and push the annotated version tag:
+3. After the release commit is merged into remote `main`, create and push the annotated
+   version tag. The tag push starts publication automatically:
 
    ```bash
    git tag -a v4.0.6 -m "Release v4.0.6"
    git push origin v4.0.6
    ```
 
-4. Dispatch the workflow from `main` with the exact tag:
+4. Watch the automatically started workflow:
+
+   ```bash
+   run_id="$(gh run list --repo darkrei08/setup-ai --workflow publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+   gh run watch "$run_id" --repo darkrei08/setup-ai --exit-status
+   ```
+
+   For a recovery or rerun, dispatch the same workflow manually:
 
    ```bash
    gh workflow run publish.yml --repo darkrei08/setup-ai --ref main -f tag=v4.0.6
-   run_id="$(gh run list --repo darkrei08/setup-ai --workflow publish.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-   gh run watch "$run_id" --repo darkrei08/setup-ai --exit-status
    ```
 
 5. Confirm npm has the released version:
