@@ -2,7 +2,7 @@
 
 # ==============================================================================
 # AI Dev Suite - Engineering Excellence Edition
-# Version: 4.0.5
+# Version: 4.0.6
 #
 # Cross-platform (macOS + all major Linux distros) installer for an AI coding
 # toolchain. Windows is handled by the sibling setup-ai.ps1; the Node launcher
@@ -30,7 +30,7 @@
 set -Eeuo pipefail
 IFS=$'\n\t'
 
-SCRIPT_VERSION="4.0.5"
+SCRIPT_VERSION="4.0.6"
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/ai-dev-suite.XXXXXXXX")"
@@ -2189,18 +2189,24 @@ mod_ee() {
     local -a target_agents=()
     for agent in "${SKILL_AGENT_NAMES[@]}"; do
         [[ -d "$(agent_config_dir "${agent}")" ]] || continue
-        run_cmd "engineering-excellence" \
-            npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
-            --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent "${agent}" --copy --yes </dev/null
+        (
+            cd -- "${HOME}"
+            run_cmd "engineering-excellence" \
+                npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
+                --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent "${agent}" --copy --yes </dev/null
+        )
         target_agents+=("${agent}")
         installed_any=1
     done
 
     if (( installed_any == 0 )); then
         # No agent detected yet - install at least for pi (created by mod_pi).
-        run_cmd "engineering-excellence" \
-            npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
-            --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent pi --copy --yes </dev/null
+        (
+            cd -- "${HOME}"
+            run_cmd "engineering-excellence" \
+                npx --yes skills@latest add "${ENGINEERING_EXCELLENCE_SLUG}" \
+                --skill "${ENGINEERING_EXCELLENCE_SKILL}" --global --agent pi --copy --yes </dev/null
+        )
         target_agents=(pi)
     fi
 
@@ -2240,9 +2246,12 @@ mod_skills() {
             IFS=',' read -r -a entry_agents <<< "${agent_csv}"
         fi
         for agent in "${entry_agents[@]}"; do
-            run_cmd "skills" \
-                npx --yes skills@latest add "${source}" \
-                --skill "${skill_list[@]}" --global --agent "${agent}" --copy --yes </dev/null
+            (
+                cd -- "${HOME}"
+                run_cmd "skills" \
+                    npx --yes skills@latest add "${source}" \
+                    --skill "${skill_list[@]}" --global --agent "${agent}" --copy --yes </dev/null
+            )
         done
     done
 

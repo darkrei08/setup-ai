@@ -2,7 +2,7 @@
 <#
 ==============================================================================
  AI Dev Suite - Engineering Excellence Edition (Windows)
- Version: 4.0.5
+ Version: 4.0.6
 
  Windows-native installer, sibling of setup-ai.sh. Uses each tool's official
  Windows method: winget for language runtimes, vendor installers where documented,
@@ -62,7 +62,7 @@ try {
     Write-Warning "Could not set UTF-8 console encoding: $($_.Exception.Message)"
 }
 
-$ScriptVersion = "4.0.5"
+$ScriptVersion = "4.0.6"
 $ScriptPath = $PSCommandPath
 $ScriptDir = Split-Path -Parent $ScriptPath
 $DryRunRoot = $null
@@ -1586,9 +1586,12 @@ function Mod-Ee {
     if (-not (Test-Cmd npx)) { throw "npx not found; engineering-excellence cannot be installed (install the node module first)" }
     $agents = Get-TargetSkillAgents
     foreach ($a in $agents) {
-        Invoke-Step -Phase "engineering-excellence" -Action {
-            npx --yes skills@latest add $EE_Slug --skill $EE_Skill --global --agent $a --copy --yes
-        }
+        Push-Location -LiteralPath $HOME
+        try {
+            Invoke-Step -Phase "engineering-excellence" -Action {
+                npx --yes skills@latest add $EE_Slug --skill $EE_Skill --global --agent $a --copy --yes
+            }
+        } finally { Pop-Location }
     }
     Assert-SkillInstalledForAgents -Phase "engineering-excellence" -Skill $EE_Skill -Agents $agents
 }
@@ -1605,9 +1608,12 @@ function Mod-Skills {
         # '*' means every detected agent; anything else is the entry's own list.
         $entryAgents = if ($entry.Agents -contains '*') { $agents } else { $entry.Agents }
         foreach ($a in $entryAgents) {
-            Invoke-Step -Phase "skills" -Action {
-                npx --yes skills@latest add $src --skill $skills --global --agent $a --copy --yes
-            }
+            Push-Location -LiteralPath $HOME
+            try {
+                Invoke-Step -Phase "skills" -Action {
+                    npx --yes skills@latest add $src --skill $skills --global --agent $a --copy --yes
+                }
+            } finally { Pop-Location }
         }
     }
     foreach ($skill in $UpstreamSkillNames) {

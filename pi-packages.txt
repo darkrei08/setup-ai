@@ -1,0 +1,4 @@
+# Pi packages installed by setup-ai's profile manifest.
+# The package is pinned to the upstream default branch so new machines use the
+# same supported native Pi package as the global installation.
+git:github.com/ayghri/i-have-adhd@main

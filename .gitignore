@@ -7,6 +7,9 @@ node_modules/
 .atl/
 # Session/project-local Pi + workflow settings (never committed)
 .pi/
+# Skills CLI artifacts must never shadow the canonical ~/.agents/skills root
+.agents/
+skills-lock.json
 # Local CodeGraph index artifact
 .codegraph/
 # Local field reports and issue drafts (never published)

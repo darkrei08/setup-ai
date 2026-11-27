@@ -83,9 +83,16 @@ if (!bashGentle.includes('GENTLE_AI_AGENT_NAMES') || !bashGentle.includes('gentl
 }
 const bashEe = sh.match(/mod_ee\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
 const bashSkills = sh.match(/mod_skills\(\) \{([\s\S]*?)\n\}/)?.[1] ?? '';
+const powershellEe = ps.match(/function Mod-Ee \{([\s\S]*?)\n\}/)?.[1] ?? '';
+const powershellSkills = ps.match(/function Mod-Skills \{([\s\S]*?)\n\}/)?.[1] ?? '';
 if (!bashEe.includes('SKILL_AGENT_NAMES') || !bashSkills.includes('SKILL_AGENT_NAMES') ||
     !ps.includes('Get-TargetSkillAgents')) {
   throw new Error('skills CLI loops must use the corrected harness list');
+}
+if (!bashEe.includes('cd -- "${HOME}"') || !bashSkills.includes('cd -- "${HOME}"') ||
+    !powershellEe.includes('Push-Location -LiteralPath $HOME') ||
+    !powershellSkills.includes('Push-Location -LiteralPath $HOME')) {
+  throw new Error('shared skill installs must run from the canonical global home');
 }
 const shellOptional = sh.match(/module_is_optional\(\)\s*\{\s*\[\[([^\]]+)\]\]/)?.[1] ?? '';
 const powershellOptional = ps.match(/\$ModuleOptional\s*=\s*@\{([^}]+)\}/)?.[1] ?? '';

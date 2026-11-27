@@ -35,6 +35,11 @@ mkdir -p "${TMP}/bin"
 cat > "${TMP}/bin/npx" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >> "${FAKE_NPX_LOG}"
+printf '%s\n' "$PWD" >> "${FAKE_NPX_CWD_LOG}"
+if [[ "${PWD}" != "${HOME}" ]]; then
+    mkdir -p "${PWD}/.agents/skills"
+    printf 'fake\n' > "${PWD}/skills-lock.json"
+fi
 args=("$@")
 for ((i = 0; i < ${#args[@]}; i++)); do
     if [[ "${args[i]}" == "--skill" ]]; then
@@ -51,13 +56,19 @@ printf '#!/usr/bin/env bash\nexec "$@"\n' > "${TMP}/bin/sudo"
 chmod +x "${TMP}/bin/npx" "${TMP}/bin/sudo"
 
 run_setup() {
-    HOME="${TMP}/home" DOTENV_DIR="${TMP}/dotenv" FAKE_NPX_LOG="${TMP}/npx.log" \
-        PATH="${TMP}/bin:${PATH}" bash "${ROOT}/setup-ai.sh" "$@" >"${TMP}/out.txt" 2>&1 \
+    mkdir -p "${TMP}/worktree"
+    (
+        cd "${TMP}/worktree"
+        HOME="${TMP}/home" DOTENV_DIR="${TMP}/dotenv" \
+            FAKE_NPX_LOG="${TMP}/npx.log" FAKE_NPX_CWD_LOG="${TMP}/npx-cwd.log" \
+            PATH="${TMP}/bin:${PATH}" bash "${ROOT}/setup-ai.sh" "$@"
+    ) >"${TMP}/out.txt" 2>&1 \
         || { cat "${TMP}/out.txt" >&2; fail "setup-ai.sh $* exited non-zero"; }
 }
 
 mkdir -p "${TMP}/home"
 : > "${TMP}/npx.log"
+: > "${TMP}/npx-cwd.log"
 
 # Dry run: plans every install but runs nothing and writes nothing.
 run_setup --dry-run --extras taste,heroui --yes
@@ -112,11 +123,31 @@ if command -v pwsh >/dev/null 2>&1; then
     if HOME="${TMP}/home" pwsh -NoProfile -File "${ROOT}/setup-ai.ps1" -Uninstall -Extras taste >/dev/null 2>&1; then fail "setup-ai.ps1 accepted -Uninstall -Extras"; fi
 fi
 
+assert_global_skill_cwd() {
+    if grep -Fvx -- "${TMP}/home" "${TMP}/npx-cwd.log" >/dev/null; then
+        cat "${TMP}/npx-cwd.log" >&2
+        fail "skills CLI ran outside HOME"
+    fi
+    [[ ! -e "${TMP}/worktree/.agents/skills" ]] || fail "skills CLI created a worktree-local .agents/skills"
+    [[ ! -e "${TMP}/worktree/skills-lock.json" ]] || fail "skills CLI created a worktree-local skills-lock.json"
+}
+
+# Engineering Excellence fallback: the install must run from HOME even when no agent config exists.
+: > "${TMP}/npx.log"
+: > "${TMP}/npx-cwd.log"
+rm -rf "${TMP}/home" "${TMP}/worktree" && mkdir -p "${TMP}/home"
+run_setup --only ee --yes
+expected_ee='--yes skills@latest add darkrei08/Engineering-Excellence --skill engineering-excellence --global --agent pi --copy --yes'
+[[ "$(cat "${TMP}/npx.log")" == "${expected_ee}" ]] || { cat "${TMP}/npx.log" >&2; fail "unexpected engineering-excellence argv"; }
+assert_global_skill_cwd
+
 # skills module: one call per registry entry and detected agent (defaults to pi).
 : > "${TMP}/npx.log"
-rm -rf "${TMP}/home" && mkdir -p "${TMP}/home"
+: > "${TMP}/npx-cwd.log"
+rm -rf "${TMP}/home" "${TMP}/worktree" && mkdir -p "${TMP}/home"
 run_setup --only skills --yes
 expected_skills=$'--yes skills@latest add herdrdev/herdr --skill herdr --global --agent pi --copy --yes\n--yes skills@latest add mattpocock/skills --skill triage grill-me grilling wayfinder domain-modeling prototype research --global --agent pi --copy --yes\n--yes skills@latest add https://github.com/pedronauck/skills --skill typescript-advanced --global --agent pi --copy --yes\n--yes skills@latest add humanlayer/skills --skill show-me --global --agent pi --copy --yes'
 [[ "$(cat "${TMP}/npx.log")" == "${expected_skills}" ]] || { cat "${TMP}/npx.log" >&2; fail "unexpected skills argv"; }
+assert_global_skill_cwd
 
-printf '%s\n' 'PASS: skills registry parity, argv, dry-run and idempotency'
+printf '%s\n' 'PASS: skills registry parity, argv, dry-run, idempotency, and global-root isolation'

@@ -1,6 +1,6 @@
 {
   "name": "@darkrei08/setup-ai",
-  "version": "4.0.5",
+  "version": "4.0.6",
   "description": "Cross-OS installer for an AI coding toolchain (pi, codex, antigravity, opencode, herdr, gentle-ai/gga, Engineering Excellence) with an interactive module menu and per-agent MCP registration.",
   "type": "module",
   "bin": {
@@ -14,6 +14,7 @@
     "setup-ai.sh",
     "setup-ai.ps1",
     "pi-packages.example.txt",
+    "pi-packages.txt",
     "templates",
     "README.md",
     "docs",
